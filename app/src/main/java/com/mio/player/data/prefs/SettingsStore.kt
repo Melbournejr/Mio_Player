@@ -26,9 +26,15 @@ class SettingsStore(private val ctx: Context) {
         val KEY_FOLDERS = stringSetPreferencesKey("music_folders")
         val KEY_AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
         val KEY_LAST_UPDATE_CHECK = longPreferencesKey("last_update_check_ms")
+        val KEY_THEME = stringPreferencesKey("theme") // deep_wave | sunset | system
     }
     val onboarded: Flow<Boolean> = ctx.dataStore.data.map { it[KEY_ONBOARDED] ?: false }
     val eqPreset: Flow<String> = ctx.dataStore.data.map { it[KEY_EQ_PRESET] ?: "Flat" }
+    /** Theme mode from the design system: Deep Wave is the default on
+     *  first install; Sunset is the light alternative; "system" follows
+     *  the device dark/light setting. */
+    val themeMode: Flow<String> = ctx.dataStore.data.map { it[KEY_THEME] ?: "deep_wave" }
+    suspend fun setThemeMode(v: String) { ctx.dataStore.edit { it[KEY_THEME] = v } }
     suspend fun setOnboarded(v: Boolean) { ctx.dataStore.edit { it[KEY_ONBOARDED]=v } }
     suspend fun <T> set(key: Preferences.Key<T>, value: T) { ctx.dataStore.edit { it[key]=value } }
     fun <T> flow(key: Preferences.Key<T>, default: T): Flow<T> = ctx.dataStore.data.map { it[key] ?: default }

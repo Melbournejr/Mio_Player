@@ -13,7 +13,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -25,19 +28,33 @@ import kotlin.math.sin
     Button(onClick = onClick, modifier = modifier.fillMaxWidth().height(52.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
         contentPadding = PaddingValues(0.dp), shape = RoundedCornerShape(999.dp)) {
-        Box(Modifier.background(MioGradient).fillMaxSize(), contentAlignment = Alignment.Center) {
+        // 135° diagonal gradient from the design system (not horizontal).
+        Box(Modifier.mioGradientBackground(RoundedCornerShape(999.dp)).fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(text, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
         }
     }
 }
-@Composable fun SectionTitle(text: String) { Text(text, color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp)) }
+/** An icon painted with the theme gradient (design system: the selected
+ *  bottom-nav icon uses the gradient). The icon is drawn in white first,
+ *  then the gradient is masked onto it with SrcIn. */
+@Composable fun GradientIcon(imageVector: ImageVector, contentDescription: String?, modifier: Modifier = Modifier) {
+    val gradient = MioGradient
+    Icon(imageVector, contentDescription, tint = Color.White,
+        modifier = modifier.drawWithCache {
+            onDrawWithContent {
+                drawContent()
+                drawRect(brush = gradient, blendMode = BlendMode.SrcIn)
+            }
+        })
+}
+@Composable fun SectionTitle(text: String) { Text(text, color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp)) }
 @Composable fun TrackRow(t: Track, onClick: () -> Unit, onFav: (() -> Unit)? = null, trailing: @Composable (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(52.dp).clip(CardSmall).background(MioSurfaceRaised), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.MusicNote, null, tint = MioCyan)
         }
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(t.title, color = MioText, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(t.title, color = MioText, fontWeight = FontWeight.SemiBold, maxLines = 1)
             Text("${t.artist} • ${t.displayFormat}", color = MioTextSecondary, fontSize = 12.sp, maxLines = 1)
         }
         if (onFav != null) IconButton(onClick = onFav) { Icon(if (t.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, tint = if (t.isFavorite) MioCyan else MioTextSecondary) }
@@ -46,14 +63,15 @@ import kotlin.math.sin
     }
 }
 fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02d".format(s/60, s%60) }
-@Composable fun MiniPlayer(title: String, artist: String, isPlaying: Boolean, onToggle: () -> Unit, onOpen: () -> Unit) {
+@Composable fun MiniPlayer(title: String, artist: String, isPlaying: Boolean, onToggle: () -> Unit, onNext: () -> Unit, onOpen: () -> Unit) {
     Card(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpen() }, colors = CardDefaults.cardColors(containerColor = MioSurfaceRaised), shape = CardSmall) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(MioGradient), contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.MusicNote, null, tint = Color.White)
             }
             Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(title, color = MioText, maxLines = 1); Text(artist, color = MioTextSecondary, fontSize = 12.sp, maxLines = 1) }
-            IconButton(onClick = onToggle) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = Color.White) }
+            IconButton(onClick = onToggle) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = MioText) }
+            IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, tint = MioText) }
         }
     }
 }

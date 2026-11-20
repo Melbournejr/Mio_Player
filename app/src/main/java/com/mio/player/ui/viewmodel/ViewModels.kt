@@ -34,4 +34,5 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val queue get() = pm.queue; val index get() = pm.index; val isPlaying get() = pm.isPlaying
     fun playQueue(tracks: List<Track>, i: Int = 0) = pm.playQueue(tracks, i)
     fun toggle() { if (pm.player.isPlaying) pm.pause() else pm.play() }
+    fun next() = pm.next()
 }

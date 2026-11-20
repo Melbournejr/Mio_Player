@@ -2,6 +2,7 @@
 package com.mio.player.ui.screens
 import android.content.Intent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,6 +10,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -27,6 +30,7 @@ import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
 import com.mio.player.ui.viewmodel.LibraryViewModel
 import com.mio.player.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.launch
 @Composable fun AlbumDetailScreen(libVm: LibraryViewModel, playerVm: PlayerViewModel, nav: NavHostController) {
     val tracks by libVm.tracks.collectAsState()
     Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
@@ -82,6 +86,20 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
         SectionTitle("Profile")
         Text("Local listener", color = MioText, fontSize = 20.sp)
         Text("${tracks.size} songs • ${tracks.count { it.isFavorite }} favorites", color = MioTextSecondary)
+        Spacer(Modifier.height(16.dp))
+        // Design system: theme switch lives in Profile / Settings >
+        // Interface — Deep Wave / Sunset / Follow system. Deep Wave is
+        // the first-install default.
+        SectionTitle("Giao diện")
+        val settings = (LocalContext.current.applicationContext as com.mio.player.MioApp).container.settings
+        val themeMode by settings.themeMode.collectAsState(initial = "deep_wave")
+        val scope = rememberCoroutineScope()
+        listOf("deep_wave" to "Deep Wave (tối)", "sunset" to "Sunset (sáng)", "system" to "Theo hệ thống").forEach { (value, label) ->
+            Row(Modifier.fillMaxWidth().clickable { scope.launch { settings.setThemeMode(value) } }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (themeMode == value) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked, null, tint = MioCyan)
+                Text(label, color = MioText, modifier = Modifier.padding(start = 12.dp))
+            }
+        }
         Spacer(Modifier.height(16.dp))
         GradientButton("Equalizer & sound") { nav.navigate(Routes.EQ) }
         Spacer(Modifier.height(12.dp))

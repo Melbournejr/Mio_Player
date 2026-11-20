@@ -22,6 +22,7 @@ import androidx.media3.common.Player
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.*
 import com.mio.player.data.prefs.SettingsStore
+import com.mio.player.ui.components.GradientIcon
 import com.mio.player.ui.components.MiniPlayer
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.screens.*
@@ -33,7 +34,10 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MioPlayerTheme { MioPlayerApp() } }
+        setContent {
+            val themeMode by (application as MioApp).container.settings.themeMode.collectAsState(initial = "deep_wave")
+            MioPlayerTheme(themeMode) { MioPlayerApp() }
+        }
     }
 }
 /** Runtime permission for reading music files: READ_MEDIA_AUDIO on
@@ -120,12 +124,17 @@ suspend fun restoreSoundSettings(ctx: Context) {
     Scaffold(
         bottomBar = {
             Column {
-                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { nav.navigate(Routes.NOW_PLAYING) }) }
+                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }) }
                 NavigationBar(containerColor = com.mio.player.ui.theme.MioSurface) {
                     listOf(Triple(Routes.HOME, "Home", Icons.Default.Home), Triple(Routes.SEARCH, "Search", Icons.Default.Search),
                         Triple(Routes.LIBRARY, "Library", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Profile", Icons.Default.Person)).forEach { (r, label, icon) ->
                         NavigationBarItem(selected = current == r, onClick = { if (current != r) nav.navigate(r) { popUpTo(Routes.HOME) } },
-                            icon = { Icon(icon, null) }, label = { Text(label) })
+                            // Design system: the selected icon uses the theme
+                            // gradient; unselected icons are secondary text.
+                            icon = { if (current == r) GradientIcon(icon, null) else Icon(icon, null, tint = com.mio.player.ui.theme.MioTextSecondary) },
+                            label = { Text(label, color = if (current == r) com.mio.player.ui.theme.MioText else com.mio.player.ui.theme.MioTextSecondary) },
+                            colors = NavigationBarItemDefaults.colors(selectedIconColor = androidx.compose.ui.graphics.Color.White, unselectedIconColor = com.mio.player.ui.theme.MioTextSecondary,
+                                selectedTextColor = com.mio.player.ui.theme.MioText, unselectedTextColor = com.mio.player.ui.theme.MioTextSecondary, indicatorColor = androidx.compose.ui.graphics.Color.Transparent))
                     }
                 }
             }
