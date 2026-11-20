@@ -12,8 +12,21 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with: { java-version: '17', distribution: 'temurin' }
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # FIX 2026-11-20: android-actions/setup-android@v3 failed because it
+      # runs `sdkmanager --licenses` interactively and prompts
+      # "Review licenses that have not been accepted (y/N)?" with no stdin.
+      # ubuntu-latest already ships a full Android SDK, so use it directly
+      # and accept licenses non-interactively with `yes |`.
+      - name: Set up Android SDK (preinstalled on runner)
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          if [ -z "$ANDROID_SDK_ROOT" ]; then echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV; fi
+          if [ -z "$ANDROID_HOME" ]; then echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV; fi
+          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
+          ls "$SDK/cmdline-tools"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with: { gradle-version: '8.7' }

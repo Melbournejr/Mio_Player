@@ -27,7 +27,9 @@ class MainActivity : ComponentActivity() {
     val nav = rememberNavController()
     val libVm: LibraryViewModel = viewModel()
     val playerVm: PlayerViewModel = viewModel()
-    LaunchedEffect(Unit) { libVm.load() }
+    val update = rememberUpdateState()
+    LaunchedEffect(Unit) { libVm.load(); update.check(false) }
+    update.available?.let { info -> UpdateDialog(info) { update.available = null } }
     NavHost(nav, startDestination = Routes.SPLASH) {
         composable(Routes.SPLASH) { SplashScreen { nav.navigate(Routes.ONBOARDING) { popUpTo(Routes.SPLASH) { inclusive = true } } } }
         composable(Routes.ONBOARDING) { OnboardingScreen(onDone = { nav.navigate(Routes.LOGIN) }, onSkip = { nav.navigate(Routes.HOME) }) }

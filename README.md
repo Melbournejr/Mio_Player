@@ -83,3 +83,15 @@ app/src/main/java/com/mio/player/
   ui/screens/  Onboarding.kt (Splash/Login/Genres)  Home.kt  NowPlaying.kt  Detail.kt  Equalizer.kt
   ui/viewmodel/ViewModels.kt
 ```
+
+## OTA update (added 2026-11-20)
+
+- The app checks GitHub Releases on start and in Profile > Check for updates.
+- It calls `https://api.github.com/repos/Melbournejr/Mio_Player/releases/latest` (public, no key), compares `tag_name` with the installed `versionName`, and if newer downloads the `.apk` asset and prompts install via FileProvider.
+- To publish an update: bump `versionCode` / `versionName` in `app/build.gradle.kts`, commit, then push a tag, e.g. `git tag v1.0.1 && git push origin v1.0.1`. The `Release Mio Player APK (OTA)` workflow builds the release APK and creates the GitHub Release automatically.
+- First install from an APK needs Android to allow "Install unknown apps" for Mio Player once; the app opens that settings page when needed.
+
+## Build fix 2026-11-20
+
+- `android-actions/setup-android@v3` failed in run #1: it runs `sdkmanager --licenses` interactively and hangs on "Review licenses that have not been accepted (y/N)?".
+- Fixed by removing that action and using the SDK preinstalled on `ubuntu-latest` (`/usr/local/lib/android/sdk`), accepting licenses non-interactively with `yes | sdkmanager --licenses`.

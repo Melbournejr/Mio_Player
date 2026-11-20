@@ -22,6 +22,8 @@ class SettingsStore(private val ctx: Context) {
         val KEY_SPEED = floatPreferencesKey("speed")
         val KEY_SLEEP_MIN = intPreferencesKey("sleep_min")
         val KEY_FOLDERS = stringSetPreferencesKey("music_folders")
+        val KEY_AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
+        val KEY_LAST_UPDATE_CHECK = longPreferencesKey("last_update_check_ms")
     }
     val onboarded: Flow<Boolean> = ctx.dataStore.data.map { it[KEY_ONBOARDED] ?: false }
     val eqPreset: Flow<String> = ctx.dataStore.data.map { it[KEY_EQ_PRESET] ?: "Flat" }

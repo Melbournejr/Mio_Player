@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
+import com.mio.player.data.ota.OtaUpdateChecker
 import com.mio.player.ui.components.*
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
@@ -65,6 +66,7 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
 }
 @Composable fun ProfileScreen(libVm: LibraryViewModel, nav: NavHostController) {
     val tracks by libVm.tracks.collectAsState()
+    val update = rememberUpdateState()
     Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
         SectionTitle("Profile")
         Text("Local listener", color = MioText, fontSize = 20.sp)
@@ -73,6 +75,13 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
         GradientButton("Equalizer & sound") { nav.navigate(Routes.EQ) }
         Spacer(Modifier.height(12.dp))
         androidx.compose.material3.TextButton(onClick = { libVm.scan() }) { Text("Rescan library", color = MioCyan) }
+        Spacer(Modifier.height(8.dp))
+        SectionTitle("Updates (OTA)")
+        Text(OtaUpdateChecker.currentVersionLabel(), color = MioTextSecondary, fontSize = 13.sp)
+        Text("Updates come from GitHub Releases — no Play Store needed. A new release is published when a tag v* is pushed.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        GradientButton(if (update.checking) "Checking…" else "Check for updates") { update.check(true) }
+        update.available?.let { info -> UpdateDialog(info) { update.available = null } }
         Text("Settings: gapless, crossfade, ReplayGain, sleep timer and playback speed are in the Equalizer & Sound screen and Now Playing. No account, no cloud — everything is local.", color = MioTextSecondary, fontSize = 13.sp)
     }
 }
