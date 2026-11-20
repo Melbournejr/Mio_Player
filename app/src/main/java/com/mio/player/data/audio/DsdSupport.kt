@@ -52,5 +52,8 @@ object DsdSupport {
         return "$rate -> PCM 176.4kHz"
     }
     fun ffmpegCommand(inputPath: String, outputPath: String): String =
-        "-y -i \"$inputPath\" -vn -ar $CACHED_PCM_SAMPLE_RATE_HZ -ac 2 -sample_fmt s16 \"$outputPath\""
+        // "-f wav" is explicit so the output format never depends on the
+        // output filename's extension (a ".tmp" suffix once made ffmpeg
+        // fail with "Unable to choose an output format").
+        "-y -i \"$inputPath\" -vn -ar $CACHED_PCM_SAMPLE_RATE_HZ -ac 2 -sample_fmt s16 -f wav \"$outputPath\""
 }

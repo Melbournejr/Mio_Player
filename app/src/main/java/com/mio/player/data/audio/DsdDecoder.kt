@@ -62,7 +62,12 @@ object DsdDecoder {
             return@withContext null
         }
         val output = cacheFile(context, track)
-        val tmp = File(output.parentFile, output.name + ".tmp")
+        // The temp file MUST end in .wav: ffmpeg guesses the output format
+        // from the extension, and "<hash>.wav.tmp" made it fail every DSD
+        // file with "Unable to choose an output format" (rc=1) — that was
+        // the 1.0.6 failure. "<hash>.tmp.wav" still guesses WAV and is
+        // never mistaken for a finished cache entry (cache is "<hash>.wav").
+        val tmp = File(output.parentFile, output.nameWithoutExtension + ".tmp.wav")
         val t0 = System.currentTimeMillis()
         runCatching {
             val session = FFmpegKit.execute(DsdSupport.ffmpegCommand(input.absolutePath, tmp.absolutePath))
@@ -71,7 +76,7 @@ object DsdDecoder {
                 MioLog.event(context, "DSD decoded '${track.title}' in ${System.currentTimeMillis() - t0}ms -> ${output.length() / 1024}KB WAV")
                 Uri.fromFile(output)
             } else {
-                MioLog.event(context, "DSD decode FAIL '${track.title}': rc=${session.returnCode} tail=${session.output?.takeLast(300)}")
+                MioLog.event(context, "DSD decode FAIL '${track.title}': rc=${session.returnCode} tail=${session.output?.takeLast(500)}")
                 tmp.delete()
                 null
             }
