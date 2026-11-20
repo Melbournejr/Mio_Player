@@ -2,6 +2,7 @@ package com.mio.player.data.repo
 import android.content.Context
 import com.mio.player.data.db.AppDatabase
 import com.mio.player.data.db.LyricsEntity
+import com.mio.player.data.log.MioLog
 import com.mio.player.data.model.LyricLine
 import com.mio.player.data.model.Lyrics
 import kotlinx.coroutines.Dispatchers
@@ -21,15 +22,31 @@ import java.net.URLEncoder
  *  NOTE: embedded lyrics are NOT read (no reliable MediaMetadataRetriever
  *  key for them); the sidecar .lrc file next to the song is the local
  *  source that always works.
- *  1.0.11: the 1.0.10 user log proved the old lookup missed many songs
- *  for a dumb reason — local file titles carry junk LRCLIB never has:
- *  "A1.Hello" (side+track prefix from the vinyl-style file name),
- *  "01 - Hello", "Hello (2015 Remaster)". The lookup now tries the
- *  raw title AND a normalized title, with and without duration, and
- *  falls back to lyrics.ovh for plain lyrics when LRCLIB has nothing. */
+ *  1.0.12: two more reasons lyrics came out wrong or missing.
+ *  (a) CACHE POISONING: a wrong lyric fetched once (e.g. a cover, or a
+ *  same-name song by another artist) was cached forever and served on
+ *  every later play, even after the lookup logic improved. The cache is
+ *  now cleared once when the lyrics engine version bumps (see
+ *  clearStaleCacheIfNeeded, called from MioApp.onCreate), so every song
+ *  is re-fetched with the current logic.
+ *  (b) SEARCH DID NOT VERIFY THE ARTIST: LRCLIB /search is fuzzy — it
+ *  can return another artist's song with the same title, and the old
+ *  code took the first result with synced lyrics. Results are now
+ *  accepted only when artist AND title match the track. */
 class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
     private val client = OkHttpClient()
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+    /** One-time cache clear when the lyrics engine changes, so stale
+     *  wrong lyrics fetched by an older, dumber lookup are re-fetched
+     *  instead of being served forever. */
+    suspend fun clearStaleCacheIfNeeded() {
+        val prefs = ctx.getSharedPreferences("mio_lyrics", Context.MODE_PRIVATE)
+        if (prefs.getInt("engine_version", 0) < 2) {
+            withContext(Dispatchers.IO) { db.lyricsDao().clearAll() }
+            prefs.edit().putInt("engine_version", 2).apply()
+            MioLog.event(ctx, "Lyrics cache cleared (engine v2)")
+        }
+    }
     /** "A1.Hello" -> "Hello", "B2.River Lea" -> "River Lea",
      *  "01 - Hello" -> "Hello", "Hello (2015 Remaster)" -> "Hello".
      *  Generic "(...)" is NOT stripped — "Send My Love (To Your New
@@ -95,15 +112,38 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         for (title in titleVariants) {
             trySearch(queryArtist, title, durationMs, artist, title)?.let { return it }
         }
-        // 4) Last resort: lyrics.ovh — free, no key, plain lyrics only
-        //    (no sync). Better than "No lyrics found" for songs LRCLIB
-        //    does not have.
+        // 4) Netease Cloud Music — free, no key, and it HAS synced LRC
+        //    for many songs LRCLIB does not (huge catalogue, incl.
+        //    Western pop). Search by "artist title", then fetch the
+        //    song's LRC. Only used when LRCLIB found nothing.
+        if (queryArtist != null) {
+            for (title in titleVariants) {
+                tryNetease(queryArtist, title, durationMs, artist, title)?.let { return it }
+            }
+        }
+        // 5) Last resort: lyrics.ovh — free, no key, plain lyrics only
+        //    (no sync). Better than "No lyrics found" for songs neither
+        //    LRCLIB nor Netease has.
         if (queryArtist != null) {
             for (title in titleVariants) {
                 tryLyricsOvh(queryArtist, title, artist, title)?.let { return it }
             }
         }
         return null
+    }
+    /** Compare ignoring case, punctuation, spaces and "feat." extras:
+     *  "Adele" matches "Adele", "Adele feat. X" matches "Adele". */
+    private fun normKey(s: String): String =
+        s.lowercase().replace(Regex("""(?i)\s+(feat\.?|ft\.?|featuring)\s+.*$"""), "")
+            .replace(Regex("""[^\p{L}\p{N}]"""), "")
+    private fun matchesArtist(resultArtist: String, queryArtist: String?): Boolean {
+        if (queryArtist.isNullOrBlank()) return true
+        val r = normKey(resultArtist); val q = normKey(queryArtist)
+        return r.isNotEmpty() && q.isNotEmpty() && (r == q || r.contains(q) || q.contains(r))
+    }
+    private fun matchesTitle(resultTitle: String, queryTitle: String): Boolean {
+        val r = normKey(normalizeTitle(resultTitle)); val q = normKey(normalizeTitle(queryTitle))
+        return r.isNotEmpty() && q.isNotEmpty() && (r == q || r.contains(q) || q.contains(r))
     }
     private suspend fun tryGet(queryArtist: String, queryTitle: String, queryAlbum: String?, durationMs: Long, cacheArtist: String, cacheTitle: String): Lyrics? {
         return try {
@@ -127,6 +167,12 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
                 val json = obj.toString()
+                // 1.0.12: LRCLIB /search is fuzzy — verify the result is
+                // really this track (same title, same artist) before
+                // accepting it, or a same-name song by another artist
+                // (or a cover) gets served as "the" lyrics.
+                if (!matchesTitle(obj.optString("trackName"), queryTitle)) continue
+                if (!matchesArtist(obj.optString("artistName"), queryArtist)) continue
                 if (obj.optString("syncedLyrics").isNotBlank()) {
                     // Prefer the synced result whose duration is closest
                     // to the track — same-name covers/remixes are common.
@@ -139,6 +185,44 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
             bestSynced?.let { parseLrclib(it, cacheArtist, cacheTitle, null, durationMs) }
                 ?: fallback?.let { parseLrclib(it, cacheArtist, cacheTitle, null, durationMs) }
         } catch (e: Exception) { null }
+    }
+    /** Netease Cloud Music (music.163.com) — free, no key. Search for the
+     *  song, verify artist + title + duration, then fetch its synced LRC.
+     *  Needs a browser User-Agent + Referer or the API returns nothing. */
+    private suspend fun tryNetease(queryArtist: String, queryTitle: String, durationMs: Long, cacheArtist: String, cacheTitle: String): Lyrics? {
+        return try {
+            val searchUrl = "https://music.163.com/api/search/get?s=${enc("$queryArtist $queryTitle")}&type=1&offset=0&limit=5"
+            val searchBody = getNetease(searchUrl) ?: return null
+            val songs = JSONObject(searchBody).optJSONObject("result")?.optJSONArray("songs") ?: return null
+            var songId = -1L
+            for (i in 0 until songs.length()) {
+                val s = songs.getJSONObject(i)
+                if (!matchesTitle(s.optString("name"), queryTitle)) continue
+                val artists = s.optJSONArray("artists")
+                var artistOk = false
+                if (artists != null) for (j in 0 until artists.length()) {
+                    if (matchesArtist(artists.getJSONObject(j).optString("name"), queryArtist)) { artistOk = true; break }
+                }
+                if (!artistOk) continue
+                val durMs = s.optLong("duration")
+                if (durationMs > 0 && durMs > 0 && kotlin.math.abs(durMs - durationMs) > 8000L) continue
+                songId = s.optLong("id")
+                break
+            }
+            if (songId < 0) return null
+            val lyricBody = getNetease("https://music.163.com/api/song/lyric?id=$songId&lv=1&kv=1&tv=-1") ?: return null
+            val lrc = JSONObject(lyricBody).optJSONObject("lrc")?.optString("lyric")?.takeIf { it.isNotBlank() } ?: return null
+            val lines = parseLrc(lrc)
+            if (lines.isEmpty()) return null
+            withContext(Dispatchers.IO) { db.lyricsDao().put(LyricsEntity(cacheArtist, cacheTitle, null, durationMs, lrc, null, "netease")) }
+            Lyrics(0, lines, null, "netease")
+        } catch (e: Exception) { null }
+    }
+    private suspend fun getNetease(url: String): String? = withContext(Dispatchers.IO) {
+        client.newCall(Request.Builder().url(url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+            .header("Referer", "https://music.163.com/")
+            .build()).execute().use { r -> if (r.isSuccessful) r.body?.string() else null }
     }
     /** lyrics.ovh: free, no key. Plain lyrics only — no synced lines —
      *  so it is only the fallback when LRCLIB has nothing at all. */
@@ -194,6 +278,9 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
             if (tags.isEmpty()) continue
             val textPart = line.substringAfterLast(']').trim()
             if (textPart.isEmpty()) continue
+            // Netease LRC starts with credit lines ("作词 : Adele ...")
+            // tagged at 00:00 — they are not lyrics, drop them.
+            if (textPart.matches(Regex("""^(作词|作曲|编曲|制作人|演唱|词曲|Written by|Composed by)\s*[:：].*"""))) continue
             for (m in tags) {
                 val ms = m.groupValues[1].toLong() * 60000 + (m.groupValues[2].toDouble() * 1000).toLong() + offsetMs
                 out += LyricLine(ms, textPart)

@@ -24,5 +24,10 @@ class MioApp : Application() {
         container = AppContainer(this)
         MioLog.installCrashHandler(this)
         MioLog.event(this, "App start v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+        // 1.0.12: one-time lyrics-cache clear (engine v2) so wrong lyrics
+        // cached by older lookups are re-fetched with the current logic.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching { container.lyricsRepo.clearStaleCacheIfNeeded() }
+        }
     }
 }

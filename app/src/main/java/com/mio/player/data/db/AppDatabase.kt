@@ -26,6 +26,7 @@ data class PlaylistTrack(val playlistId: Long, val trackId: Long, val position: 
 @Dao interface LyricsDao {
     @Query("SELECT * FROM lyrics_cache WHERE artist=:a AND title=:t LIMIT 1") suspend fun get(a: String, t: String): LyricsEntity?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun put(e: LyricsEntity)
+    @Query("DELETE FROM lyrics_cache") suspend fun clearAll()
 }
 @Dao interface PlaylistDao {
     @Query("SELECT * FROM playlists") suspend fun all(): List<PlaylistEntity>

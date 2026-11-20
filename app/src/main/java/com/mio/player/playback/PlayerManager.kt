@@ -181,19 +181,21 @@ class PlayerManager(private val ctx: Context) {
             // A DSD track whose decode fails must not start the queue as
             // a broken item: try the next tracks instead.
             //
-            // 1.0.11: the NEXT track's decode is kicked off IN PARALLEL
-            // with the start track's, and its decoded WAV is put in the
-            // playlist before play(). ExoPlayer preloads the next item a
-            // few seconds after playback starts, and a raw .dsf there
-            // fails to parse (ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED)
-            // — the 1.0.10 log shows A1.Hello cut after 6s because A2's
-            // background decode had not finished when the preload fired,
-            // and the error recovery then jumped straight to A2. Later
-            // tracks have the whole song's duration for their background
-            // decode, so only the immediate next track needs this.
+            // 1.0.12: kick off the NEXT track's decode in parallel with
+            // the start track's, but do NOT wait for it before playing.
+            // 1.0.11 awaited it, which made startup SLOWER (two ffmpeg
+            // processes contend for CPU) — that is why DSD still felt
+            // delayed. Starting it early is enough: it finishes ~0-2s
+            // after playback starts and swapIn replaces the raw .dsf
+            // before ExoPlayer's preload (~6s in) ever sees it, closing
+            // the race that cut A1.Hello after 6s in the 1.0.10 log,
+            // without adding any startup delay. The later background
+            // loop joins the same in-flight decode job (dedupe in
+            // DsdDecoder) and swaps it in.
             val nextIdx = startIndex + 1
-            val nextDeferred = if (nextIdx < tracks.size && DsdSupport.isDsd(tracks[nextIdx].path))
-                async(Dispatchers.IO) { DsdDecoder.ensureDecoded(ctx, tracks[nextIdx]) } else null
+            if (nextIdx < tracks.size && DsdSupport.isDsd(tracks[nextIdx].path)) {
+                scope.launch(Dispatchers.IO) { DsdDecoder.ensureDecoded(ctx, tracks[nextIdx]) }
+            }
             var effectiveStart = startIndex
             var startUri: Uri? = null
             var attempts = 0
@@ -212,15 +214,7 @@ class PlayerManager(private val ctx: Context) {
             }
             if (generation != playGeneration) return@launch
             _index.value = effectiveStart
-            val start = startUri
-            // If the start track moved past the pre-decoded next track
-            // (start was undecodable), that decode IS the start track's.
-            val nextDecoded = if (nextIdx == effectiveStart) start else nextDeferred?.await()
-            val items = tracks.mapIndexed { i, t -> buildItem(t, when {
-                i == effectiveStart -> start
-                i == nextIdx && nextDecoded != null -> nextDecoded
-                else -> t.uri
-            }) }
+            val items = tracks.mapIndexed { i, t -> buildItem(t, if (i == effectiveStart) startUri else t.uri) }
             player.setMediaItems(items, effectiveStart, 0); player.prepare()
             ensureServiceStarted()
             player.play()
@@ -229,7 +223,7 @@ class PlayerManager(private val ctx: Context) {
             withContext(Dispatchers.IO) {
                 for (i in tracks.indices) {
                     if (generation != playGeneration) return@withContext
-                    if (i == effectiveStart || i == nextIdx || !DsdSupport.isDsd(tracks[i].path)) continue
+                    if (i == effectiveStart || !DsdSupport.isDsd(tracks[i].path)) continue
                     val decoded = DsdDecoder.ensureDecoded(ctx, tracks[i])
                     if (decoded != null) withContext(Dispatchers.Main) { swapIn(generation, tracks[i], i, decoded) }
                 }
