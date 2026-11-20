@@ -4,6 +4,9 @@ name: Build FFmpeg DSD native lib (arm64-v8a)
 # with DSD decoders enabled (Mio Player v1.1.0, native real-time DSD).
 #
 # Trigger manually: Actions tab -> this workflow -> Run workflow.
+# (The GitHub token available to this project's automation cannot
+# dispatch workflows — HTTP 403 on workflow_dispatch — so the workflow
+# also runs when its own file is pushed. Touch this file to rebuild.)
 # The .so is uploaded as an artifact; it is NOT committed by this workflow.
 # A later step commits it to:
 #   third_party/media3-ffmpeg-decoder-dsd/src/main/jniLibs/arm64-v8a/libffmpegJNI.so
@@ -41,6 +44,9 @@ name: Build FFmpeg DSD native lib (arm64-v8a)
 
 "on":
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-ffmpeg-dsd.yml'
 
 permissions:
   contents: read
