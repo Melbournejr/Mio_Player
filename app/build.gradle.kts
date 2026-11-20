@@ -6,8 +6,8 @@ android {
         applicationId = "com.mio.player"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 7
+        versionName = "1.0.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -61,6 +61,14 @@ dependencies {
     // in April 2025. The maintained fork below is the drop-in replacement
     // with the same com.arthenica.ffmpegkit API.
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3")
+    // REQUIRED by ffmpeg-kit-full: its POM declares NO dependencies, so
+    // the smart-exception library its Java API needs
+    // (com.arthenica.smartexception.java.Exceptions) is never packaged.
+    // DSD decode then crashed at runtime with NoClassDefFoundError
+    // (proven by the 1.0.5 crash log + dex inspection of the shipped APK:
+    // Exceptions is referenced but not defined in any classes*.dex).
+    // 0.2.1 is the latest on Maven Central and contains Exceptions.class.
+    implementation("com.arthenica:smart-exception-java:0.2.1")
     implementation("androidx.media:media:1.7.0")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
