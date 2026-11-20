@@ -110,6 +110,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
         composable(Routes.NOW_PLAYING) { NowPlayingScreen(playerVm, nav) }
         composable(Routes.LYRICS) { LyricsScreen(playerVm, nav) }
         composable(Routes.EQ) { EqualizerScreen(nav) }
+        composable(Routes.LOG) { LogScreen(nav) }
         composable(Routes.ALBUM) { AlbumDetailScreen(libVm, playerVm, nav) }
         composable(Routes.ARTIST) { ArtistScreen(libVm, playerVm, nav) }
     }

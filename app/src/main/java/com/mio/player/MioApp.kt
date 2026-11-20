@@ -3,6 +3,7 @@ import android.app.Application
 import android.content.Context
 import androidx.room.Room
 import com.mio.player.data.db.AppDatabase
+import com.mio.player.data.log.MioLog
 import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.data.repo.LyricsRepository
 import com.mio.player.data.repo.MusicScanner
@@ -18,5 +19,10 @@ class AppContainer(ctx: Context) {
 }
 class MioApp : Application() {
     lateinit var container: AppContainer
-    override fun onCreate() { super.onCreate(); container = AppContainer(this) }
+    override fun onCreate() {
+        super.onCreate()
+        container = AppContainer(this)
+        MioLog.installCrashHandler(this)
+        MioLog.event(this, "App start v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+    }
 }

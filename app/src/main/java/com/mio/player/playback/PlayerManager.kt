@@ -10,6 +10,7 @@ import com.mio.player.data.audio.AudioEffectsManager
 import com.mio.player.data.audio.WaveformTap
 import com.mio.player.data.audio.DsdDecoder
 import com.mio.player.data.audio.DsdSupport
+import com.mio.player.data.log.MioLog
 import com.mio.player.data.model.Track
 import com.mio.player.data.prefs.SettingsStore
 import kotlinx.coroutines.*
@@ -49,6 +50,9 @@ class PlayerManager(private val ctx: Context) {
     val currentTrack: Track? get() = queue.value.getOrNull(index.value)
     private var consecutiveErrors = 0
     private var playGeneration = 0
+    private var recoveringDsd = false
+    private val failedDsd = mutableSetOf<String>()
+    private val recoveredDsd = mutableSetOf<String>()
     private val settings by lazy { SettingsStore(ctx.applicationContext) }
     private val _shuffleEnabled = MutableStateFlow(false); val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF); val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
@@ -70,10 +74,44 @@ class PlayerManager(private val ctx: Context) {
                 if (state == Player.STATE_READY) consecutiveErrors = 0
             }
             override fun onPlayerError(error: PlaybackException) {
+                MioLog.event(ctx, "Player error: ${error.errorCodeName} ${error.message}")
+                val t = currentTrack
+                // The player reached a DSD track before its background
+                // decode finished (a raw .dsf/.dff is not playable).
+                // Decode it now instead of skipping it — the last-resort
+                // path for fast skips. Only once per track, so a broken
+                // file cannot loop forever.
+                if (!recoveringDsd && t != null && DsdSupport.isDsd(t.path)
+                    && !failedDsd.contains(t.path) && !recoveredDsd.contains(t.path)) {
+                    recoveringDsd = true
+                    scope.launch {
+                        val decoded = DsdDecoder.ensureDecoded(ctx, t)
+                        val idx = player.currentMediaItemIndex
+                        if (decoded != null && queue.value.getOrNull(idx)?.id == t.id) {
+                            withContext(Dispatchers.Main) {
+                                runCatching {
+                                    player.replaceMediaItem(idx, buildItem(t, decoded))
+                                    player.prepare(); player.play()
+                                }
+                            }
+                            recoveredDsd.add(t.path)
+                            MioLog.event(ctx, "Recovered DSD on error: ${t.title}")
+                        } else {
+                            if (decoded == null) failedDsd.add(t.path)
+                            skipAfterError()
+                        }
+                        recoveringDsd = false
+                    }
+                    return
+                }
+                skipAfterError()
+            }
+            private fun skipAfterError() {
                 consecutiveErrors++
                 // One bad file used to stop the whole queue. Skip to the
                 // next track instead (up to 3 bad files in a row, then stop).
                 if (consecutiveErrors <= 3 && _index.value + 1 < _queue.value.size) {
+                    MioLog.event(ctx, "Skipping to next track after error")
                     player.seekToNextMediaItem()
                     player.prepare()
                     player.play()
@@ -95,7 +133,8 @@ class PlayerManager(private val ctx: Context) {
     private fun ensureServiceStarted() {
         runCatching {
             ContextCompat.startForegroundService(ctx, Intent(ctx, PlayerService::class.java))
-        }
+            MioLog.event(ctx, "Foreground service started")
+        }.onFailure { MioLog.event(ctx, "Service start failed: ${it.message}") }
     }
     private fun buildItem(t: Track, uri: Uri): MediaItem = MediaItem.Builder().setUri(uri).setMediaId(t.id.toString())
         .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).build()).build()
@@ -114,12 +153,14 @@ class PlayerManager(private val ctx: Context) {
         if (i <= player.currentMediaItemIndex || i >= player.mediaItemCount) return
         if (player.getMediaItemAt(i).mediaId != t.id.toString()) return
         runCatching { player.replaceMediaItem(i, buildItem(t, decoded)) }
+        MioLog.event(ctx, "Swapped decoded DSD in: ${t.title}")
     }
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
         if (tracks.isEmpty()) return
         _queue.value = tracks; _index.value = startIndex
         _dsdError.value = null
         val generation = ++playGeneration
+        MioLog.event(ctx, "playQueue: ${tracks.size} tracks from #$startIndex, first='${tracks[startIndex].title}' dsd=${DsdSupport.isDsd(tracks[startIndex].path)}")
         scope.launch {
             // Decode ONLY the track that starts playing, then start
             // playback right away. The old code decoded the whole queue
@@ -130,17 +171,36 @@ class PlayerManager(private val ctx: Context) {
             // The service is therefore started only now, right before
             // play(), and the remaining DSD tracks decode in the
             // background and are swapped in as each one finishes.
-            val startUri = withContext(Dispatchers.IO) { resolveUri(tracks[startIndex]) }
+            // A DSD track whose decode fails must not start the queue as
+            // a broken item: try the next tracks instead.
+            var effectiveStart = startIndex
+            var startUri: Uri? = null
+            var attempts = 0
+            while (effectiveStart < tracks.size && attempts < 4) {
+                val t = tracks[effectiveStart]
+                val uri = withContext(Dispatchers.IO) { resolveUri(t) }
+                if (uri != t.uri || !DsdSupport.isDsd(t.path)) { startUri = uri; break }
+                _dsdError.value = "Could not decode DSD file: ${t.title}"
+                MioLog.event(ctx, "playQueue: start track undecodable, trying next: ${t.title}")
+                effectiveStart++; attempts++
+            }
+            if (startUri == null) {
+                _dsdError.value = "Could not decode DSD file: ${tracks[startIndex].title}"
+                MioLog.event(ctx, "playQueue aborted: no playable track from index $startIndex")
+                return@launch
+            }
             if (generation != playGeneration) return@launch
-            val items = tracks.mapIndexed { i, t -> buildItem(t, if (i == startIndex) startUri else t.uri) }
-            player.setMediaItems(items, startIndex, 0); player.prepare()
+            _index.value = effectiveStart
+            val items = tracks.mapIndexed { i, t -> buildItem(t, if (i == effectiveStart) startUri else t.uri) }
+            player.setMediaItems(items, effectiveStart, 0); player.prepare()
             ensureServiceStarted()
             player.play()
+            MioLog.event(ctx, "Playback started: '${tracks[effectiveStart].title}'")
             applyReplayGain()
             withContext(Dispatchers.IO) {
                 for (i in tracks.indices) {
                     if (generation != playGeneration) return@withContext
-                    if (i == startIndex || !DsdSupport.isDsd(tracks[i].path)) continue
+                    if (i == effectiveStart || !DsdSupport.isDsd(tracks[i].path)) continue
                     val decoded = DsdDecoder.ensureDecoded(ctx, tracks[i])
                     if (decoded != null) withContext(Dispatchers.Main) { swapIn(generation, tracks[i], i, decoded) }
                 }

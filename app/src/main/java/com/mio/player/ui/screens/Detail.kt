@@ -1,15 +1,26 @@
 
 package com.mio.player.ui.screens
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
+import com.mio.player.data.log.MioLog
 import com.mio.player.data.ota.OtaUpdateChecker
 import com.mio.player.ui.components.*
 import com.mio.player.ui.navigation.Routes
@@ -82,6 +93,42 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
         Spacer(Modifier.height(8.dp))
         GradientButton(if (update.checking) "Checking…" else "Check for updates") { update.check(true) }
         update.available?.let { info -> UpdateDialog(info) { update.available = null } }
+        Spacer(Modifier.height(16.dp))
+        SectionTitle("Nhật ký lỗi")
+        Text("Nếu app tự thoát đột ngột, mở đây xem log rồi chụp màn hình gửi lại — trong này ghi rõ app crash vì sao và đang làm gì lúc chết.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        GradientButton("Xem nhật ký lỗi") { nav.navigate(Routes.LOG) }
         Text("Settings: gapless, crossfade, ReplayGain, sleep timer and playback speed are in the Equalizer & Sound screen and Now Playing. No account, no cloud — everything is local.", color = MioTextSecondary, fontSize = 13.sp)
+    }
+}
+/** Crash + event log viewer. The log is the only way to stop guessing
+ *  why the app exits: a Java crash lands here with its stack trace,
+ *  and the event log shows the last thing the app was doing. */
+@Composable fun LogScreen(nav: NavHostController) {
+    val ctx = LocalContext.current
+    var text by remember { mutableStateOf("Đang tải…") }
+    LaunchedEffect(Unit) {
+        text = "=== CRASH LOG ===\n${MioLog.readCrash(ctx)}\n\n=== EVENT LOG ===\n${MioLog.readLog(ctx)}"
+    }
+    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, null, tint = MioText) }
+            Text("Nhật ký lỗi", color = MioText, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        }
+        Text("Nếu app tự thoát, chụp màn hình trang này gửi lại — trong này ghi rõ app crash vì sao và đang làm gì lúc chết.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        Box(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Text(text, color = MioText, fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(12.dp))
+        GradientButton("Chia sẻ log") {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Mio Player log")
+                putExtra(Intent.EXTRA_TEXT, text)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            ctx.startActivity(Intent.createChooser(intent, "Chia sẻ log"))
+        }
     }
 }
