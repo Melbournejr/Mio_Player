@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mio.player.data.model.Track
 import com.mio.player.ui.theme.*
-@Composable fun GradientButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+@Composable fun GradientButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Button(onClick = onClick, modifier = modifier.fillMaxWidth().height(52.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
         contentPadding = PaddingValues(0.dp), shape = RoundedCornerShape(999.dp)) {

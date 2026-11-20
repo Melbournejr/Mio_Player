@@ -55,7 +55,7 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
     private fun searchFirst(json: String): String? {
         val arr = JSONArray(json); return if (arr.length() > 0) arr.getJSONObject(0).toString() else null
     }
-    private fun get(url: String): String? = withContext(Dispatchers.IO) {
+    private suspend fun get(url: String): String? = withContext(Dispatchers.IO) {
         client.newCall(Request.Builder().url(url).header("User-Agent", "MioPlayer/1.0").build()).execute().use { r ->
             if (r.isSuccessful) r.body?.string() else null
         }

@@ -43,7 +43,7 @@ class MusicScanner(private val ctx: Context) {
                 out += TrackEntity(id = id, title = c.getString(tI) ?: path.substringAfterLast('/'),
                     artist = c.getString(aI) ?: "Unknown Artist", album = c.getString(alI) ?: "Unknown Album",
                     uri = ContentUris.withAppendedId(uri, id).toString(), path = path,
-                    durationMs = c.getLong(dI), format = formatFor(path),
+                    durationMs = c.getLong(dI), format = formatFor(path).name,
                     dsdRate = if (isDsd) "DSD64" else null, dateAdded = System.currentTimeMillis())
             }
         }
@@ -60,7 +60,7 @@ class MusicScanner(private val ctx: Context) {
                     out += TrackEntity(id = (f.uri.toString().hashCode().toLong() and 0xffffffffL) or (1L shl 40),
                         title = name.substringBeforeLast('.'), artist = "Unknown Artist", album = "Unknown Album",
                         uri = f.uri.toString(), path = name, durationMs = 0,
-                        format = formatFor(name), dsdRate = if (DsdSupport.isDsd(name)) "DSD64" else null)
+                        format = formatFor(name).name, dsdRate = if (DsdSupport.isDsd(name)) "DSD64" else null)
                 }
             }
         }

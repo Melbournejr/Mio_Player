@@ -20,10 +20,10 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MioPlayerTheme { MioApp() } }
+        setContent { MioPlayerTheme { MioPlayerApp() } }
     }
 }
-@Composable fun MioApp() {
+@Composable fun MioPlayerApp() {
     val nav = rememberNavController()
     val libVm: LibraryViewModel = viewModel()
     val playerVm: PlayerViewModel = viewModel()

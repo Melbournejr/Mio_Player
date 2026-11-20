@@ -7,7 +7,6 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.mio.player.BuildConfig
-import com.mio.player.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
