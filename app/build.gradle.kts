@@ -34,9 +34,16 @@ dependencies {
     implementation("androidx.media3:media3-session:$media3")
     implementation("androidx.media3:media3-common:$media3")
     implementation("androidx.media3:media3-ui:$media3")
-    // DSD: FFmpeg audio decoder extension (see data/audio/DsdSupport.kt).
-    // Prebuilt AAR with native libs; no NDK build step is needed.
-    implementation("androidx.media3:media3-decoder-ffmpeg:$media3")
+    // DSD: FFmpeg decode to WAV cache (see data/audio/DsdSupport.kt).
+    // Verified 2026-11-20 on Maven Central (HTTP 200):
+    // dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3 exists.
+    // Do NOT use androidx.media3:media3-decoder-ffmpeg — Google does NOT
+    // publish it to Google Maven or Maven Central (404 for every version,
+    // including 1.4.1 — that was run #2's failure). Do NOT use
+    // com.arthenica:ffmpeg-kit-* either — removed from Maven Central
+    // in April 2025. The maintained fork below is the drop-in replacement
+    // with the same com.arthenica.ffmpegkit API.
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3")
     implementation("androidx.media:media:1.7.0")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")

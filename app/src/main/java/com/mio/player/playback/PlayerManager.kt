@@ -3,18 +3,16 @@ import android.content.Context
 import android.media.AudioManager
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer
-import androidx.media3.exoplayer.Renderer
-import androidx.media3.exoplayer.mediacodec.MediaCodecAudioRenderer
 import com.mio.player.data.audio.AudioEffectsManager
+import com.mio.player.data.audio.DsdDecoder
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.Track
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 /** Gapless, high-res playback.
- *  - RenderersFactory inserts the FFmpeg audio renderer FIRST so DSD (.dsf/.dff)
- *    and other FFmpeg-only formats decode to PCM instead of failing.
+ *  - No custom FFmpeg renderer: androidx.media3:media3-decoder-ffmpeg is
+ *    NOT published to Maven (see DsdSupport.kt), so DSD is decoded to a
+ *    cached PCM WAV by DsdDecoder (FFmpegKit) before playback instead.
  *  - Gapless: ExoPlayer handles gapless for same-format consecutive tracks.
  *  - High-res: AudioTrack is configured via ExoPlayer defaults; the device
  *    sample rate is read from AudioManager and exposed for the Now Playing
@@ -26,16 +24,8 @@ import kotlinx.coroutines.flow.*
  */
 class PlayerManager(private val ctx: Context) {
     val fx = AudioEffectsManager()
-    private val renderersFactory = object : DefaultRenderersFactory(ctx) {
-        override fun buildAudioRenderers(context: Context, extensionRendererMode: Int, eventHandler: android.os.Handler,
-            eventListener: androidx.media3.exoplayer.audio.AudioRendererEventListener,
-            audioSink: AudioSink, out: ArrayList<Renderer>) {
-            out.add(FfmpegAudioRenderer(eventHandler, eventListener, audioSink))
-            super.buildAudioRenderers(context, extensionRendererMode, eventHandler, eventListener, audioSink, out)
-        }
-    }
-    val player: ExoPlayer = ExoPlayer.Builder(ctx, renderersFactory).build().apply {
-        // Gapless is on by default in ExoPlayer when tracks share a format.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    val player: ExoPlayer = ExoPlayer.Builder(ctx).build().apply {
         setAudioAttributes(androidx.media3.common.AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
     }
@@ -43,6 +33,8 @@ class PlayerManager(private val ctx: Context) {
     val queue: StateFlow<List<Track>> = _queue.asStateFlow()
     private val _index = MutableStateFlow(0); val index: StateFlow<Int> = _index.asStateFlow()
     private val _isPlaying = MutableStateFlow(false); val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+    private val _isConvertingDsd = MutableStateFlow(false); val isConvertingDsd: StateFlow<Boolean> = _isConvertingDsd.asStateFlow()
+    private val _dsdError = MutableStateFlow<String?>(null); val dsdError: StateFlow<String?> = _dsdError.asStateFlow()
     var replayGainMode: String = "track" // off/track/album
     var crossfadeMs: Long = 0
     val deviceSampleRateHz: Int get() =
@@ -59,13 +51,25 @@ class PlayerManager(private val ctx: Context) {
     }
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
         _queue.value = tracks; _index.value = startIndex
-        val items = tracks.map { t ->
-            MediaItem.Builder().setUri(t.uri).setMediaId(t.id.toString())
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).build())
-                .build()
+        _dsdError.value = null
+        scope.launch {
+            val items = tracks.map { t ->
+                val uri = if (DsdSupport.isDsd(t.path)) {
+                    _isConvertingDsd.value = true
+                    val decoded = DsdDecoder.ensureDecoded(ctx, t)
+                    _isConvertingDsd.value = false
+                    if (decoded == null) {
+                        _dsdError.value = "Could not decode DSD file: ${t.title}"
+                        t.uri
+                    } else decoded
+                } else t.uri
+                MediaItem.Builder().setUri(uri).setMediaId(t.id.toString())
+                    .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).build())
+                    .build()
+            }
+            player.setMediaItems(items, startIndex, 0); player.prepare(); player.play()
+            applyReplayGain()
         }
-        player.setMediaItems(items, startIndex, 0); player.prepare(); player.play()
-        applyReplayGain()
     }
     fun play() = player.play()
     fun pause() = player.pause()
@@ -97,5 +101,5 @@ class PlayerManager(private val ctx: Context) {
     }
     fun attachEffects() { fx.attach(player.audioSessionId) }
     fun isDsdCurrent(): Boolean = currentTrack?.let { DsdSupport.isDsd(it.path) } ?: false
-    fun release() { fx.release(); player.release() }
+    fun release() { scope.cancel(); fx.release(); player.release() }
 }

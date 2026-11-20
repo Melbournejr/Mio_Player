@@ -15,12 +15,12 @@ A local, high-fidelity music player for your own library. No streaming service, 
 ## DSD — read this first
 Android has **no native DSD passthrough on most phones**. Mio Player does **not** claim native DSD output.
 
-What it does (see `data/audio/DsdSupport.kt`):
+What it does (see `data/audio/DsdSupport.kt` + `data/audio/DsdDecoder.kt`):
 1. Detects `.dsf` / `.dff` (DSD64 2.8224 MHz, DSD128 5.6448 MHz, DSD256 11.2896 MHz).
-2. Decodes DSD → high-res PCM with the official **Media3 FFmpeg audio decoder extension** (`media3-decoder-ffmpeg:1.4.1`, prebuilt AAR, no NDK build): DSD64 → PCM 176.4 kHz, DSD128 → 352.8 kHz, DSD256 → 705.6 kHz.
-3. Plays that PCM at the highest rate the device supports. If the device caps at 48/96 kHz, ExoPlayer resamples — Now Playing shows the source honestly, e.g. `DSD64 → PCM 176.4kHz (device 96kHz)`.
+2. Decodes DSD → PCM 176.4 kHz 16-bit WAV **once, cached**, with FFmpeg via the maintained fork `dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3` (verified HTTP 200 on Maven Central, 2026-11-20). First play of a DSD file takes a few seconds to convert; later plays use the cache instantly.
+3. Plays that WAV at the highest rate the device supports. If the device caps at 48/96 kHz, ExoPlayer resamples — Now Playing shows the source honestly, e.g. `DSD64 → PCM 176.4kHz (device 96kHz)`.
 
-Why this FFmpeg choice and not ffmpeg-kit: `ffmpeg-kit-full` (arthenica) is unmaintained, very large, and breaks repeatedly on AGP 8.x / SDK 34. The Media3 extension tracks the Media3 version and is a prebuilt AAR. Do not add ffmpeg-kit alongside it — two FFmpeg copies conflict at link time.
+Why this FFmpeg choice: `androidx.media3:media3-decoder-ffmpeg` is **not published** by Google to Google Maven or Maven Central (404 for every version, including 1.4.1) — depending on it broke CI run #2 with `ModuleVersionNotFoundException`. `com.arthenica:ffmpeg-kit-*` was removed from Maven Central in April 2025. The maintained fork above is the drop-in replacement with the same `com.arthenica.ffmpegkit` API. Do NOT re-add either dead dependency. (Alternative that also exists: Jellyfin's `org.jellyfin.media3:media3-ffmpeg-decoder`, but only for Media3 1.2/1.3/1.5/1.6/1.8/1.9 — not 1.4.1 — and it needs a custom renderer.)
 
 ## Push to GitHub
 ```bash
@@ -62,11 +62,11 @@ Never commit the `.keystore` or its passwords.
 Edit `ui/theme/Theme.kt` (`MioBg`, `MioSurface`, `MioTeal`, `MioCyan`, …) and `res/values/colors.xml`. All screens read those tokens; do not hard-code colors in screens.
 
 ## Tech stack
-Kotlin 1.9.24 · Jetpack Compose + Material 3 · Navigation Compose · Media3 ExoPlayer 1.4.1 (+ FFmpeg decoder) · MediaSession · Room 2.6.1 · DataStore · Coil · Retrofit/OkHttp (LRCLIB) · Manual DI (no Hilt, deliberately) · minSdk 26, targetSdk 34, JDK 17, AGP 8.5.2, Gradle 8.7.
+Kotlin 1.9.24 · Jetpack Compose + Material 3 · Navigation Compose · Media3 ExoPlayer 1.4.1 + ffmpeg-kit-maintained 6.0.3 (DSD decode-to-WAV cache) · MediaSession · Room 2.6.1 · DataStore · Coil · Retrofit/OkHttp (LRCLIB) · Manual DI (no Hilt, deliberately) · minSdk 26, targetSdk 34, JDK 17, AGP 8.5.2, Gradle 8.7.
 
 ## Build / verification status (honest)
 - **Verified in this workspace:** full file tree present; all XML well-formed; Kotlin/Gradle brace balance checked; GitHub Actions YAML parses; launcher icons generated from the final logo (`mipmap-*`, adaptive icon).
-- **NOT built here:** this VM has **no Java and no Android SDK**, so `./gradlew assembleDebug` could **not** be run locally and **no APK was produced**. The first real build must be the GitHub Actions run (or Android Studio on your machine). If that run fails, the log will name the exact file — the most likely risks are: (a) a Media3 FFmpeg renderer API mismatch in `PlayerManager.kt`, (b) a Compose import missing in a screen, (c) Room/KSP version drift. Fix the named file, push again, and Actions rebuilds.
+- **NOT built here:** this VM has **no Java and no Android SDK**, so `./gradlew assembleDebug` could **not** be run locally and **no APK was produced**. The first real build must be the GitHub Actions run (or Android Studio on your machine). If that run fails, the log will name the exact file — the most likely risks are: (a) a Compose import missing in a screen, (b) Room/KSP version drift, (c) a dependency that no longer resolves on Maven Central — always verify a new dependency's POM returns HTTP 200 before adding it. Fix the named file, push again, and Actions rebuilds.
 - Known simplifications: crossfade is a volume-ramp best-effort (ExoPlayer has no built-in crossfade); EQ presets are applied live but Custom preset persistence is via DataStore keys in `SettingsStore` (wire the save button in the EQ screen to `KEY_EQ_BANDS` if you add one); album art is a placeholder icon — wire Coil + `MediaStore.Audio.Albums` art URI in `TrackRow` for real covers; sleep-timer UI is in `PlayerManager.setSleepTimer()` — add a picker dialog on Now Playing to expose it.
 
 ## Project layout

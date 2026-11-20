@@ -6,32 +6,34 @@ package com.mio.player.data.audio
  * ExoPlayer / Android AudioTrack cannot output a raw 1-bit DSD stream to a
  * generic phone DAC, and claiming "native DSD output" would be false.
  *
- * What Mio Player DOES do (this file + PlayerManager):
- *  1. Detect .dsf / .dff by extension and by FFmpeg probe (DSD64 = 2.8224 MHz,
- *     DSD128 = 5.6448 MHz, DSD256 = 11.2896 MHz, 1-bit).
- *  2. Decode DSD -> high-res PCM with the official Media3 FFmpeg audio
- *     decoder extension (androidx.media3:media3-decoder-ffmpeg). FFmpeg's
- *     DSD decoder converts the 1-bit stream to PCM at DSD-rate / 16:
- *       DSD64  -> PCM 176.4 kHz, DSD128 -> PCM 352.8 kHz, DSD256 -> 705.6 kHz
- *     (capped in practice by AudioTrack / device max sample rate — see below).
- *  3. Play that PCM through ExoPlayer / AudioTrack at the highest sample
- *     rate the device reports (AudioManager.getProperty(PROPERTY_OUTPUT_SAMPLE_RATE)
- *     and AudioTrack.getNativeOutputSampleRate). If the device caps at 48/96 kHz,
+ * What Mio Player DOES do (this file + DsdDecoder + PlayerManager):
+ *  1. Detect .dsf / .dff by extension (DSD64 = 2.8224 MHz, DSD128 = 5.6448 MHz,
+ *     DSD256 = 11.2896 MHz, 1-bit).
+ *  2. Decode DSD -> high-res PCM WAV once, cached, with FFmpeg via the
+ *     maintained FFmpegKit fork (dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3):
+ *       ffmpeg -y -i <input.dsf> -vn -ar 176400 -ac 2 -sample_fmt s16 <cache.wav>
+ *     DSD64 / DSD128 / DSD256 all decode to PCM 176.4 kHz 16-bit stereo WAV.
+ *     First play of a DSD file takes a few seconds to convert; later plays
+ *     use the cache instantly.
+ *  3. Play that WAV through plain ExoPlayer / AudioTrack at the highest
+ *     sample rate the device reports. If the device caps at 48/96 kHz,
  *     ExoPlayer resamples — the UI still shows the SOURCE format honestly
  *     (e.g. "DSD64 -> PCM 176.4 kHz (device 96 kHz)").
- *  4. If the FFmpeg renderer cannot handle a file, PlayerManager falls back
- *     to ExoPlayer's default decoders and shows an error instead of silence.
  *
- * WHY FFmpeg extension and NOT ffmpeg-kit?
- *  - media3-decoder-ffmpeg is the official Media3 extension, a prebuilt AAR
- *    with native libs, no NDK build step, and it tracks the Media3 version
- *    (1.4.1 here). ffmpeg-kit-full (arthenica) is unmaintained, pulls a
- *    very large native payload, and repeatedly breaks on AGP 8.x / SDK 34.
- *    A future optimisation is an offline DSD->WAV cache using the same
- *    FFmpeg decoder; it is NOT implemented yet because on-the-fly decode
- *    already preserves the full PCM rate and avoids multi-GB caches.
- *  - Do NOT add ffmpeg-kit alongside this extension: two FFmpeg copies
- *    conflict at link time.
+ * WHY FFmpegKit-maintained and NOT the Media3 FFmpeg extension?
+ *  - androidx.media3:media3-decoder-ffmpeg is NOT published by Google to
+ *    Google Maven or Maven Central at all (404 for every version, including
+ *    1.4.1). Depending on it broke the CI build in run #2 with
+ *    ModuleVersionNotFoundException. The Jellyfin fork
+ *    (org.jellyfin.media3:media3-ffmpeg-decoder) does publish it, but only
+ *    for Media3 1.2/1.3/1.5/1.6/1.8/1.9 — not 1.4.1 — and it also needs a
+ *    custom FfmpegAudioRenderer wired into PlayerManager.
+ *  - com.arthenica:ffmpeg-kit-* was removed from Maven Central in April 2025
+ *    and no longer resolves. The maintained fork
+ *    dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3 (verified HTTP 200 on
+ *    Maven Central, 2026-11-20) is a drop-in replacement with the same
+ *    com.arthenica.ffmpegkit API.
+ *  - Do NOT re-add media3-decoder-ffmpeg or com.arthenica:ffmpeg-kit-*.
  */
 object DsdSupport {
     fun isDsd(path: String): Boolean { val p = path.lowercase(); return p.endsWith(".dsf") || p.endsWith(".dff") }
@@ -43,8 +45,12 @@ object DsdSupport {
     fun pcmSampleRateFor(dsdRate: String): Int = when (dsdRate) {
         "DSD128" -> 352_800; "DSD256" -> 705_600; else -> 176_400
     }
+    /** Actual PCM rate of the cached WAV produced by DsdDecoder. */
+    const val CACHED_PCM_SAMPLE_RATE_HZ = 176_400
     fun formatLabel(path: String, dsdSampleRateHz: Int = 2_822_400): String {
         val rate = dsdRateFromSampleRateHz(dsdSampleRateHz)
-        return "$rate -> PCM ${pcmSampleRateFor(rate)/1000.0}kHz"
+        return "$rate -> PCM 176.4kHz"
     }
+    fun ffmpegCommand(inputPath: String, outputPath: String): String =
+        "-y -i \"$inputPath\" -vn -ar $CACHED_PCM_SAMPLE_RATE_HZ -ac 2 -sample_fmt s16 \"$outputPath\""
 }
