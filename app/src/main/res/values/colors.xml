@@ -1,0 +1,10 @@
+<resources>
+    <color name="mio_bg">#0B1216</color>
+    <color name="mio_surface">#121A20</color>
+    <color name="mio_surface_raised">#1A252D</color>
+    <color name="mio_teal">#14B8A6</color>
+    <color name="mio_cyan">#22D3EE</color>
+    <color name="mio_text">#FFFFFF</color>
+    <color name="mio_text_secondary">#94A3B8</color>
+    <color name="mio_divider">#24313A</color>
+</resources>
