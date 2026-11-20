@@ -81,7 +81,7 @@ class PlayerManager(private val ctx: Context) {
                     // DsdExtractor first: it sniffs DSF/DFF and nothing else,
                     // so every other format falls through to the defaults.
                     arrayOf<Extractor>(
-                        DsdExtractor.Factory().createExtractor(),
+                        DsdExtractor(),
                         *DefaultExtractorsFactory().createExtractors()
                     )
                 }

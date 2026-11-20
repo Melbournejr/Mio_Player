@@ -10,6 +10,7 @@ import androidx.media3.extractor.ExtractorInput
 import androidx.media3.extractor.ExtractorOutput
 import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
+import androidx.media3.extractor.SeekPoint
 import androidx.media3.extractor.TrackOutput
 import java.io.EOFException
 import java.io.IOException
@@ -59,10 +60,10 @@ class DsdExtractor : Extractor {
         private const val DFF_PACKET_BLOCKS = 1024
     }
 
-    /** Factory so PlayerManager can prepend this extractor before DefaultExtractorsFactory. */
-    class Factory : Extractor.Factory {
-        override fun createExtractor(): Extractor = DsdExtractor()
-    }
+    /** Factory so PlayerManager can prepend this extractor before DefaultExtractorsFactory.
+     *  NOTE: Media3 has no nested Extractor.Factory (that type does not exist
+     *  in 1.9.0 — the factory type is the plural ExtractorsFactory SAM);
+     *  PlayerManager instantiates DsdExtractor() directly. */
 
     private var output: ExtractorOutput? = null
     private var trackOutput: TrackOutput? = null
@@ -224,7 +225,8 @@ class DsdExtractor : Extractor {
             throw ParserException.createForMalformedContainer("DSF data chunk size invalid: $dataChunkSize", null)
         }
         val inputLength = input.length
-        if (inputLength != C.LENGTH_UNSET) {
+        // C.LENGTH_UNSET is an Int in Media3 1.9.0; input.length is Long.
+        if (inputLength != C.LENGTH_UNSET.toLong()) {
             dataSize = minOf(dataSize, (inputLength - dataStart).coerceAtLeast(0))
         }
         val blockSize = if (blockSizePerChannel in 1..65536) blockSizePerChannel
@@ -303,7 +305,7 @@ class DsdExtractor : Extractor {
                 "DFF sampleRate=$sampleRate channels=$channelCount", null)
         }
         val inputLength = input.length
-        if (inputLength != C.LENGTH_UNSET) {
+        if (inputLength != C.LENGTH_UNSET.toLong()) {
             // DSDIFF chunk sizes exclude the header; clamp anyway so a
             // writer that includes it cannot overrun the file.
             dataSize = minOf(dataSize, (inputLength - dataStart).coerceAtLeast(0))
@@ -400,7 +402,7 @@ class DsdExtractor : Extractor {
             val byteOffset = (clampedTimeUs * bytesPerSecond / 1_000_000L).coerceIn(0, dataSize)
             val alignedBytes = byteOffset / blockAlign * blockAlign
             val alignedTimeUs = alignedBytes * 8L / channelCount * 1_000_000L / sampleRateHz
-            return SeekMap.SeekPoints(SeekMap.SeekPoint(alignedTimeUs, dataStart + alignedBytes))
+            return SeekMap.SeekPoints(SeekPoint(alignedTimeUs, dataStart + alignedBytes))
         }
     }
 }
