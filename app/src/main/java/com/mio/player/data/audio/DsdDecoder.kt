@@ -6,7 +6,11 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.mio.player.data.log.MioLog
 import com.mio.player.data.model.Track
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
@@ -14,38 +18,38 @@ import java.security.MessageDigest
 /**
  * Decodes a DSD track (.dsf/.dff) to a cached PCM WAV once, using FFmpegKit.
  * See DsdSupport.kt for why this route was chosen.
+ *
+ * Fixes in 1.0.9 (the "DSD still doesn't play" round):
+ * - In-flight dedupe: re-tapping a DSD track used to abandon the running
+ *   decode (PlayerManager bumped playGeneration and discarded it), so a
+ *   track could never finish converting if the user tapped twice. One
+ *   decode job per track is now shared across playQueue calls.
+ * - Cache validation: a corrupt/truncated cached WAV was served forever.
+ *   The RIFF check now runs on cache hits too, and a bad cache is deleted
+ *   and re-decoded.
+ * - Cache key includes file size + last-modified, so a replaced .dsf at
+ *   the same path no longer serves a stale WAV.
+ * - The copied DSD input (dsd-input/) is deleted after decode, and the
+ *   WAV cache is pruned to ~1 GB, so storage can no longer fill up
+ *   silently and make every later decode fail with ENOSPC.
+ * - renameTo's result is now checked (it was ignored, and a failed
+ *   rename was reported as success pointing at a stale file).
  */
 object DsdDecoder {
+    private val decodeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inflight = mutableMapOf<String, Deferred<Uri?>>()
+
+    private fun cacheKey(track: Track): String {
+        val f = File(track.path)
+        val extra = if (f.exists()) "|${f.length()}|${f.lastModified()}" else ""
+        return MessageDigest.getInstance("MD5")
+            .digest("${track.path}|${track.id}$extra".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+    }
+
     private fun cacheFile(context: Context, track: Track): File {
         val dir = File(context.cacheDir, "dsd-cache").apply { mkdirs() }
-        val key = MessageDigest.getInstance("MD5")
-            .digest("${track.path}|${track.id}".toByteArray())
-            .joinToString("") { "%02x".format(it) }
-        return File(dir, "$key.wav")
-    }
-
-    fun cachedUriIfExists(context: Context, track: Track): Uri? {
-        val f = cacheFile(context, track)
-        return if (f.exists() && f.length() > 1024) Uri.fromFile(f) else null
-    }
-
-    /** Resolve the DSD file to a real readable file. MediaStore tracks
-     *  usually have a filesystem path, but SAF-folder tracks store only a
-     *  RELATIVE path (e.g. "Artist/Album/song.dsf") — File(path) never
-     *  exists for those, so every DSD decode silently failed and the
-     *  player got the raw .dsf it cannot play. Fall back to copying the
-     *  bytes through ContentResolver using the track's content URI. */
-    private fun resolveInputFile(context: Context, track: Track): File? {
-        val direct = File(track.path)
-        if (direct.exists() && direct.canRead()) return direct
-        return runCatching {
-            val ext = track.path.substringAfterLast('.', "").takeIf { it.length in 1..4 } ?: "dsf"
-            val tmp = File(context.cacheDir, "dsd-input/${track.id}.$ext").apply { parentFile?.mkdirs() }
-            context.contentResolver.openInputStream(track.uri)?.use { input ->
-                tmp.outputStream().use { out -> input.copyTo(out) }
-            } ?: return null
-            if (tmp.exists() && tmp.length() > 1024) tmp else null
-        }.getOrNull()
+        return File(dir, "${cacheKey(track)}.wav")
     }
 
     private fun isValidWav(f: File): Boolean = runCatching {
@@ -54,10 +58,70 @@ object DsdDecoder {
         head[0] == 'R'.code.toByte() && head[1] == 'I'.code.toByte() && head[2] == 'F'.code.toByte() && head[3] == 'F'.code.toByte()
     }.getOrDefault(false)
 
+    fun cachedUriIfExists(context: Context, track: Track): Uri? {
+        val f = cacheFile(context, track)
+        if (!f.exists() || f.length() <= 1024) return null
+        if (!isValidWav(f)) {
+            MioLog.event(context, "DSD cache invalid, deleting and re-decoding: ${track.title}")
+            f.delete()
+            return null
+        }
+        return Uri.fromFile(f)
+    }
+
+    /** Keep the WAV cache under ~1 GB: delete oldest files first. */
+    private fun pruneCache(context: Context) {
+        runCatching {
+            val dir = File(context.cacheDir, "dsd-cache")
+            val files = dir.listFiles()?.sortedBy { it.lastModified() } ?: return
+            var total = files.sumOf { it.length() }
+            val cap = 1L shl 30
+            for (f in files) {
+                if (total <= cap) break
+                total -= f.length()
+                f.delete()
+            }
+        }
+    }
+
+    /** Resolve the DSD file to a real readable file. MediaStore tracks
+     *  usually have a filesystem path, but SAF-folder tracks store only a
+     *  RELATIVE path (e.g. "Artist/Album/song.dsf") — File(path) never
+     *  exists for those, so every DSD decode silently failed and the
+     *  player got the raw .dsf it cannot play. Fall back to copying the
+     *  bytes through ContentResolver using the track's content URI.
+     *  Returns the file plus true when it is a disposable copy. */
+    private fun resolveInputFile(context: Context, track: Track): Pair<File, Boolean>? {
+        val direct = File(track.path)
+        if (direct.exists() && direct.canRead()) return direct to false
+        return runCatching {
+            val ext = track.path.substringAfterLast('.', "").takeIf { it.length in 1..4 } ?: "dsf"
+            val tmp = File(context.cacheDir, "dsd-input/${track.id}.$ext").apply { parentFile?.mkdirs() }
+            context.contentResolver.openInputStream(track.uri)?.use { input ->
+                tmp.outputStream().use { out -> input.copyTo(out) }
+            } ?: return null
+            if (tmp.exists() && tmp.length() > 1024) tmp to true else null
+        }.getOrNull()
+    }
+
     /** Returns the URI to play: cached WAV if present, else converts then returns it, else null. */
-    suspend fun ensureDecoded(context: Context, track: Track): Uri? = withContext(Dispatchers.IO) {
+    suspend fun ensureDecoded(context: Context, track: Track): Uri? {
+        cachedUriIfExists(context, track)?.let { return it }
+        val key = cacheKey(track)
+        val job: Deferred<Uri?> = synchronized(inflight) {
+            inflight[key] ?: decodeScope.async { doDecode(context, track) }.also { inflight[key] = it }
+        }
+        return try {
+            job.await()
+        } finally {
+            synchronized(inflight) { if (inflight[key] === job) inflight.remove(key) }
+        }
+    }
+
+    private suspend fun doDecode(context: Context, track: Track): Uri? = withContext(Dispatchers.IO) {
         cachedUriIfExists(context, track)?.let { return@withContext it }
-        val input = resolveInputFile(context, track) ?: run {
+        pruneCache(context)
+        val (input, isCopy) = resolveInputFile(context, track) ?: run {
             MioLog.event(context, "DSD decode FAIL '${track.title}': cannot read input (path='${track.path}')")
             return@withContext null
         }
@@ -69,20 +133,39 @@ object DsdDecoder {
         // never mistaken for a finished cache entry (cache is "<hash>.wav").
         val tmp = File(output.parentFile, output.nameWithoutExtension + ".tmp.wav")
         val t0 = System.currentTimeMillis()
-        runCatching {
-            val session = FFmpegKit.execute(DsdSupport.ffmpegCommand(input.absolutePath, tmp.absolutePath))
-            if (ReturnCode.isSuccess(session.returnCode) && tmp.exists() && tmp.length() > 1024 && isValidWav(tmp)) {
-                tmp.renameTo(output)
-                MioLog.event(context, "DSD decoded '${track.title}' in ${System.currentTimeMillis() - t0}ms -> ${output.length() / 1024}KB WAV")
-                Uri.fromFile(output)
-            } else {
-                MioLog.event(context, "DSD decode FAIL '${track.title}': rc=${session.returnCode} tail=${session.output?.takeLast(500)}")
-                tmp.delete()
+        try {
+            runCatching {
+                val session = FFmpegKit.execute(DsdSupport.ffmpegCommand(input.absolutePath, tmp.absolutePath))
+                if (ReturnCode.isSuccess(session.returnCode) && tmp.exists() && tmp.length() > 1024 && isValidWav(tmp)) {
+                    if (!tmp.renameTo(output)) {
+                        output.delete()
+                        if (!tmp.renameTo(output)) {
+                            tmp.copyTo(output, overwrite = true)
+                            tmp.delete()
+                        }
+                    }
+                    if (output.exists() && isValidWav(output)) {
+                        MioLog.event(context, "DSD decoded '${track.title}' in ${System.currentTimeMillis() - t0}ms -> ${output.length() / 1024}KB WAV")
+                        Uri.fromFile(output)
+                    } else {
+                        MioLog.event(context, "DSD decode FAIL '${track.title}': output WAV invalid after rename")
+                        null
+                    }
+                } else {
+                    MioLog.event(context, "DSD decode FAIL '${track.title}': rc=${session.returnCode} tail=${session.output?.takeLast(500)}")
+                    tmp.delete()
+                    null
+                }
+            }.getOrElse {
+                MioLog.event(context, "DSD decode EXCEPTION '${track.title}': ${it::class.java.simpleName} ${it.message}")
                 null
             }
-        }.getOrElse {
-            MioLog.event(context, "DSD decode EXCEPTION '${track.title}': ${it::class.java.simpleName} ${it.message}")
-            null
+        } finally {
+            // The copied input was only needed for ffmpeg; keeping it
+            // doubled the storage cost of every DSD track (and could fill
+            // the disk). Delete it whether the decode worked or not.
+            if (isCopy) input.delete()
+            tmp.delete()
         }
     }
 }

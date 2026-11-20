@@ -157,6 +157,13 @@ class PlayerManager(private val ctx: Context) {
     }
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
         if (tracks.isEmpty()) return
+        // 1.0.9: start the foreground service BEFORE the first DSD decode,
+        // so the process stays alive during a long conversion, and clear
+        // the per-track failure sets — a transient failure (low storage,
+        // interrupted decode) must not blacklist a track forever.
+        ensureServiceStarted()
+        failedDsd.clear()
+        recoveredDsd.clear()
         _queue.value = tracks; _index.value = startIndex
         _dsdError.value = null
         val generation = ++playGeneration

@@ -117,6 +117,10 @@ suspend fun restoreSoundSettings(ctx: Context) {
         composable(Routes.LOG) { LogScreen(nav) }
         composable(Routes.ALBUM) { AlbumDetailScreen(libVm, playerVm, nav) }
         composable(Routes.ARTIST) { ArtistScreen(libVm, playerVm, nav) }
+        composable(Routes.ARTIST_DETAIL) { backStackEntry ->
+            val name = backStackEntry.arguments?.getString("name") ?: ""
+            ArtistDetailScreen(name, libVm, playerVm, nav)
+        }
     }
 }
 @Composable fun MainScaffold(nav: NavHostController, current: String, libVm: LibraryViewModel, playerVm: PlayerViewModel, content: @Composable () -> Unit) {
@@ -124,7 +128,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
     Scaffold(
         bottomBar = {
             Column {
-                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }) }
+                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId) }
                 NavigationBar(containerColor = com.mio.player.ui.theme.MioSurface) {
                     listOf(Triple(Routes.HOME, "Home", Icons.Default.Home), Triple(Routes.SEARCH, "Search", Icons.Default.Search),
                         Triple(Routes.LIBRARY, "Library", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Profile", Icons.Default.Person)).forEach { (r, label, icon) ->

@@ -22,6 +22,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         load()
     }
+    fun addFolder(uriString: String) = viewModelScope.launch {
+        val cur = c.settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_FOLDERS, emptySet<String>()).first()
+        c.settings.set(com.mio.player.data.prefs.SettingsStore.KEY_FOLDERS, cur + uriString)
+        scan()
+    }
     fun search(q: String) { _query.value = q; viewModelScope.launch { _tracks.value = c.db.trackDao().search(q).map { it.toTrack() } } }
     fun toggleFavorite(t: Track) = viewModelScope.launch { c.db.trackDao().setFavorite(t.id, !t.isFavorite); load() }
     private fun TrackEntity.toTrack() = Track(id, title, artist, album, uri = android.net.Uri.parse(uri), path = path,

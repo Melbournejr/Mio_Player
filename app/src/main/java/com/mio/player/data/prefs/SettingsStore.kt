@@ -24,6 +24,7 @@ class SettingsStore(private val ctx: Context) {
         val KEY_REPEAT = intPreferencesKey("repeat_mode") // Player.REPEAT_MODE_*
         val KEY_SLEEP_MIN = intPreferencesKey("sleep_min")
         val KEY_FOLDERS = stringSetPreferencesKey("music_folders")
+        val KEY_FOLLOWED_ARTISTS = stringSetPreferencesKey("followed_artists")
         val KEY_AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
         val KEY_LAST_UPDATE_CHECK = longPreferencesKey("last_update_check_ms")
         val KEY_THEME = stringPreferencesKey("theme") // deep_wave | sunset | system

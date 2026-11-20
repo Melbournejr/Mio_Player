@@ -38,6 +38,12 @@ import kotlinx.coroutines.launch
         Text(pages[page].first, color = MioText, fontSize = 26.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp)); Text(pages[page].second, color = MioTextSecondary, fontSize = 15.sp)
         Spacer(Modifier.weight(1f))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            pages.indices.forEach { i ->
+                Box(Modifier.size(if (i == page) 24.dp else 8.dp, 8.dp).clip(androidx.compose.foundation.shape.CircleShape).background(if (i == page) MioCyan else MioDivider))
+            }
+        }
+        Spacer(Modifier.height(16.dp))
         GradientButton(if (page < 2) "Next" else "Get Started") { if (page < 2) page++ else onDone() }
         Spacer(Modifier.height(12.dp))
         androidx.compose.material3.TextButton(onClick = onSkip) { Text("Skip", color = MioTextSecondary) }

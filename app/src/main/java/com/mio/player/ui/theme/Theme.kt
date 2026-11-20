@@ -54,7 +54,7 @@ val MioDivider @Composable get() = LocalMioColors.current.divider
 val MioTeal @Composable get() = LocalMioColors.current.gradientColors.first()
 val MioCyan @Composable get() = LocalMioColors.current.accent
 val MioGradient @Composable get() = Brush.horizontalGradient(LocalMioColors.current.gradientColors)
-val CardLarge = RoundedCornerShape(20.dp); val CardSmall = RoundedCornerShape(16.dp); val InputShape = RoundedCornerShape(14.dp)
+val CardLarge = RoundedCornerShape(20.dp); val CardSmall = RoundedCornerShape(16.dp); val InputShape = RoundedCornerShape(16.dp)
 /** 135° diagonal gradient (top-left -> bottom-right), as in the design
  *  system. Size-aware, so it fills any button or surface correctly. */
 @Composable

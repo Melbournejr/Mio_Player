@@ -1,5 +1,7 @@
 package com.mio.player.ui.components
 import androidx.compose.animation.core.*
+import android.content.ContentUris
+import android.provider.MediaStore
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,9 +19,12 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.mio.player.data.model.Track
 import com.mio.player.ui.theme.*
 import kotlin.math.PI
@@ -48,27 +53,40 @@ import kotlin.math.sin
         })
 }
 @Composable fun SectionTitle(text: String) { Text(text, color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp)) }
-@Composable fun TrackRow(t: Track, onClick: () -> Unit, onFav: (() -> Unit)? = null, trailing: @Composable (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(52.dp).clip(CardSmall).background(MioSurfaceRaised), contentAlignment = Alignment.Center) {
+/** Real album art from MediaStore (content://media/external/audio/albumart/<albumId>).
+ *  Falls back to the teal MusicNote box when there is no art — the PDF
+ *  mockups show cover art everywhere, and 1.0.8 showed only placeholders. */
+@Composable fun AlbumArt(albumId: Long, modifier: Modifier = Modifier, corner: androidx.compose.foundation.shape.RoundedCornerShape = CardSmall) {
+    val ctx = LocalContext.current
+    if (albumId > 0) {
+        val uri = ContentUris.withAppendedId(MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, albumId)
+        Box(modifier.clip(corner).background(MioSurfaceRaised), contentAlignment = Alignment.Center) {
+            AsyncImage(model = uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        }
+    } else {
+        Box(modifier.clip(corner).background(MioSurfaceRaised), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.MusicNote, null, tint = MioCyan)
         }
+    }
+}
+@Composable fun TrackRow(t: Track, onClick: () -> Unit, onFav: (() -> Unit)? = null, trailing: @Composable (() -> Unit)? = null, isPlaying: Boolean = false) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        AlbumArt(t.albumId, Modifier.size(52.dp))
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(t.title, color = MioText, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(t.title, color = if (isPlaying) MioCyan else MioText, fontWeight = FontWeight.SemiBold, maxLines = 1)
             Text("${t.artist} • ${t.displayFormat}", color = MioTextSecondary, fontSize = 12.sp, maxLines = 1)
         }
+        if (isPlaying) Icon(Icons.Default.Equalizer, "Playing", tint = MioCyan, modifier = Modifier.size(20.dp))
         if (onFav != null) IconButton(onClick = onFav) { Icon(if (t.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, tint = if (t.isFavorite) MioCyan else MioTextSecondary) }
         trailing?.invoke()
         Text(formatDuration(t.durationMs), color = MioTextSecondary, fontSize = 12.sp)
     }
 }
 fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02d".format(s/60, s%60) }
-@Composable fun MiniPlayer(title: String, artist: String, isPlaying: Boolean, onToggle: () -> Unit, onNext: () -> Unit, onOpen: () -> Unit) {
+@Composable fun MiniPlayer(title: String, artist: String, isPlaying: Boolean, onToggle: () -> Unit, onNext: () -> Unit, onOpen: () -> Unit, albumId: Long = 0) {
     Card(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpen() }, colors = CardDefaults.cardColors(containerColor = MioSurfaceRaised), shape = CardSmall) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(MioGradient), contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.MusicNote, null, tint = Color.White)
-            }
+            AlbumArt(albumId, Modifier.size(44.dp), RoundedCornerShape(10.dp))
             Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(title, color = MioText, maxLines = 1); Text(artist, color = MioTextSecondary, fontSize = 12.sp, maxLines = 1) }
             IconButton(onClick = onToggle) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = MioText) }
             IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, tint = MioText) }

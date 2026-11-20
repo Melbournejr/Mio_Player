@@ -12,7 +12,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
 import androidx.navigation.NavHostController
+import com.mio.player.ui.components.AlbumArt
 import com.mio.player.ui.components.LiveWaveform
+import com.mio.player.ui.components.formatDuration
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
 import com.mio.player.ui.viewmodel.PlayerViewModel
@@ -22,6 +24,8 @@ import kotlinx.coroutines.delay
     val levels by vm.pm.waveform.levels.collectAsState()
     val shuffleOn by vm.pm.shuffleEnabled.collectAsState()
     val repeatMode by vm.pm.repeatMode.collectAsState()
+    val converting by vm.pm.isConvertingDsd.collectAsState()
+    val dsdError by vm.pm.dsdError.collectAsState()
     val t = queue.getOrNull(idx)
     var pos by remember { mutableStateOf(0L) }
     // Reset on track change, and sync to the player's real position instead
@@ -36,15 +40,30 @@ import kotlinx.coroutines.delay
             IconButton(onClick = { nav.navigate(Routes.EQ) }) { Icon(Icons.Default.Tune, null, tint = MioText) }
         }
         Spacer(Modifier.height(16.dp))
-        Box(Modifier.size(280.dp).background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
+        if (t != null) AlbumArt(t.albumId, Modifier.size(280.dp), CardLarge) else Box(Modifier.size(280.dp).background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
         Spacer(Modifier.height(24.dp))
         Text(t?.title ?: "No song", color = MioText, fontSize = 22.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         Text(t?.artist ?: "", color = MioTextSecondary)
         Text(t?.displayFormat ?: "", color = MioCyan, fontSize = 12.sp)
         Text("Device output: ${vm.pm.deviceSampleRateHz/1000}kHz max • DSD is decoded to PCM (see DSD notes)", color = MioTextSecondary, fontSize = 11.sp)
+        if (converting) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(color = MioCyan, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("  Converting DSD — please wait, do not tap again…", color = MioCyan, fontSize = 12.sp)
+            }
+        }
+        dsdError?.let { err ->
+            Spacer(Modifier.height(8.dp))
+            Text(err, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 12.sp)
+        }
         Spacer(Modifier.height(16.dp))
         LiveWaveform(levels, playing, (if ((t?.durationMs ?: 1L) > 0) pos.toFloat()/(t?.durationMs ?: 1L) else 0f).coerceIn(0f, 1f), Modifier.fillMaxWidth())
         Slider(value = pos.toFloat().coerceIn(0f, (t?.durationMs?.toFloat() ?: 1f)), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..(t?.durationMs?.toFloat() ?: 1f), modifier = Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(formatDuration(pos), color = MioTextSecondary, fontSize = 12.sp)
+            Text(formatDuration(t?.durationMs ?: 0L), color = MioTextSecondary, fontSize = 12.sp)
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.pm.setShuffle(!shuffleOn) }) { Icon(Icons.Default.Shuffle, null, tint = if (shuffleOn) MioCyan else MioTextSecondary) }
             IconButton(onClick = { vm.pm.previous() }) { Icon(Icons.Default.SkipPrevious, null, tint = MioText, modifier = Modifier.size(40.dp)) }
