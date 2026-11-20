@@ -1,4 +1,5 @@
 package com.mio.player.ui.components
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -8,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -17,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mio.player.data.model.Track
 import com.mio.player.ui.theme.*
+import kotlin.math.PI
+import kotlin.math.sin
 @Composable fun GradientButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Button(onClick = onClick, modifier = modifier.fillMaxWidth().height(52.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
@@ -60,6 +64,30 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
         heights.forEachIndexed { i, h ->
             Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape)
                 .background(if (i.toFloat()/heights.size <= progress) MioCyan else MioDivider))
+        }
+    }
+}
+/** Live audio wave for Now Playing. Bars follow the real FFT levels
+ *  from the player's output while playing. If the device refuses the
+ *  Visualizer tap, levels stay empty and the bars animate on their own
+ *  instead — moving while playing, almost still when paused. */
+@Composable fun LiveWaveform(levels: FloatArray, playing: Boolean, progress: Float, modifier: Modifier = Modifier) {
+    val live = levels.any { it > 0.02f }
+    val transition = rememberInfiniteTransition(label = "wave")
+    val phase by transition.animateFloat(0f, (2 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(2400, easing = LinearEasing), RepeatMode.Restart), label = "phase")
+    Row(modifier.height(56.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        val n = levels.size
+        for (i in 0 until n) {
+            val h = if (live) {
+                8f + levels[i] * 48f
+            } else {
+                val amp = if (playing) 1f else 0.25f
+                val s = 0.5f + 0.5f * sin((phase + i * 0.85f).toDouble()).toFloat()
+                10f + s * 34f * amp
+            }
+            Box(Modifier.width(4.dp).height(h.dp).clip(CircleShape)
+                .background(if (i.toFloat() / n <= progress) MioCyan else MioDivider))
         }
     }
 }

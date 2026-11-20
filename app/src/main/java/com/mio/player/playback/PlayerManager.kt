@@ -4,6 +4,7 @@ import android.media.AudioManager
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
 import com.mio.player.data.audio.AudioEffectsManager
+import com.mio.player.data.audio.WaveformTap
 import com.mio.player.data.audio.DsdDecoder
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.Track
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.*
  */
 class PlayerManager(private val ctx: Context) {
     val fx = AudioEffectsManager()
+    val waveform = WaveformTap()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val player: ExoPlayer = ExoPlayer.Builder(ctx).build().apply {
         setAudioAttributes(androidx.media3.common.AudioAttributes.Builder()
@@ -46,6 +48,13 @@ class PlayerManager(private val ctx: Context) {
             override fun onIsPlayingChanged(v: Boolean) { _isPlaying.value = v }
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 _index.value = player.currentMediaItemIndex
+            }
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                // Effects were never attached before: attach here, when the
+                // session actually exists, and tap the same session for the
+                // live waveform on the Now Playing screen.
+                attachEffects()
+                waveform.attach(audioSessionId)
             }
         })
     }
@@ -101,5 +110,5 @@ class PlayerManager(private val ctx: Context) {
     }
     fun attachEffects() { fx.attach(player.audioSessionId) }
     fun isDsdCurrent(): Boolean = currentTrack?.let { DsdSupport.isDsd(it.path) } ?: false
-    fun release() { scope.cancel(); fx.release(); player.release() }
+    fun release() { scope.cancel(); fx.release(); waveform.release(); player.release() }
 }

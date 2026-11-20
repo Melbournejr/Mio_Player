@@ -49,22 +49,26 @@ class MusicScanner(private val ctx: Context) {
         }
         out
     }
-    /** SAF folder scan (user picks a folder in Settings; persist its Uri). */
+    /** SAF folder scan (user picks a folder in Settings; persist its Uri).
+     *  The relative folder path is kept in [TrackEntity.path] so the
+     *  Library can group songs by folder, like the MediaStore scan does
+     *  with the full file path. */
     suspend fun scanSafFolder(treeUri: Uri): List<TrackEntity> = withContext(Dispatchers.IO) {
         val out = mutableListOf<TrackEntity>()
-        fun walk(dir: DocumentFile) {
+        fun walk(dir: DocumentFile, folder: String) {
             for (f in dir.listFiles()) {
-                if (f.isDirectory) walk(f)
+                if (f.isDirectory) walk(f, if (folder.isEmpty()) (f.name ?: "") else "$folder/${f.name}")
                 else if (f.isFile && f.name?.substringAfterLast('.', "")?.lowercase() in supported) {
                     val name = f.name ?: continue
+                    val relPath = if (folder.isEmpty()) name else "$folder/$name"
                     out += TrackEntity(id = (f.uri.toString().hashCode().toLong() and 0xffffffffL) or (1L shl 40),
                         title = name.substringBeforeLast('.'), artist = "Unknown Artist", album = "Unknown Album",
-                        uri = f.uri.toString(), path = name, durationMs = 0,
+                        uri = f.uri.toString(), path = relPath, durationMs = 0,
                         format = formatFor(name).name, dsdRate = if (DsdSupport.isDsd(name)) "DSD64" else null)
                 }
             }
         }
-        DocumentFile.fromTreeUri(ctx, treeUri)?.let { walk(it) }
+        DocumentFile.fromTreeUri(ctx, treeUri)?.let { walk(it, "") }
         out
     }
 }

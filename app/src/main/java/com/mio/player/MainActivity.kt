@@ -1,34 +1,81 @@
 package com.mio.player
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.*
+import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.ui.components.MiniPlayer
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.screens.*
 import com.mio.player.ui.theme.MioPlayerTheme
 import com.mio.player.ui.viewmodel.LibraryViewModel
 import com.mio.player.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.flow.first
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { MioPlayerTheme { MioPlayerApp() } }
     }
 }
+/** Runtime permission for reading music files: READ_MEDIA_AUDIO on
+ *  Android 13+, READ_EXTERNAL_STORAGE on older versions. The manifest
+ *  declares both, but without this runtime request MediaStore returns
+ *  nothing, so the library stayed empty on first install. */
+fun musicPermission(): String =
+    if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+    else Manifest.permission.READ_EXTERNAL_STORAGE
+fun hasMusicPermission(ctx: Context): Boolean =
+    ContextCompat.checkSelfPermission(ctx, musicPermission()) == PackageManager.PERMISSION_GRANTED
+/** Restore saved sound settings (EQ bands, bass, virtualizer, loudness,
+ *  balance, crossfade, ReplayGain, speed) at startup. AudioEffectsManager
+ *  remembers the values, so they are re-applied when the effects are
+ *  attached to the player's audio session. */
+suspend fun restoreSoundSettings(ctx: Context) {
+    val container = (ctx.applicationContext as MioApp).container
+    val settings = container.settings
+    val pm = container.playerManager
+    val bandsCsv = settings.flow(SettingsStore.KEY_EQ_BANDS, "").first()
+    val bands = FloatArray(10) { 0f }
+    bandsCsv.split(",").mapNotNull { it.toFloatOrNull() }.forEachIndexed { i, v -> if (i < 10) bands[i] = v }
+    pm.fx.applyBands(bands)
+    pm.fx.setBassBoost(settings.flow(SettingsStore.KEY_BASS, 0).first())
+    pm.fx.setVirtualizer(settings.flow(SettingsStore.KEY_VIRTUALIZER, 0).first())
+    pm.fx.setLoudness(settings.flow(SettingsStore.KEY_LOUDNESS, 0).first())
+    pm.fx.balance = settings.flow(SettingsStore.KEY_BALANCE, 0f).first()
+    pm.crossfadeMs = settings.flow(SettingsStore.KEY_CROSSFADE_MS, 0).first().toLong()
+    pm.replayGainMode = settings.flow(SettingsStore.KEY_REPLAYGAIN, "track").first()
+    pm.setSpeed(settings.flow(SettingsStore.KEY_SPEED, 1f).first())
+}
 @Composable fun MioPlayerApp() {
+    val ctx = LocalContext.current
     val nav = rememberNavController()
     val libVm: LibraryViewModel = viewModel()
     val playerVm: PlayerViewModel = viewModel()
     val update = rememberUpdateState()
-    LaunchedEffect(Unit) { libVm.load(); update.check(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) libVm.scan() else libVm.load()
+    }
+    LaunchedEffect(Unit) {
+        restoreSoundSettings(ctx)
+        if (hasMusicPermission(ctx)) libVm.scan() else { libVm.load(); permissionLauncher.launch(musicPermission()) }
+        update.check(false)
+    }
     update.available?.let { info -> UpdateDialog(info) { update.available = null } }
     NavHost(nav, startDestination = Routes.SPLASH) {
         composable(Routes.SPLASH) { SplashScreen { nav.navigate(Routes.ONBOARDING) { popUpTo(Routes.SPLASH) { inclusive = true } } } }

@@ -11,13 +11,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
-import com.mio.player.ui.components.WaveformBar
+import com.mio.player.ui.components.LiveWaveform
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
 import com.mio.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
     val queue by vm.queue.collectAsState(); val idx by vm.index.collectAsState(); val playing by vm.isPlaying.collectAsState()
+    val levels by vm.pm.waveform.levels.collectAsState()
     val t = queue.getOrNull(idx)
     var pos by remember { mutableStateOf(0L) }
     LaunchedEffect(playing) { while (playing) { delay(500); pos += 500 } }
@@ -34,7 +35,7 @@ import kotlinx.coroutines.delay
         Text(t?.displayFormat ?: "", color = MioCyan, fontSize = 12.sp)
         Text("Device output: ${vm.pm.deviceSampleRateHz/1000}kHz max • DSD is decoded to PCM (see DSD notes)", color = MioTextSecondary, fontSize = 11.sp)
         Spacer(Modifier.height(16.dp))
-        WaveformBar(if ((t?.durationMs ?: 1L) > 0) pos.toFloat()/(t?.durationMs ?: 1L) else 0f, Modifier.fillMaxWidth())
+        LiveWaveform(levels, playing, if ((t?.durationMs ?: 1L) > 0) pos.toFloat()/(t?.durationMs ?: 1L) else 0f, Modifier.fillMaxWidth())
         Slider(value = pos.toFloat(), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..(t?.durationMs?.toFloat() ?: 1f), modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.pm.setShuffle(true) }) { Icon(Icons.Default.Shuffle, null, tint = MioTextSecondary) }

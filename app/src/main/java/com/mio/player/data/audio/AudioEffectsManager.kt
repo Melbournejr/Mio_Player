@@ -10,6 +10,13 @@ class AudioEffectsManager {
     private var eq: Equalizer? = null; private var bass: BassBoost? = null
     private var virt: Virtualizer? = null; private var loud: LoudnessEnhancer? = null
     var preampDb: Float = 0f; var balance: Float = 0f // -1 left .. +1 right
+    /** Last applied values, remembered so they survive re-attach: the
+     *  effects are recreated whenever ExoPlayer gets a new audio session,
+     *  and a fresh effect starts flat. */
+    var currentBands: FloatArray = FloatArray(10) { 0f }; private set
+    var bassStrength: Int = 0; private set
+    var virtStrength: Int = 0; private set
+    var loudnessMb: Int = 0; private set
     val presets: Map<String, FloatArray> = mapOf(
         "Flat" to floatArrayOf(0f,0f,0f,0f,0f,0f,0f,0f,0f,0f),
         "Bass" to floatArrayOf(6f,5f,4f,2f,0f,0f,0f,0f,0f,0f),
@@ -27,8 +34,11 @@ class AudioEffectsManager {
         try { bass = BassBoost(0, audioSessionId).apply { enabled = true } } catch (e: Exception) { Log.w("MioFx", "BassBoost unavailable", e) }
         try { virt = Virtualizer(0, audioSessionId).apply { enabled = true } } catch (e: Exception) { Log.w("MioFx", "Virtualizer unavailable", e) }
         try { loud = LoudnessEnhancer(audioSessionId).apply { enabled = true } } catch (e: Exception) { Log.w("MioFx", "Loudness unavailable", e) }
+        // Re-apply the remembered values on the fresh effects.
+        applyBands(currentBands); setBassBoost(bassStrength); setVirtualizer(virtStrength); setLoudness(loudnessMb)
     }
     fun applyBands(db: FloatArray) {
+        currentBands = db.copyOf()
         val e = eq ?: return
         try {
             val n = minOf(db.size, e.numberOfBands.toInt())
@@ -36,9 +46,9 @@ class AudioEffectsManager {
         } catch (ex: Exception) { Log.w("MioFx", "applyBands failed", ex) }
     }
     fun applyPreset(name: String) { presets[name]?.let { applyBands(it) } }
-    fun setBassBoost(strength: Int) { try { bass?.setStrength(strength.coerceIn(0,1000).toShort()) } catch (e: Exception) {} }
-    fun setVirtualizer(strength: Int) { try { virt?.setStrength(strength.coerceIn(0,1000).toShort()) } catch (e: Exception) {} }
+    fun setBassBoost(strength: Int) { bassStrength = strength.coerceIn(0, 1000); try { bass?.setStrength(bassStrength.toShort()) } catch (e: Exception) {} }
+    fun setVirtualizer(strength: Int) { virtStrength = strength.coerceIn(0, 1000); try { virt?.setStrength(virtStrength.toShort()) } catch (e: Exception) {} }
     /** LoudnessEnhancer target is in milliBel, 0 = off. */
-    fun setLoudness(targetMb: Int) { try { loud?.setTargetGain(targetMb.coerceIn(0, 2000)) } catch (e: Exception) {} }
+    fun setLoudness(targetMb: Int) { loudnessMb = targetMb.coerceIn(0, 2000); try { loud?.setTargetGain(loudnessMb) } catch (e: Exception) {} }
     fun release() { listOf(eq, bass, virt, loud).forEach { try { it?.release() } catch (_: Exception) {} }; eq=null; bass=null; virt=null; loud=null }
 }
