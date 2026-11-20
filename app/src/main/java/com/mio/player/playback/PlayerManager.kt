@@ -1,6 +1,8 @@
 package com.mio.player.playback
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
+import androidx.core.content.ContextCompat
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
 import com.mio.player.data.audio.AudioEffectsManager
@@ -43,11 +45,25 @@ class PlayerManager(private val ctx: Context) {
         (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
             .getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48000
     val currentTrack: Track? get() = queue.value.getOrNull(index.value)
+    private var consecutiveErrors = 0
     init {
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(v: Boolean) { _isPlaying.value = v }
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 _index.value = player.currentMediaItemIndex
+            }
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) consecutiveErrors = 0
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                consecutiveErrors++
+                // One bad file used to stop the whole queue. Skip to the
+                // next track instead (up to 3 bad files in a row, then stop).
+                if (consecutiveErrors <= 3 && _index.value + 1 < _queue.value.size) {
+                    player.seekToNextMediaItem()
+                    player.prepare()
+                    player.play()
+                }
             }
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 // Effects were never attached before: attach here, when the
@@ -58,9 +74,19 @@ class PlayerManager(private val ctx: Context) {
             }
         })
     }
+    /** Start the foreground MediaSession service so Android does not kill
+     *  playback when the app goes to the background or the screen locks.
+     *  The service was declared in the manifest but never started, so the
+     *  music stopped by itself. */
+    private fun ensureServiceStarted() {
+        runCatching {
+            ContextCompat.startForegroundService(ctx, Intent(ctx, PlayerService::class.java))
+        }
+    }
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
         _queue.value = tracks; _index.value = startIndex
         _dsdError.value = null
+        ensureServiceStarted()
         scope.launch {
             val items = tracks.map { t ->
                 val uri = if (DsdSupport.isDsd(t.path)) {
@@ -80,7 +106,7 @@ class PlayerManager(private val ctx: Context) {
             applyReplayGain()
         }
     }
-    fun play() = player.play()
+    fun play() { ensureServiceStarted(); player.play() }
     fun pause() = player.pause()
     fun next() = player.seekToNextMediaItem()
     fun previous() = player.seekToPreviousMediaItem()
