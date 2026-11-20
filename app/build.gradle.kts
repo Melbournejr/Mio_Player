@@ -6,8 +6,8 @@ android {
         applicationId = "com.mio.player"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.0.9"
+        versionCode = 11
+        versionName = "1.0.10"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -52,22 +52,22 @@ dependencies {
     implementation("androidx.media3:media3-common:$media3")
     implementation("androidx.media3:media3-ui:$media3")
     // DSD: FFmpeg decode to WAV cache (see data/audio/DsdSupport.kt).
-    // Verified 2026-11-20 on Maven Central (HTTP 200):
-    // dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3 exists.
+    // Verified 2026-11-20 on Maven Central (HTTP 200 for both POM and AAR):
+    // dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.9 is the LATEST
+    // (FFmpeg 8.1, SDK 35, 16 KB page-size). The 6.0.3 used before was
+    // simply the newest when the app was first built — nobody checked
+    // for a newer release since. The fork's API is a drop-in replacement
+    // for the old com.arthenica.ffmpegkit API, so no code changes needed.
     // Do NOT use androidx.media3:media3-decoder-ffmpeg — Google does NOT
     // publish it to Google Maven or Maven Central (404 for every version,
     // including 1.4.1 — that was run #2's failure). Do NOT use
     // com.arthenica:ffmpeg-kit-* either — removed from Maven Central
-    // in April 2025. The maintained fork below is the drop-in replacement
-    // with the same com.arthenica.ffmpegkit API.
-    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:6.0.3")
-    // REQUIRED by ffmpeg-kit-full: its POM declares NO dependencies, so
-    // the smart-exception library its Java API needs
-    // (com.arthenica.smartexception.java.Exceptions) is never packaged.
-    // DSD decode then crashed at runtime with NoClassDefFoundError
-    // (proven by the 1.0.5 crash log + dex inspection of the shipped APK:
-    // Exceptions is referenced but not defined in any classes*.dex).
-    // 0.2.1 is the latest on Maven Central and contains Exceptions.class.
+    // in April 2025.
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.9")
+    // smart-exception is now declared by ffmpeg-kit-full 8.1.9's own POM
+    // (it was missing in 6.0.3's POM — that gap crashed DSD decode with
+    // NoClassDefFoundError in 1.0.5). Kept explicit as a safety net: same
+    // version 0.2.1, so it can never drift out of the APK again.
     implementation("com.arthenica:smart-exception-java:0.2.1")
     implementation("androidx.media:media:1.7.0")
     implementation("androidx.room:room-runtime:2.6.1")
