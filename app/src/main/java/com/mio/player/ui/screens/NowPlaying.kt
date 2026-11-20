@@ -24,7 +24,12 @@ import kotlinx.coroutines.delay
     val repeatMode by vm.pm.repeatMode.collectAsState()
     val t = queue.getOrNull(idx)
     var pos by remember { mutableStateOf(0L) }
-    LaunchedEffect(playing) { while (playing) { delay(500); pos += 500 } }
+    // Reset on track change, and sync to the player's real position instead
+    // of counting up blindly: the old loop kept counting after a track
+    // change, so pos could exceed a shorter track's duration and the
+    // slider/progress went out of range.
+    LaunchedEffect(t?.id) { pos = 0L }
+    LaunchedEffect(playing, t?.id) { while (playing) { pos = vm.pm.player.currentPosition.coerceIn(0L, (t?.durationMs ?: Long.MAX_VALUE)); delay(250) } }
     Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
@@ -38,8 +43,8 @@ import kotlinx.coroutines.delay
         Text(t?.displayFormat ?: "", color = MioCyan, fontSize = 12.sp)
         Text("Device output: ${vm.pm.deviceSampleRateHz/1000}kHz max • DSD is decoded to PCM (see DSD notes)", color = MioTextSecondary, fontSize = 11.sp)
         Spacer(Modifier.height(16.dp))
-        LiveWaveform(levels, playing, if ((t?.durationMs ?: 1L) > 0) pos.toFloat()/(t?.durationMs ?: 1L) else 0f, Modifier.fillMaxWidth())
-        Slider(value = pos.toFloat(), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..(t?.durationMs?.toFloat() ?: 1f), modifier = Modifier.fillMaxWidth())
+        LiveWaveform(levels, playing, (if ((t?.durationMs ?: 1L) > 0) pos.toFloat()/(t?.durationMs ?: 1L) else 0f).coerceIn(0f, 1f), Modifier.fillMaxWidth())
+        Slider(value = pos.toFloat().coerceIn(0f, (t?.durationMs?.toFloat() ?: 1f)), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..(t?.durationMs?.toFloat() ?: 1f), modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.pm.setShuffle(!shuffleOn) }) { Icon(Icons.Default.Shuffle, null, tint = if (shuffleOn) MioCyan else MioTextSecondary) }
             IconButton(onClick = { vm.pm.previous() }) { Icon(Icons.Default.SkipPrevious, null, tint = MioText, modifier = Modifier.size(40.dp)) }
