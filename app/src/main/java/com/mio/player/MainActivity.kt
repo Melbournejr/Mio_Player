@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.Player
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.*
 import com.mio.player.data.prefs.SettingsStore
@@ -27,6 +28,7 @@ import com.mio.player.ui.theme.MioPlayerTheme
 import com.mio.player.ui.viewmodel.LibraryViewModel
 import com.mio.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,10 +63,15 @@ suspend fun restoreSoundSettings(ctx: Context) {
     pm.crossfadeMs = settings.flow(SettingsStore.KEY_CROSSFADE_MS, 0).first().toLong()
     pm.replayGainMode = settings.flow(SettingsStore.KEY_REPLAYGAIN, "track").first()
     pm.setSpeed(settings.flow(SettingsStore.KEY_SPEED, 1f).first())
+    pm.setShuffle(settings.flow(SettingsStore.KEY_SHUFFLE, false).first())
+    pm.setRepeatMode(settings.flow(SettingsStore.KEY_REPEAT, Player.REPEAT_MODE_OFF).first())
 }
 @Composable fun MioPlayerApp() {
     val ctx = LocalContext.current
     val nav = rememberNavController()
+    val container = (ctx.applicationContext as MioApp).container
+    val scope = rememberCoroutineScope()
+    val onboarded by container.settings.onboarded.collectAsState(initial = null)
     val libVm: LibraryViewModel = viewModel()
     val playerVm: PlayerViewModel = viewModel()
     val update = rememberUpdateState()
@@ -77,9 +84,16 @@ suspend fun restoreSoundSettings(ctx: Context) {
         update.check(false)
     }
     update.available?.let { info -> UpdateDialog(info) { update.available = null } }
-    NavHost(nav, startDestination = Routes.SPLASH) {
+    // First launch only: splash + intro + login + genres. Afterwards the
+    // app opens straight into Home — the intro used to replay on every
+    // launch because nothing ever read or wrote the onboarded flag.
+    if (onboarded == null) {
+        Box(Modifier.fillMaxSize().background(com.mio.player.ui.theme.MioBg)) {}
+        return
+    }
+    NavHost(nav, startDestination = if (onboarded == true) Routes.HOME else Routes.SPLASH) {
         composable(Routes.SPLASH) { SplashScreen { nav.navigate(Routes.ONBOARDING) { popUpTo(Routes.SPLASH) { inclusive = true } } } }
-        composable(Routes.ONBOARDING) { OnboardingScreen(onDone = { nav.navigate(Routes.LOGIN) }, onSkip = { nav.navigate(Routes.HOME) }) }
+        composable(Routes.ONBOARDING) { OnboardingScreen(onDone = { scope.launch { container.settings.setOnboarded(true) }; nav.navigate(Routes.LOGIN) }, onSkip = { scope.launch { container.settings.setOnboarded(true) }; nav.navigate(Routes.HOME) }) }
         composable(Routes.LOGIN) { LoginScreen(onDone = { nav.navigate(Routes.GENRES) }) }
         composable(Routes.GENRES) { PickGenresScreen(onDone = { nav.navigate(Routes.HOME) { popUpTo(Routes.SPLASH) { inclusive = true } } }) }
         composable(Routes.HOME) { MainScaffold(nav, Routes.HOME, libVm, playerVm) { HomeScreen(libVm, playerVm, nav) } }

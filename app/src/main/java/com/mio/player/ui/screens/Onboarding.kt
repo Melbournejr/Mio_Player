@@ -7,6 +7,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -15,6 +16,7 @@ import com.mio.player.R
 import com.mio.player.ui.components.GradientButton
 import com.mio.player.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 @Composable fun SplashScreen(onDone: () -> Unit) {
     LaunchedEffect(Unit) { delay(1600); onDone() }
     Box(Modifier.fillMaxSize().background(MioBg), contentAlignment = Alignment.Center) {
@@ -43,6 +45,9 @@ import kotlinx.coroutines.delay
 }
 @Composable fun LoginScreen(onDone: () -> Unit) {
     // Local profile only — no server, no account. The user asked for personal use.
+    val ctx = LocalContext.current
+    val container = (ctx.applicationContext as com.mio.player.MioApp).container
+    val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp)) {
         Spacer(Modifier.height(48.dp))
@@ -51,7 +56,15 @@ import kotlinx.coroutines.delay
         Spacer(Modifier.height(32.dp))
         OutlinedTextFieldLocal("Your name (optional)", name) { name = it }
         Spacer(Modifier.height(24.dp))
-        GradientButton("Continue") { onDone() }
+        GradientButton("Continue") {
+            // The name used to live only in this screen's memory and was
+            // asked again on every launch; save it now.
+            scope.launch {
+                if (name.isNotBlank()) container.settings.set(com.mio.player.data.prefs.SettingsStore.KEY_USER_NAME, name.trim())
+                container.settings.setOnboarded(true)
+            }
+            onDone()
+        }
         Spacer(Modifier.height(12.dp))
         Text("No password, no server. Mio Player is a local player for your own music.", color = MioTextSecondary, fontSize = 12.sp)
     }
@@ -62,6 +75,9 @@ import kotlinx.coroutines.delay
         shape = InputShape)
 }
 @Composable fun PickGenresScreen(onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    val container = (ctx.applicationContext as com.mio.player.MioApp).container
+    val scope = rememberCoroutineScope()
     val genres = listOf("Pop","Chill","Lo-Fi","Rock","Jazz","EDM","Classical","Hip-Hop","R&B","Acoustic")
     val selected = remember { mutableStateListOf<String>() }
     Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp)) {
@@ -74,6 +90,12 @@ import kotlinx.coroutines.delay
                     colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(selectedContainerColor = MioTeal, selectedLabelColor = androidx.compose.ui.graphics.Color.White))
             }
         }
-        GradientButton("Continue") { onDone() }
+        GradientButton("Continue") {
+            scope.launch {
+                container.settings.set(com.mio.player.data.prefs.SettingsStore.KEY_GENRES, selected.toSet())
+                container.settings.setOnboarded(true)
+            }
+            onDone()
+        }
     }
 }

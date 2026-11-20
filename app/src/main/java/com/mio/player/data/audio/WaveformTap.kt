@@ -27,10 +27,19 @@ class WaveformTap(private val bars: Int = 32) {
                     override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, rate: Int) {
                         if (fft == null) return
                         val n = fft.size / 2
+                        // FFT bins are linear in frequency, but music energy
+                        // is logarithmic: map each bar to a log-spaced
+                        // frequency band (20 Hz .. 12 kHz) so every bar
+                        // dances with the music instead of only the first
+                        // few. Bin width = sample rate / capture size.
+                        val binHz = 48000f / fft.size
                         val out = FloatArray(bars)
                         for (i in 0 until bars) {
-                            val start = i * n / bars
-                            val end = ((i + 1) * n / bars).coerceAtMost(n)
+                            val ratio = 12000f / 20f
+                            val fLow = 20f * Math.pow(ratio.toDouble(), i.toDouble() / bars).toFloat()
+                            val fHigh = 20f * Math.pow(ratio.toDouble(), (i + 1).toDouble() / bars).toFloat()
+                            val start = (fLow / binHz).toInt().coerceIn(0, n - 1)
+                            val end = (fHigh / binHz).toInt().coerceIn(start + 1, n)
                             var sum = 0f
                             var count = 0
                             for (j in start until end) {
@@ -40,13 +49,17 @@ class WaveformTap(private val bars: Int = 32) {
                                 count++
                             }
                             val mag = if (count > 0) sum / count else 0f
-                            val norm = (mag / 90f).coerceIn(0f, 1f)
-                            out[i] = last[i] * 0.55f + norm * 0.45f
+                            // Perceptual scaling: sqrt lifts quiet bands so
+                            // they stay visible instead of flatlining.
+                            val norm = sqrt((mag / 128f).coerceIn(0f, 1f))
+                            // Fast attack, slower release: bars follow beats
+                            // instead of lagging behind them.
+                            out[i] = if (norm > last[i]) last[i] * 0.3f + norm * 0.7f else last[i] * 0.7f + norm * 0.3f
                         }
                         last = out
                         _levels.value = out
                     }
-                }, Visualizer.getMaxCaptureRate() / 2, false, true)
+                }, Visualizer.getMaxCaptureRate(), false, true)
                 enabled = true
             }
             attachedSession = audioSessionId

@@ -20,6 +20,8 @@ class SettingsStore(private val ctx: Context) {
         val KEY_LOUDNESS = intPreferencesKey("loudness_db") // 0..? target mB
         val KEY_BALANCE = floatPreferencesKey("balance") // -1 left .. +1 right
         val KEY_SPEED = floatPreferencesKey("speed")
+        val KEY_SHUFFLE = booleanPreferencesKey("shuffle")
+        val KEY_REPEAT = intPreferencesKey("repeat_mode") // Player.REPEAT_MODE_*
         val KEY_SLEEP_MIN = intPreferencesKey("sleep_min")
         val KEY_FOLDERS = stringSetPreferencesKey("music_folders")
         val KEY_AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")

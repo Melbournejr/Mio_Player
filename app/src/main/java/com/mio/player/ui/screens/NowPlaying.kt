@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.common.Player
 import androidx.navigation.NavHostController
 import com.mio.player.ui.components.LiveWaveform
 import com.mio.player.ui.navigation.Routes
@@ -19,6 +20,8 @@ import kotlinx.coroutines.delay
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
     val queue by vm.queue.collectAsState(); val idx by vm.index.collectAsState(); val playing by vm.isPlaying.collectAsState()
     val levels by vm.pm.waveform.levels.collectAsState()
+    val shuffleOn by vm.pm.shuffleEnabled.collectAsState()
+    val repeatMode by vm.pm.repeatMode.collectAsState()
     val t = queue.getOrNull(idx)
     var pos by remember { mutableStateOf(0L) }
     LaunchedEffect(playing) { while (playing) { delay(500); pos += 500 } }
@@ -38,11 +41,11 @@ import kotlinx.coroutines.delay
         LiveWaveform(levels, playing, if ((t?.durationMs ?: 1L) > 0) pos.toFloat()/(t?.durationMs ?: 1L) else 0f, Modifier.fillMaxWidth())
         Slider(value = pos.toFloat(), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..(t?.durationMs?.toFloat() ?: 1f), modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { vm.pm.setShuffle(true) }) { Icon(Icons.Default.Shuffle, null, tint = MioTextSecondary) }
+            IconButton(onClick = { vm.pm.setShuffle(!shuffleOn) }) { Icon(Icons.Default.Shuffle, null, tint = if (shuffleOn) MioCyan else MioTextSecondary) }
             IconButton(onClick = { vm.pm.previous() }) { Icon(Icons.Default.SkipPrevious, null, tint = MioText, modifier = Modifier.size(40.dp)) }
             FloatingActionButton(onClick = { vm.toggle() }, containerColor = MioTeal) { Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(32.dp)) }
             IconButton(onClick = { vm.pm.next() }) { Icon(Icons.Default.SkipNext, null, tint = MioText, modifier = Modifier.size(40.dp)) }
-            IconButton(onClick = { vm.pm.cycleRepeat() }) { Icon(Icons.Default.Repeat, null, tint = MioTextSecondary) }
+            IconButton(onClick = { vm.pm.cycleRepeat() }) { Icon(if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat, null, tint = if (repeatMode == Player.REPEAT_MODE_OFF) MioTextSecondary else MioCyan) }
         }
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

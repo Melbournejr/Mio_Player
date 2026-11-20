@@ -1,6 +1,7 @@
 package com.mio.player.playback
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.media.AudioManager
 import androidx.core.content.ContextCompat
 import androidx.media3.common.*
@@ -10,6 +11,7 @@ import com.mio.player.data.audio.WaveformTap
 import com.mio.player.data.audio.DsdDecoder
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.Track
+import com.mio.player.data.prefs.SettingsStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 /** Gapless, high-res playback.
@@ -46,11 +48,23 @@ class PlayerManager(private val ctx: Context) {
             .getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48000
     val currentTrack: Track? get() = queue.value.getOrNull(index.value)
     private var consecutiveErrors = 0
+    private var playGeneration = 0
+    private val settings by lazy { SettingsStore(ctx.applicationContext) }
+    private val _shuffleEnabled = MutableStateFlow(false); val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
+    private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF); val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
     init {
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(v: Boolean) { _isPlaying.value = v }
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 _index.value = player.currentMediaItemIndex
+            }
+            override fun onShuffleModeEnabledChanged(v: Boolean) {
+                _shuffleEnabled.value = v
+                scope.launch { runCatching { settings.set(SettingsStore.KEY_SHUFFLE, v) } }
+            }
+            override fun onRepeatModeChanged(mode: Int) {
+                _repeatMode.value = mode
+                scope.launch { runCatching { settings.set(SettingsStore.KEY_REPEAT, mode) } }
             }
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) consecutiveErrors = 0
@@ -83,27 +97,54 @@ class PlayerManager(private val ctx: Context) {
             ContextCompat.startForegroundService(ctx, Intent(ctx, PlayerService::class.java))
         }
     }
+    private fun buildItem(t: Track, uri: Uri): MediaItem = MediaItem.Builder().setUri(uri).setMediaId(t.id.toString())
+        .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).build()).build()
+    private suspend fun resolveUri(t: Track): Uri {
+        if (!DsdSupport.isDsd(t.path)) return t.uri
+        _isConvertingDsd.value = true
+        val decoded = DsdDecoder.ensureDecoded(ctx, t)
+        _isConvertingDsd.value = false
+        if (decoded == null) _dsdError.value = "Could not decode DSD file: ${t.title}"
+        return decoded ?: t.uri
+    }
+    /** Swap a background-decoded DSD file into the playlist, only if the
+     *  queue has not changed since and the track has not played yet. */
+    private fun swapIn(generation: Int, t: Track, i: Int, decoded: Uri) {
+        if (generation != playGeneration) return
+        if (i <= player.currentMediaItemIndex || i >= player.mediaItemCount) return
+        if (player.getMediaItemAt(i).mediaId != t.id.toString()) return
+        runCatching { player.replaceMediaItem(i, buildItem(t, decoded)) }
+    }
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
+        if (tracks.isEmpty()) return
         _queue.value = tracks; _index.value = startIndex
         _dsdError.value = null
-        ensureServiceStarted()
+        val generation = ++playGeneration
         scope.launch {
-            val items = tracks.map { t ->
-                val uri = if (DsdSupport.isDsd(t.path)) {
-                    _isConvertingDsd.value = true
-                    val decoded = DsdDecoder.ensureDecoded(ctx, t)
-                    _isConvertingDsd.value = false
-                    if (decoded == null) {
-                        _dsdError.value = "Could not decode DSD file: ${t.title}"
-                        t.uri
-                    } else decoded
-                } else t.uri
-                MediaItem.Builder().setUri(uri).setMediaId(t.id.toString())
-                    .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).build())
-                    .build()
-            }
-            player.setMediaItems(items, startIndex, 0); player.prepare(); player.play()
+            // Decode ONLY the track that starts playing, then start
+            // playback right away. The old code decoded the whole queue
+            // first: on a DSD album that took minutes, while the
+            // foreground service (started before the decode) must call
+            // startForeground within ~10s — Android killed the app with
+            // ForegroundServiceDidNotStartInTimeException ("tự thoát").
+            // The service is therefore started only now, right before
+            // play(), and the remaining DSD tracks decode in the
+            // background and are swapped in as each one finishes.
+            val startUri = withContext(Dispatchers.IO) { resolveUri(tracks[startIndex]) }
+            if (generation != playGeneration) return@launch
+            val items = tracks.mapIndexed { i, t -> buildItem(t, if (i == startIndex) startUri else t.uri) }
+            player.setMediaItems(items, startIndex, 0); player.prepare()
+            ensureServiceStarted()
+            player.play()
             applyReplayGain()
+            withContext(Dispatchers.IO) {
+                for (i in tracks.indices) {
+                    if (generation != playGeneration) return@withContext
+                    if (i == startIndex || !DsdSupport.isDsd(tracks[i].path)) continue
+                    val decoded = DsdDecoder.ensureDecoded(ctx, tracks[i])
+                    if (decoded != null) withContext(Dispatchers.Main) { swapIn(generation, tracks[i], i, decoded) }
+                }
+            }
         }
     }
     fun play() { ensureServiceStarted(); player.play() }
@@ -112,6 +153,7 @@ class PlayerManager(private val ctx: Context) {
     fun previous() = player.seekToPreviousMediaItem()
     fun seekTo(ms: Long) = player.seekTo(ms)
     fun setShuffle(on: Boolean) { player.shuffleModeEnabled = on }
+    fun setRepeatMode(mode: Int) { player.repeatMode = mode }
     fun cycleRepeat(): Int {
         player.repeatMode = when (player.repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
