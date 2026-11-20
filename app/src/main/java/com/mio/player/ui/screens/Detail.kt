@@ -54,7 +54,7 @@ import kotlinx.coroutines.launch
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             GradientButton("Play all", modifier = Modifier.weight(1f)) { if (tracks.isNotEmpty()) { playerVm.playQueue(tracks, 0); nav.navigate(Routes.NOW_PLAYING) } }
-            GradientButton("Shuffle", modifier = Modifier.weight(1f)) { if (tracks.isNotEmpty()) { playerVm.setShuffle(true); playerVm.playQueue(tracks.shuffled(), 0); nav.navigate(Routes.NOW_PLAYING) } }
+            GradientButton("Shuffle", modifier = Modifier.weight(1f)) { if (tracks.isNotEmpty()) { playerVm.pm.setShuffle(true); playerVm.playQueue(tracks.shuffled(), 0); nav.navigate(Routes.NOW_PLAYING) } }
         }
         Spacer(Modifier.height(12.dp))
         LazyColumn { items(tracks) { t -> TrackRow(t, onClick = { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, isPlaying = t.id == currentId) } }
