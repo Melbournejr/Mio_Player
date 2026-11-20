@@ -169,14 +169,14 @@ import kotlinx.coroutines.launch
             Text("Local profile only — no server, no account. Your library stays on your device.", color = MioTextSecondary, fontSize = 13.sp)
             Spacer(Modifier.height(16.dp))
             SectionTitle("Music quality")
-            Text("Original files play as-is. DSD (.dsf/.dff) is decoded once to a 176.4 kHz PCM WAV cache, then played from cache.", color = MioTextSecondary, fontSize = 13.sp)
+            Text("Original files play as-is. DSD (.dsf/.dff) plays natively; only files the native decoder can't handle (e.g. DST-compressed .dff) are decoded once to a 176.4 kHz PCM WAV cache as a fallback, then played from cache.", color = MioTextSecondary, fontSize = 13.sp)
             Spacer(Modifier.height(16.dp))
             SectionTitle("Downloads")
             val cacheSizeMb = remember {
                 val dir = java.io.File(ctx.cacheDir, "dsd-cache")
                 (dir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
             }
-            Text("DSD decoded cache: $cacheSizeMb MB. Clear it to free space — DSD files will re-decode on next play.", color = MioTextSecondary, fontSize = 13.sp)
+            Text("DSD fallback decode cache: $cacheSizeMb MB. Clear it to free space — fallback files will re-decode on next play.", color = MioTextSecondary, fontSize = 13.sp)
             androidx.compose.material3.TextButton(onClick = {
                 scope.launch {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {

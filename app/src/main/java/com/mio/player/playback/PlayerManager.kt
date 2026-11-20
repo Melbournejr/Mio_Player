@@ -5,7 +5,14 @@ import android.net.Uri
 import android.media.AudioManager
 import androidx.core.content.ContextCompat
 import androidx.media3.common.*
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.Extractor
+import androidx.media3.extractor.ExtractorsFactory
+import com.mio.player.playback.dsd.DsdExtractor
 import com.mio.player.data.audio.AudioEffectsManager
 import com.mio.player.data.audio.WaveformTap
 import com.mio.player.data.audio.DsdDecoder
@@ -16,9 +23,18 @@ import com.mio.player.data.prefs.SettingsStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 /** Gapless, high-res playback.
- *  - No custom FFmpeg renderer: androidx.media3:media3-decoder-ffmpeg is
- *    NOT published to Maven (see DsdSupport.kt), so DSD is decoded to a
- *    cached PCM WAV by DsdDecoder (FFmpegKit) before playback instead.
+ *  - Native DSD (v1.1.0): .dsf/.dff are played directly — DsdExtractor
+ *    frames the raw DSD bytes and the vendored FFmpeg DSD decoder
+ *    (extension renderer, EXTENSION_RENDERER_MODE_PREFER, float output)
+ *    decodes them in-process. DSD tracks go into the playlist as raw
+ *    URIs, so playback starts immediately with no pre-decode wait.
+ *  - Fallback: if native decode fails for a track (DST-compressed .dff,
+ *    an unsupported DSF variant, a malformed header), onPlayerError
+ *    decodes it once to a cached PCM WAV with DsdDecoder (FFmpegKit)
+ *    and swaps it in. That is the only remaining use of the transcode
+ *    path. androidx.media3:media3-decoder-ffmpeg is NOT published to
+ *    Maven (see DsdSupport.kt) — the decoder here is vendored, not that
+ *    artifact.
  *  - Gapless: ExoPlayer handles gapless for same-format consecutive tracks.
  *  - High-res: AudioTrack is configured via ExoPlayer defaults; the device
  *    sample rate is read from AudioManager and exposed for the Now Playing
@@ -28,11 +44,50 @@ import kotlinx.coroutines.flow.*
  *    the last crossfadeMs of a track (PlayerService, best-effort).
  *  - ReplayGain: track/album gain applied as volume = 10^(gain/20), clamped.
  */
+@OptIn(UnstableApi::class)
 class PlayerManager(private val ctx: Context) {
+    companion object {
+        /**
+         * DSD decoders output float PCM, so float AudioTrack output must be
+         * on for the native DSD path to run at full quality.
+         *
+         * RISK — EQ vs float output: the app's AudioEffect-based EQ
+         * (AudioEffectsManager, attached to the audio session) may NOT
+         * process float output — on some devices / Android versions the
+         * EQ silently does nothing while float output is on. If the EQ
+         * stops having any effect, flip this to false: DSD still plays
+         * (decoder output is converted to 16-bit PCM) and the EQ works
+         * again. Re-test the EQ on a DSD track after any change here.
+         */
+        const val ENABLE_AUDIO_FLOAT_OUTPUT = true
+    }
     val fx = AudioEffectsManager()
     val waveform = WaveformTap()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    val player: ExoPlayer = ExoPlayer.Builder(ctx).build().apply {
+    val player: ExoPlayer = ExoPlayer.Builder(ctx)
+        .setRenderersFactory(
+            DefaultRenderersFactory(ctx).apply {
+                setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                setEnableAudioFloatOutput(ENABLE_AUDIO_FLOAT_OUTPUT)
+            }
+        )
+        // There is no setExtractorsFactory on ExoPlayer.Builder (nor a
+        // setter on DefaultMediaSourceFactory): the ExtractorsFactory
+        // goes in the DefaultMediaSourceFactory constructor.
+        .setMediaSourceFactory(
+            DefaultMediaSourceFactory(
+                ctx,
+                ExtractorsFactory {
+                    // DsdExtractor first: it sniffs DSF/DFF and nothing else,
+                    // so every other format falls through to the defaults.
+                    arrayOf<Extractor>(
+                        DsdExtractor.Factory().createExtractor(),
+                        *DefaultExtractorsFactory().createExtractors()
+                    )
+                }
+            )
+        )
+        .build().apply {
         setAudioAttributes(androidx.media3.common.AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
     }
@@ -49,7 +104,6 @@ class PlayerManager(private val ctx: Context) {
             .getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48000
     val currentTrack: Track? get() = queue.value.getOrNull(index.value)
     private var consecutiveErrors = 0
-    private var playGeneration = 0
     private var recoveringDsd = false
     private val failedDsd = mutableSetOf<String>()
     private val recoveredDsd = mutableSetOf<String>()
@@ -76,16 +130,19 @@ class PlayerManager(private val ctx: Context) {
             override fun onPlayerError(error: PlaybackException) {
                 MioLog.event(ctx, "Player error: ${error.errorCodeName} ${error.message}")
                 val t = currentTrack
-                // The player reached a DSD track before its background
-                // decode finished (a raw .dsf/.dff is not playable).
-                // Decode it now instead of skipping it — the last-resort
-                // path for fast skips. Only once per track, so a broken
-                // file cannot loop forever.
+                // Native DSD decode failed for this track (DST-compressed
+                // .dff, an unsupported DSF variant, a malformed header, or
+                // the vendored decoder missing). Fall back to the FFmpegKit
+                // transcode: decode once to a cached PCM WAV and swap it in
+                // instead of skipping the track. Only once per track, so a
+                // broken file cannot loop forever.
                 if (!recoveringDsd && t != null && DsdSupport.isDsd(t.path)
                     && !failedDsd.contains(t.path) && !recoveredDsd.contains(t.path)) {
                     recoveringDsd = true
                     scope.launch {
+                        _isConvertingDsd.value = true
                         val decoded = DsdDecoder.ensureDecoded(ctx, t)
+                        _isConvertingDsd.value = false
                         val idx = player.currentMediaItemIndex
                         if (decoded != null && queue.value.getOrNull(idx)?.id == t.id) {
                             withContext(Dispatchers.Main) {
@@ -138,97 +195,33 @@ class PlayerManager(private val ctx: Context) {
     }
     private fun buildItem(t: Track, uri: Uri): MediaItem = MediaItem.Builder().setUri(uri).setMediaId(t.id.toString())
         .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).build()).build()
-    private suspend fun resolveUri(t: Track): Uri {
-        if (!DsdSupport.isDsd(t.path)) return t.uri
-        _isConvertingDsd.value = true
-        val decoded = DsdDecoder.ensureDecoded(ctx, t)
-        _isConvertingDsd.value = false
-        if (decoded == null) _dsdError.value = "Could not decode DSD file: ${t.title}"
-        return decoded ?: t.uri
-    }
-    /** Swap a background-decoded DSD file into the playlist, only if the
-     *  queue has not changed since and the track has not played yet. */
-    private fun swapIn(generation: Int, t: Track, i: Int, decoded: Uri) {
-        if (generation != playGeneration) return
-        if (i <= player.currentMediaItemIndex || i >= player.mediaItemCount) return
-        if (player.getMediaItemAt(i).mediaId != t.id.toString()) return
-        runCatching { player.replaceMediaItem(i, buildItem(t, decoded)) }
-        MioLog.event(ctx, "Swapped decoded DSD in: ${t.title}")
-    }
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
         if (tracks.isEmpty()) return
-        // 1.0.9: start the foreground service BEFORE the first DSD decode,
-        // so the process stays alive during a long conversion, and clear
-        // the per-track failure sets — a transient failure (low storage,
-        // interrupted decode) must not blacklist a track forever.
+        // Clear the per-track failure sets — a transient failure (low
+        // storage, interrupted decode) must not blacklist a track forever.
         ensureServiceStarted()
         failedDsd.clear()
         recoveredDsd.clear()
         _queue.value = tracks; _index.value = startIndex
         _dsdError.value = null
-        val generation = ++playGeneration
         MioLog.event(ctx, "playQueue: ${tracks.size} tracks from #$startIndex, first='${tracks[startIndex].title}' dsd=${DsdSupport.isDsd(tracks[startIndex].path)}")
-        scope.launch {
-            // Decode ONLY the track that starts playing, then start
-            // playback right away. The old code decoded the whole queue
-            // first: on a DSD album that took minutes, while the
-            // foreground service (started before the decode) must call
-            // startForeground within ~10s — Android killed the app with
-            // ForegroundServiceDidNotStartInTimeException ("tự thoát").
-            // The service is therefore started only now, right before
-            // play(), and the remaining DSD tracks decode in the
-            // background and are swapped in as each one finishes.
-            // A DSD track whose decode fails must not start the queue as
-            // a broken item: try the next tracks instead.
-            //
-            // 1.0.12: kick off the NEXT track's decode in parallel with
-            // the start track's, but do NOT wait for it before playing.
-            // 1.0.11 awaited it, which made startup SLOWER (two ffmpeg
-            // processes contend for CPU) — that is why DSD still felt
-            // delayed. Starting it early is enough: it finishes ~0-2s
-            // after playback starts and swapIn replaces the raw .dsf
-            // before ExoPlayer's preload (~6s in) ever sees it, closing
-            // the race that cut A1.Hello after 6s in the 1.0.10 log,
-            // without adding any startup delay. The later background
-            // loop joins the same in-flight decode job (dedupe in
-            // DsdDecoder) and swaps it in.
-            val nextIdx = startIndex + 1
-            if (nextIdx < tracks.size && DsdSupport.isDsd(tracks[nextIdx].path)) {
-                scope.launch(Dispatchers.IO) { DsdDecoder.ensureDecoded(ctx, tracks[nextIdx]) }
-            }
-            var effectiveStart = startIndex
-            var startUri: Uri? = null
-            var attempts = 0
-            while (effectiveStart < tracks.size && attempts < 4) {
-                val t = tracks[effectiveStart]
-                val uri = withContext(Dispatchers.IO) { resolveUri(t) }
-                if (uri != t.uri || !DsdSupport.isDsd(t.path)) { startUri = uri; break }
-                _dsdError.value = "Could not decode DSD file: ${t.title}"
-                MioLog.event(ctx, "playQueue: start track undecodable, trying next: ${t.title}")
-                effectiveStart++; attempts++
-            }
-            if (startUri == null) {
-                _dsdError.value = "Could not decode DSD file: ${tracks[startIndex].title}"
-                MioLog.event(ctx, "playQueue aborted: no playable track from index $startIndex")
-                return@launch
-            }
-            if (generation != playGeneration) return@launch
-            _index.value = effectiveStart
-            val items = tracks.mapIndexed { i, t -> buildItem(t, if (i == effectiveStart) startUri else t.uri) }
-            player.setMediaItems(items, effectiveStart, 0); player.prepare()
-            ensureServiceStarted()
-            player.play()
-            MioLog.event(ctx, "Playback started: '${tracks[effectiveStart].title}'")
-            applyReplayGain()
-            withContext(Dispatchers.IO) {
-                for (i in tracks.indices) {
-                    if (generation != playGeneration) return@withContext
-                    if (i == effectiveStart || !DsdSupport.isDsd(tracks[i].path)) continue
-                    val decoded = DsdDecoder.ensureDecoded(ctx, tracks[i])
-                    if (decoded != null) withContext(Dispatchers.Main) { swapIn(generation, tracks[i], i, decoded) }
-                }
-            }
-        }
+        // v1.1.0 native DSD: every track — DSD included — goes into the
+        // playlist as its raw URI and playback starts immediately. There
+        // is NO pre-decode any more: no blocking decode of the first DSD
+        // track, no fire-and-forget decode of the next track, no
+        // background decode loop. DsdExtractor + the vendored FFmpeg DSD
+        // decoder play .dsf/.dff directly. A DSD track is therefore
+        // assumed playable until the player proves otherwise; if native
+        // decode fails, onPlayerError falls back to the FFmpegKit
+        // transcode for that track (once), and a track that fails even
+        // that is skipped by the generic error path. Non-DSD playback is
+        // unchanged: same URIs, same order, same behaviour as before.
+        val items = tracks.map { t -> buildItem(t, t.uri) }
+        player.setMediaItems(items, startIndex, 0); player.prepare()
+        ensureServiceStarted()
+        player.play()
+        MioLog.event(ctx, "Playback started: '${tracks[startIndex].title}'")
+        applyReplayGain()
     }
     fun play() { ensureServiceStarted(); player.play() }
     fun pause() = player.pause()

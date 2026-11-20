@@ -45,7 +45,7 @@ import kotlinx.coroutines.delay
         Text(t?.title ?: "No song", color = MioText, fontSize = 22.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         Text(t?.artist ?: "", color = MioTextSecondary)
         Text(t?.displayFormat ?: "", color = MioCyan, fontSize = 12.sp)
-        Text("Device output: ${vm.pm.deviceSampleRateHz/1000}kHz max • DSD is decoded to PCM (see DSD notes)", color = MioTextSecondary, fontSize = 11.sp)
+        Text("Device output: ${vm.pm.deviceSampleRateHz/1000}kHz max • DSD plays natively (see DSD notes)", color = MioTextSecondary, fontSize = 11.sp)
         if (converting) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {

@@ -19,11 +19,15 @@ import java.security.MessageDigest
  * Decodes a DSD track (.dsf/.dff) to a cached PCM WAV once, using FFmpegKit.
  * See DsdSupport.kt for why this route was chosen.
  *
+ * v1.1.0: this is the FALLBACK path only. Native decode (DsdExtractor +
+ * vendored FFmpeg DSD decoder) is tried first; this runs only when native
+ * decode fails for a track (DST-compressed .dff, an unsupported DSF
+ * variant, a malformed header) — via PlayerManager.onPlayerError.
+ *
  * Fixes in 1.0.9 (the "DSD still doesn't play" round):
  * - In-flight dedupe: re-tapping a DSD track used to abandon the running
- *   decode (PlayerManager bumped playGeneration and discarded it), so a
- *   track could never finish converting if the user tapped twice. One
- *   decode job per track is now shared across playQueue calls.
+ *   decode, so a track could never finish converting if the user tapped
+ *   twice. One decode job per track is now shared across calls.
  * - Cache validation: a corrupt/truncated cached WAV was served forever.
  *   The RIFF check now runs on cache hits too, and a bad cache is deleted
  *   and re-decoded.

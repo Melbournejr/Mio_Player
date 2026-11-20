@@ -12,12 +12,17 @@ data class Track(
     val lastPlayedAt: Long = 0, val dateAdded: Long = 0
 ) {
     val displayFormat: String get() = when {
-        format == AudioFormat.DSD -> "${dsdRate ?: "DSD"} → PCM ${DsdDisplay.pcmRateFor(dsdRate)}"
+        // Native DSD (v1.1.0): DSD plays directly, not via a PCM WAV.
+        // The "-> PCM ..." label now lives only on the transcode fallback
+        // (see DsdDisplay.pcmRateFor / DsdSupport.fallbackFormatLabel).
+        format == AudioFormat.DSD -> "${dsdRate ?: "DSD"} · Native decode"
         sampleRateHz > 0 -> "$format ${sampleRateHz/1000.0}kHz" + if (bitDepth>0) " ${bitDepth}bit" else ""
         else -> format.name
     }
 }
 object DsdDisplay {
+    /** PCM rate of the cached WAV produced by the transcode FALLBACK only.
+     *  The normal (native) path never produces PCM at this rate. */
     fun pcmRateFor(dsdRate: String?): String = when (dsdRate) {
         "DSD128" -> "352.8kHz"; "DSD256" -> "705.6kHz"; else -> "176.4kHz" // DSD64
     }

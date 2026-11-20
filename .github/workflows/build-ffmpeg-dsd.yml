@@ -1,0 +1,215 @@
+name: Build FFmpeg DSD native lib (arm64-v8a)
+
+# Manual build of libffmpegJNI.so for Media3 1.9.0's decoder_ffmpeg module
+# with DSD decoders enabled (Mio Player v1.1.0, native real-time DSD).
+#
+# Trigger manually: Actions tab -> this workflow -> Run workflow.
+# The .so is uploaded as an artifact; it is NOT committed by this workflow.
+# A later step commits it to:
+#   third_party/media3-ffmpeg-decoder-dsd/src/main/jniLibs/arm64-v8a/libffmpegJNI.so
+#
+# Provenance (verified 2026-11-20):
+# - Media3 1.9.0, repo androidx/media, tag 1.9.0
+#   (google/ExoPlayer is deprecated; Media3 now lives in androidx/media).
+#   libraries/decoder_ffmpeg/README.md: "We currently recommend version
+#   6.0" (FFmpeg); NDK "tested on NDK r26b (r23c if ANDROID_ABI < 21)".
+#   libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh: the stock
+#   configure flags copied below (arm64-v8a block only; the stock script
+#   builds all four ABIs, this workflow builds arm64-v8a only, as in v1).
+#   libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt: project name
+#   libffmpegJNI, links static libavutil/libswresample/libavcodec, adds
+#   -Wl,-z,max-page-size=16384 (16 KB page-size alignment).
+#   libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/
+#   FfmpegLibrary.java: `new LibraryLoader("ffmpegJNI")` ->
+#   System.loadLibrary("ffmpegJNI") -> libffmpegJNI.so. Codec lookup is by
+#   name (avcodec_find_decoder_by_name in ffmpeg_jni.cc), so enabling the
+#   DSD decoders at FFmpeg configure time is all the native side needs.
+#   NOTE: stock 1.9.0 FfmpegLibrary.getCodecName() has NO DSD case; the
+#   vendored module adds audio/dsd -> dsd_lsbf_planar (DSF) /
+#   audio/x-dsd-dff -> dsd_msbf (DFF) on the Java side. This workflow
+#   enables all four DSD decoders so either mapping resolves.
+# - Reference implementation: lecoix/mica-music, branch exoplayer-only
+#   (Apache 2.0), ffmpeg/docker/build-media3-ffmpeg.sh +
+#   third_party/media3-ffmpeg-decoder/scripts/build_ffmpeg_arm64.sh:
+#   same FFmpeg release/6.0 + NDK r26d + API 26 + arm64-only + CMake flow,
+#   output third_party/media3-ffmpeg-decoder/src/main/jniLibs/arm64-v8a/.
+#   Difference: mica enables only dsd_lsbf + dsd_lsbf_planar (DSF only);
+#   this workflow also enables dsd_msbf + dsd_msbf_planar so DFF files
+#   (MSBF) decode too.
+# - No Maven dependencies are added by this workflow: no
+#   androidx.media3:media3-decoder-ffmpeg, no com.arthenica:ffmpeg-kit-*.
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ffmpeg-dsd-arm64:
+    name: Build libffmpegJNI.so (arm64-v8a, FFmpeg 6.0, NDK r26d)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FFMPEG_BRANCH: release/6.0
+      MEDIA3_TAG: 1.9.0
+      NDK_VERSION: 26.3.11579264 # NDK r26d
+      ANDROID_ABI: "26" # == app minSdk 26 (must not exceed minSdk)
+      TARGET_ABI: arm64-v8a
+      HOST_PLATFORM: linux-x86_64
+      WORK_DIR: ${{ github.workspace }}/.ffmpeg-dsd-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Android NDK r26d
+        run: |
+          set -eux
+          SDK=/usr/local/lib/android/sdk
+          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VERSION}"
+          NDK="$SDK/ndk/${NDK_VERSION}"
+          echo "ANDROID_NDK=$NDK" >> $GITHUB_ENV
+          test -x "$NDK/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin/aarch64-linux-android${ANDROID_ABI}-clang"
+          ls "$NDK/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin" | head -20
+
+      - name: Check build tools
+        run: |
+          set -eux
+          command -v cmake
+          cmake --version
+          command -v ninja || echo "ninja not found (CMake will use Make)"
+          command -v git
+          nproc
+
+      - name: Fetch Media3 1.9.0 decoder_ffmpeg JNI sources
+        run: |
+          set -eux
+          mkdir -p "$WORK_DIR/jni"
+          git clone --depth 1 --branch "$MEDIA3_TAG" --filter=blob:none --sparse \
+            https://github.com/androidx/media.git "$WORK_DIR/media3"
+          git -C "$WORK_DIR/media3" sparse-checkout set libraries/decoder_ffmpeg/src/main/jni
+          cp "$WORK_DIR/media3/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh" \
+             "$WORK_DIR/media3/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt" \
+             "$WORK_DIR/media3/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc" \
+             "$WORK_DIR/jni/"
+          ls -l "$WORK_DIR/jni/"
+
+      - name: Fetch FFmpeg release/6.0 source
+        run: |
+          set -eux
+          cd "$WORK_DIR"
+          git clone --depth 1 --branch "$FFMPEG_BRANCH" https://github.com/FFmpeg/FFmpeg.git ffmpeg \
+            || git clone --depth 1 --branch n6.0 https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          ln -sfn "$WORK_DIR/ffmpeg" "$WORK_DIR/jni/ffmpeg"
+          ls "$WORK_DIR/ffmpeg/configure"
+
+      - name: Configure + build FFmpeg static libs (arm64-v8a only)
+        run: |
+          set -eux
+          TOOLCHAIN_PREFIX="$ANDROID_NDK/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin"
+          # Decoders: stock Media3 set (flac alac ape pcm_mulaw pcm_alaw mp3
+          # aac ac3 eac3 dca mlp truehd) + all four DSD decoders. Names must
+          # match FFmpeg decoder names / FfmpegLibrary.getCodecName().
+          ENABLED_DECODERS="flac alac ape pcm_mulaw pcm_alaw mp3 aac ac3 eac3 dca mlp truehd dsd_lsbf dsd_msbf dsd_lsbf_planar dsd_msbf_planar"
+          # COMMON_OPTIONS: verbatim from Media3 1.9.0 build_ffmpeg.sh
+          # (arm64-v8a block); the stock script builds all four ABIs, this
+          # workflow runs only the arm64-v8a configure, as mica-music does
+          # in third_party/media3-ffmpeg-decoder/scripts/build_ffmpeg_arm64.sh.
+          COMMON_OPTIONS="--target-os=android --enable-static --disable-shared --disable-doc --disable-programs --disable-everything --disable-avdevice --disable-avformat --disable-swscale --disable-postproc --disable-avfilter --disable-symver --enable-swresample --extra-ldexeflags=-pie --disable-v4l2-m2m --disable-vulkan"
+          for decoder in $ENABLED_DECODERS; do
+            COMMON_OPTIONS="$COMMON_OPTIONS --enable-decoder=$decoder"
+          done
+          echo "Enabled decoders: $ENABLED_DECODERS"
+          cd "$WORK_DIR/jni/ffmpeg"
+          ./configure \
+            --libdir=android-libs/arm64-v8a \
+            --arch=aarch64 \
+            --cpu=armv8-a \
+            --cross-prefix="${TOOLCHAIN_PREFIX}/aarch64-linux-android${ANDROID_ABI}-" \
+            --nm="${TOOLCHAIN_PREFIX}/llvm-nm" \
+            --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
+            --ranlib="${TOOLCHAIN_PREFIX}/llvm-ranlib" \
+            --strip="${TOOLCHAIN_PREFIX}/llvm-strip" \
+            $COMMON_OPTIONS
+          make -j"$(nproc)"
+          make install-libs
+          ls -l android-libs/arm64-v8a/
+
+      - name: Verify decoders in FFmpeg config
+        run: |
+          set -eux
+          CONFIG_MAK="$WORK_DIR/ffmpeg/ffbuild/config.mak"
+          test -f "$CONFIG_MAK"
+          for decoder in FLAC ALAC APE PCM_MULAW PCM_ALAW MP3 AAC AC3 EAC3 DCA MLP TRUEHD DSD_LSBF DSD_MSBF DSD_LSBF_PLANAR DSD_MSBF_PLANAR; do
+            grep -q "CONFIG_${decoder}_DECODER=yes" "$CONFIG_MAK" || { echo "ERROR: ${decoder} decoder missing from FFmpeg build" >&2; exit 1; }
+          done
+          echo "All 16 decoders enabled."
+          for lib in libavcodec.a libavutil.a libswresample.a; do
+            test -f "$WORK_DIR/ffmpeg/android-libs/arm64-v8a/$lib"
+          done
+
+      - name: Build libffmpegJNI.so with CMake
+        run: |
+          set -eux
+          cmake -S "$WORK_DIR/jni" -B "$WORK_DIR/cmake-arm64-v8a" \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM="android-${ANDROID_ABI}" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$WORK_DIR/cmake-arm64-v8a" -j"$(nproc)"
+          ls -l "$WORK_DIR/cmake-arm64-v8a/libffmpegJNI.so"
+          file "$WORK_DIR/cmake-arm64-v8a/libffmpegJNI.so"
+
+      - name: Verify libffmpegJNI.so (JNI symbols + DSD decoders + page size)
+        run: |
+          set -eux
+          SO="$WORK_DIR/cmake-arm64-v8a/libffmpegJNI.so"
+          NM="$ANDROID_NDK/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin/llvm-nm"
+          # JNI entry points the Media3 Java side calls (FfmpegLibrary /
+          # FfmpegAudioDecoder). These must be exported dynamic symbols.
+          for sym in Java_androidx_media3_decoder_ffmpeg_FfmpegLibrary_ffmpegHasDecoder \
+                     Java_androidx_media3_decoder_ffmpeg_FfmpegLibrary_ffmpegGetVersion \
+                     Java_androidx_media3_decoder_ffmpeg_FfmpegAudioDecoder_ffmpegInitialize; do
+            "$NM" -D "$SO" | grep -q "$sym" || { echo "ERROR: missing JNI symbol $sym" >&2; exit 1; }
+          done
+          # DSD decoder objects must actually be linked in, not just
+          # --enable-decoder'd at configure time.
+          for sym in ff_dsd_lsbf_decoder ff_dsd_msbf_decoder ff_dsd_lsbf_planar_decoder ff_dsd_msbf_planar_decoder; do
+            "$NM" "$SO" | grep -q "$sym" || { echo "ERROR: missing DSD symbol $sym" >&2; exit 1; }
+          done
+          echo "DSD decoder symbols present:"
+          "$NM" "$SO" | grep -i "ff_dsd_.*_decoder" || true
+          # 16 KB page-size alignment (Android 15+ requirement; set by the
+          # stock CMakeLists.txt via -Wl,-z,max-page-size=16384).
+          readelf -W -l "$SO" | grep -E "LOAD.*0x4000" && echo "16KB LOAD alignment OK" || echo "WARN: 16KB LOAD alignment not confirmed (check manually)"
+          sha256sum "$SO"
+
+      - name: Stage artifact
+        run: |
+          set -eux
+          STAGE="$WORK_DIR/ffmpeg-dsd-arm64"
+          mkdir -p "$STAGE"
+          cp "$WORK_DIR/cmake-arm64-v8a/libffmpegJNI.so" "$STAGE/libffmpegJNI.so"
+          cp "$WORK_DIR/ffmpeg/ffbuild/config.mak" "$STAGE/config.mak"
+          {
+            echo "Mio Player native FFmpeg DSD build"
+            echo "Media3 tag: $MEDIA3_TAG"
+            echo "FFmpeg branch: $FFMPEG_BRANCH"
+            echo "NDK: r26d ($NDK_VERSION)"
+            echo "ABI: arm64-v8a, android-${ANDROID_ABI}"
+            echo "Decoders: flac alac ape pcm_mulaw pcm_alaw mp3 aac ac3 eac3 dca mlp truehd dsd_lsbf dsd_msbf dsd_lsbf_planar dsd_msbf_planar"
+            echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "Commit: $GITHUB_SHA"
+            sha256sum "$STAGE/libffmpegJNI.so"
+          } > "$STAGE/BUILD_INFO.txt"
+          cat "$STAGE/BUILD_INFO.txt"
+
+      - name: Upload libffmpegJNI.so artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-dsd-arm64
+          path: ${{ github.workspace }}/.ffmpeg-dsd-build/ffmpeg-dsd-arm64
+          if-no-files-found: error
+          retention-days: 30

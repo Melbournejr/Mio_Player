@@ -1,7 +1,9 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("com.google.devtools.ksp") }
 android {
     namespace = "com.mio.player"
-    compileSdk = 34
+    // compileSdk 35 is REQUIRED by Media3 1.9.0: its AARs declare
+    // minCompileSdk=35 (targetSdk stays 34).
+    compileSdk = 35
     defaultConfig {
         applicationId = "com.mio.player"
         minSdk = 26
@@ -36,7 +38,7 @@ android {
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 dependencies {
-    val media3 = "1.4.1"
+    val media3 = "1.9.0"
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.activity:activity-compose:1.9.2")
@@ -51,6 +53,14 @@ dependencies {
     implementation("androidx.media3:media3-session:$media3")
     implementation("androidx.media3:media3-common:$media3")
     implementation("androidx.media3:media3-ui:$media3")
+    // Native DSD: the vendored Media3 FFmpeg decoder module
+    // (third_party/media3-ffmpeg-decoder-dsd) — Google does NOT publish
+    // androidx.media3:media3-decoder-ffmpeg to Maven, so the 1.9.0 module
+    // sources are vendored with a DSD patch (see its README.md) and the
+    // native libffmpegJNI.so is committed there as a prebuilt binary.
+    // DefaultRenderersFactory finds FfmpegAudioRenderer by reflection when
+    // EXTENSION_RENDERER_MODE_PREFER is set (see PlayerManager).
+    implementation(project(":third_party:media3-ffmpeg-decoder-dsd"))
     // DSD: FFmpeg decode to WAV cache (see data/audio/DsdSupport.kt).
     // Verified 2026-11-20 on Maven Central (HTTP 200 for both POM and AAR):
     // dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.9 is the LATEST
@@ -58,9 +68,11 @@ dependencies {
     // simply the newest when the app was first built — nobody checked
     // for a newer release since. The fork's API is a drop-in replacement
     // for the old com.arthenica.ffmpegkit API, so no code changes needed.
-    // Do NOT use androidx.media3:media3-decoder-ffmpeg — Google does NOT
-    // publish it to Google Maven or Maven Central (404 for every version,
-    // including 1.4.1 — that was run #2's failure). Do NOT use
+    // Do NOT add androidx.media3:media3-decoder-ffmpeg as a Maven
+    // dependency — Google does NOT publish it to Google Maven or Maven
+    // Central (404 for every version, including 1.4.1 — that was run #2's
+    // failure). The decoder is vendored instead, as a source module at
+    // third_party/media3-ffmpeg-decoder-dsd (see its README.md). Do NOT use
     // com.arthenica:ffmpeg-kit-* either — removed from Maven Central
     // in April 2025.
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.9")
