@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -71,7 +72,13 @@ suspend fun restoreSoundSettings(ctx: Context) {
     val nav = rememberNavController()
     val container = (ctx.applicationContext as MioApp).container
     val scope = rememberCoroutineScope()
-    val onboarded by container.settings.onboarded.collectAsState(initial = null)
+    // collectAsState needs a non-null initial value, but we must not guess
+    // onboarded=false before DataStore loads (that would flash the intro
+    // for returning users), so use produceState with a null "not loaded
+    // yet" state instead.
+    val onboarded by produceState<Boolean?>(initialValue = null) {
+        container.settings.onboarded.collect { value = it }
+    }
     val libVm: LibraryViewModel = viewModel()
     val playerVm: PlayerViewModel = viewModel()
     val update = rememberUpdateState()
