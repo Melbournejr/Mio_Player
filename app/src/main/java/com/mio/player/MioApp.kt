@@ -8,6 +8,10 @@ import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.data.repo.LyricsRepository
 import com.mio.player.data.repo.MusicScanner
 import com.mio.player.playback.PlayerManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 /** Manual DI container — deliberately no Hilt: fewer annotation processors,
  *  faster CI builds, and one less failure mode on GitHub Actions. */
 class AppContainer(ctx: Context) {
@@ -26,7 +30,7 @@ class MioApp : Application() {
         MioLog.event(this, "App start v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         // 1.0.12: one-time lyrics-cache clear (engine v2) so wrong lyrics
         // cached by older lookups are re-fetched with the current logic.
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             runCatching { container.lyricsRepo.clearStaleCacheIfNeeded() }
         }
     }
