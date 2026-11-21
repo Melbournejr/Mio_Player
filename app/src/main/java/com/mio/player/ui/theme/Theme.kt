@@ -53,7 +53,12 @@ val MioDivider @Composable get() = LocalMioColors.current.divider
 /** Gradient endpoints (first / accent stop). */
 val MioTeal @Composable get() = LocalMioColors.current.gradientColors.first()
 val MioCyan @Composable get() = LocalMioColors.current.accent
-val MioGradient @Composable get() = Brush.horizontalGradient(LocalMioColors.current.gradientColors)
+/** Theme gradient at 135° (top-left -> bottom-right), as in the design
+ *  system. `end = Offset.Infinite` resolves against the draw size, so
+ *  this is a true diagonal on any surface — the previous horizontal
+ *  gradient did not match the spec's 135° gradient. (The large
+ *  surfaces in mioGradientBackground already used the diagonal.) */
+val MioGradient @Composable get() = Brush.linearGradient(LocalMioColors.current.gradientColors, start = Offset.Zero, end = Offset.Infinite)
 val CardLarge = RoundedCornerShape(20.dp); val CardSmall = RoundedCornerShape(16.dp); val InputShape = RoundedCornerShape(16.dp)
 /** 135° diagonal gradient (top-left -> bottom-right), as in the design
  *  system. Size-aware, so it fills any button or surface correctly. */

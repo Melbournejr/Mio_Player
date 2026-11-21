@@ -1,6 +1,7 @@
 
 package com.mio.player.ui.screens
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -9,14 +10,24 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
+import com.mio.player.data.model.Track
 import com.mio.player.ui.components.*
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
@@ -30,7 +41,7 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
     val albums = tracks.groupBy { it.album }.entries.sortedByDescending { it.value.size }
     val featured = albums.firstOrNull()
     LazyColumn(Modifier.fillMaxSize().background(MioBg).padding(horizontal = 20.dp)) {
-        item { Spacer(Modifier.height(16.dp)); Text("Good evening", color = MioText, fontSize = 26.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold); Text("${tracks.size} songs in your library", color = MioTextSecondary) }
+        item { Spacer(Modifier.height(16.dp)); Text("Good evening", color = MioText, fontSize = 26.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold); Text("${tracks.size} songs in your library", color = MioTextSecondary, fontSize = 13.sp) }
         if (featured != null) {
             item {
                 SectionTitle("Featured")
@@ -58,14 +69,14 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
                             Column(Modifier.padding(12.dp)) {
                                 AlbumArt(list.first().albumId, Modifier.size(64.dp))
                                 Spacer(Modifier.height(8.dp))
-                                Text(name, color = MioText, maxLines = 2); Text("${list.size} songs", color = MioTextSecondary)
+                                Text(name, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 2); Text("${list.size} songs", color = MioTextSecondary, fontSize = 13.sp)
                             }
                         }
                     }
                 }
             }
         }
-        item { SectionTitle("Recently played"); LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) { items(tracks.take(6)) { t -> androidx.compose.material3.Card(Modifier.size(140.dp).clickable { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MioSurface), shape = CardLarge) { Column(Modifier.padding(12.dp)) { AlbumArt(t.albumId, Modifier.size(64.dp)); Spacer(Modifier.height(8.dp)); Text(t.title, color = MioText, maxLines = 2); Text(t.artist, color = MioTextSecondary) } } } } }
+        item { SectionTitle("Recently played"); LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) { items(tracks.take(6)) { t -> androidx.compose.material3.Card(Modifier.size(140.dp).clickable { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MioSurface), shape = CardLarge) { Column(Modifier.padding(12.dp)) { AlbumArt(t.albumId, Modifier.size(64.dp)); Spacer(Modifier.height(8.dp)); Text(t.title, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 2); Text(t.artist, color = MioTextSecondary, fontSize = 13.sp) } } } } }
         item { SectionTitle("All songs") }
         items(tracks) { t -> TrackRow(t, onClick = { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, onFav = { libVm.toggleFavorite(t) }, isPlaying = t.id == currentId) }
         item { Spacer(Modifier.height(24.dp)) }
@@ -112,6 +123,21 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
             libVm.addFolder(uri.toString())
         }
     }
+    // Tabs: Songs (flat list, per spec p.4 screen 3: "Danh sách bài hát")
+    // and Folders (real folders from Track.path). v1.0.1 claimed a
+    // Folders tab, but this screen never had one — only the flat list —
+    // so the user could never see or open the folder holding their
+    // music. Tapping a folder opens its songs; tapping a song plays it
+    // (from that folder's queue when inside a folder, so Next stays in
+    // the folder).
+    var tab by remember { mutableStateOf(0) }
+    var openFolderKey by remember { mutableStateOf<String?>(null) }
+    val folders = remember(tracks) {
+        tracks.groupBy(::folderOf)
+            .map { (key, list) -> FolderGroup(key.first, key.second, list) }
+            .sortedBy { it.name.lowercase() }
+    }
+    val openFolder = folders.firstOrNull { it.key == openFolderKey }
     Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
         SectionTitle("Library")
         GradientButton("Scan music folders") { libVm.scan() }
@@ -119,6 +145,102 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
         androidx.compose.material3.TextButton(onClick = { folderPicker.launch(null) }) { Text("Add a music folder", color = MioCyan) }
         Spacer(Modifier.height(8.dp))
         androidx.compose.material3.TextButton(onClick = { nav.navigate(Routes.ALBUM) }) { Text("Albums & artists", color = MioCyan) }
-        LazyColumn { items(tracks) { t -> TrackRow(t, onClick = { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, onFav = { libVm.toggleFavorite(t) }, isPlaying = t.id == currentId) } }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth()) {
+            LibraryTab("Songs", selected = tab == 0) { tab = 0; openFolderKey = null }
+            LibraryTab("Folders", selected = tab == 1) { tab = 1; openFolderKey = null }
+        }
+        Spacer(Modifier.height(8.dp))
+        if (tracks.isEmpty()) {
+            Text("No songs yet. Tap \"Scan music folders\" or add a folder with your music.", color = MioTextSecondary, fontSize = 14.sp)
+        } else if (tab == 0) {
+            LazyColumn(Modifier.weight(1f)) {
+                itemsIndexed(tracks) { i, t ->
+                    TrackRow(t, onClick = { playerVm.playQueue(tracks, i); nav.navigate(Routes.NOW_PLAYING) }, onFav = { libVm.toggleFavorite(t) }, isPlaying = t.id == currentId)
+                }
+            }
+        } else if (openFolder == null) {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(folders) { f -> FolderRow(f) { openFolderKey = f.key } }
+            }
+        } else {
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { openFolderKey = null }) { Icon(Icons.Default.ArrowBack, "Back to folders", tint = MioText) }
+                Column(Modifier.weight(1f)) {
+                    Text(openFolder.name, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    Text("${openFolder.tracks.size} songs", color = MioTextSecondary, fontSize = 13.sp)
+                }
+            }
+            LazyColumn(Modifier.weight(1f)) {
+                itemsIndexed(openFolder.tracks) { i, t ->
+                    TrackRow(t, onClick = { playerVm.playQueue(openFolder.tracks, i); nav.navigate(Routes.NOW_PLAYING) }, onFav = { libVm.toggleFavorite(t) }, isPlaying = t.id == currentId)
+                }
+            }
+        }
+    }
+}
+/** One real folder in the Library Folders tab. `key` is unique per
+ *  physical folder; `name` is the display name (last path segment,
+ *  e.g. "Adele 25-2015" or "NhacCuaTui.Com"). */
+private data class FolderGroup(val key: String, val name: String, val tracks: List<Track>)
+/** The folder a track lives in, as (unique key, display name).
+ *  Both scan sources store the folder in [Track.path], but in different
+ *  forms — see MusicScanner: MediaStore tracks carry the absolute file
+ *  path ("/storage/emulated/0/Music/Adele 25-2015/A1.Hello.dsf"), SAF
+ *  tracks the path relative to the picked folder root
+ *  ("Adele 25-2015/A1.Hello.dsf", or just "song.dsf" at the root).
+ *  The parent segment is the folder in both cases. The key is the full
+ *  parent path for MediaStore tracks (already unique) and the SAF tree
+ *  root + relative parent for SAF tracks — two picked folders can share
+ *  a relative name, so the root disambiguates them. A SAF track sitting
+ *  at the root of its picked folder has no parent segment, so the folder
+ *  is the picked folder itself, named from its document-tree URI. */
+private fun folderOf(t: Track): Pair<String, String> {
+    val parent = t.path.substringBeforeLast('/', "")
+    if (parent.isNotEmpty()) {
+        val name = parent.substringAfterLast('/')
+        val key = if (t.path.startsWith("/")) parent else "${safTreeRoot(t.uri)}/$parent"
+        return key to name
+    }
+    val root = safTreeRoot(t.uri)
+    return root to root.substringAfterLast('/').ifEmpty { "Music folder" }
+}
+/** Decoded root of a SAF document-tree URI
+ *  ("content://.../tree/primary%3AMusic/document/..." -> "primary:Music").
+ *  Uri.pathSegments are already percent-decoded, so no extra decoding.
+ *  Anything that is not a tree URI (e.g. a MediaStore content URI, which
+ *  should never reach here) falls back to a generic name. */
+private fun safTreeRoot(uri: Uri): String {
+    val segments = uri.pathSegments
+    val i = segments.indexOf("tree")
+    if (i >= 0 && i + 1 < segments.size) return segments[i + 1]
+    return "Music folder"
+}
+/** One tab of the Library tab row. Selected tab: text in primary color
+ *  with a theme-gradient indicator; unselected: secondary text, no bar. */
+@Composable private fun LibraryTab(text: String, selected: Boolean, onClick: () -> Unit) {
+    Column(Modifier.weight(1f).clickable { onClick() }.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text, color = if (selected) MioText else MioTextSecondary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        val indicator = if (selected) Modifier.mioGradientBackground(RoundedCornerShape(999.dp)) else Modifier
+        Box(indicator.fillMaxWidth(0.6f).height(3.dp))
+    }
+}
+/** One folder row in the Folders tab: folder icon, name, song count,
+ *  chevron. Tapping opens the folder's songs. */
+@Composable private fun FolderRow(folder: FolderGroup, onClick: () -> Unit) {
+    androidx.compose.material3.Card(
+        Modifier.fillMaxWidth().clickable { onClick() },
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MioSurface),
+        shape = CardSmall
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Folder, null, tint = MioCyan, modifier = Modifier.size(40.dp))
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(folder.name, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text("${folder.tracks.size} songs", color = MioTextSecondary, fontSize = 13.sp)
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = MioTextSecondary)
+        }
     }
 }

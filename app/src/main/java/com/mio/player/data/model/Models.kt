@@ -19,6 +19,25 @@ data class Track(
         sampleRateHz > 0 -> "$format ${sampleRateHz/1000.0}kHz" + if (bitDepth>0) " ${bitDepth}bit" else ""
         else -> format.name
     }
+    /** Display label with a live-rate fallback (v1.1.4, Fix 2).
+     *  Prefer the stored [dsdRate]; if it is null — the row was scanned
+     *  before the v1.1.4 DFF-header fix, or the header was unreadable at
+     *  scan time — use [liveDsdRate], the label the player parsed for
+     *  this track while playing it (see
+     *  DsdSupport.dsdRateFromPcmSampleRateHz in data.audio). A null live rate still
+     *  shows plain "DSD", never a guess. Non-DSD tracks are unchanged.
+     *  Hook (PlayerManager / UI, not this file): pass the live label for
+     *  the CURRENT track only, derived from the Format of the track
+     *  actually playing — Format.sampleRate is the PCM rate (DSD rate /
+     *  8) and only when its MIME is "audio/dsd" or "audio/x-dsd-dff"
+     *  and the playing URI is still the raw .dsf/.dff (not a swapped-in
+     *  transcode WAV, whose 176.4 kHz must never be read as a DSD rate).
+     *  Call sites today: NowPlaying.kt (t?.displayFormat) and the mini
+     *  player in Common.kt ("${t.artist} • ${t.displayFormat}"). */
+    fun displayFormatWithLiveRate(liveDsdRate: String?): String = when {
+        format != AudioFormat.DSD -> displayFormat
+        else -> "${dsdRate ?: liveDsdRate ?: "DSD"} · Native decode"
+    }
 }
 object DsdDisplay {
     /** PCM rate of the cached WAV produced by the transcode FALLBACK only.

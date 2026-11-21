@@ -112,14 +112,20 @@ suspend fun restoreSoundSettings(ctx: Context) {
         composable(Routes.LIBRARY) { MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { LibraryScreen(libVm, playerVm, nav) } }
         composable(Routes.PROFILE) { MainScaffold(nav, Routes.PROFILE, libVm, playerVm) { ProfileScreen(libVm, nav) } }
         composable(Routes.NOW_PLAYING) { NowPlayingScreen(playerVm, nav) }
-        composable(Routes.LYRICS) { LyricsScreen(playerVm, nav) }
+        // Design system (p.8): bottom navigation + mini player are
+        // mandatory on every screen. Album / Artist / Lyrics previously
+        // had neither — no way back to Home/Search/Library/Profile
+        // without the system back button, and no mini player. They now
+        // use MainScaffold like the four main tabs. Lyrics is an
+        // extension of Now Playing, so no tab is marked selected ("").
+        composable(Routes.LYRICS) { MainScaffold(nav, "", libVm, playerVm) { LyricsScreen(playerVm, nav) } }
         composable(Routes.EQ) { EqualizerScreen(nav) }
         composable(Routes.LOG) { LogScreen(nav) }
-        composable(Routes.ALBUM) { AlbumDetailScreen(libVm, playerVm, nav) }
-        composable(Routes.ARTIST) { ArtistScreen(libVm, playerVm, nav) }
+        composable(Routes.ALBUM) { MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { AlbumDetailScreen(libVm, playerVm, nav) } }
+        composable(Routes.ARTIST) { MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { ArtistScreen(libVm, playerVm, nav) } }
         composable(Routes.ARTIST_DETAIL) { backStackEntry ->
             val name = backStackEntry.arguments?.getString("name") ?: ""
-            ArtistDetailScreen(name, libVm, playerVm, nav)
+            MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { ArtistDetailScreen(name, libVm, playerVm, nav) }
         }
     }
 }
@@ -130,8 +136,8 @@ suspend fun restoreSoundSettings(ctx: Context) {
             Column {
                 queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId) }
                 NavigationBar(containerColor = com.mio.player.ui.theme.MioSurface) {
-                    listOf(Triple(Routes.HOME, "Home", Icons.Default.Home), Triple(Routes.SEARCH, "Search", Icons.Default.Search),
-                        Triple(Routes.LIBRARY, "Library", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Profile", Icons.Default.Person)).forEach { (r, label, icon) ->
+                    listOf(Triple(Routes.HOME, "Trang chủ", Icons.Default.Home), Triple(Routes.SEARCH, "Tìm kiếm", Icons.Default.Search),
+                        Triple(Routes.LIBRARY, "Thư viện", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Hồ sơ", Icons.Default.Person)).forEach { (r, label, icon) ->
                         NavigationBarItem(selected = current == r, onClick = { if (current != r) nav.navigate(r) { popUpTo(Routes.HOME) } },
                             // Design system: the selected icon uses the theme
                             // gradient; unselected icons are secondary text.

@@ -3,10 +3,14 @@ package com.mio.player.ui.screens
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mio.player.data.ota.OtaUpdateChecker
@@ -23,7 +27,10 @@ fun UpdateDialog(info: UpdateInfo, onDismiss: () -> Unit) {
     var progress by remember { mutableStateOf(0) }
     AlertDialog(
         onDismissRequest = { if (!downloading) onDismiss() },
-        title = { Text("Update available — ${info.versionName}", color = MioText) },
+        // Design system: card radius 16–20 px (CardLarge = 20 dp);
+        // the Material default dialog shape (28 dp) was off-spec.
+        shape = CardLarge,
+        title = { Text("Update available — ${info.versionName}", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold) },
         text = {
             Column {
                 Text(
@@ -33,8 +40,14 @@ fun UpdateDialog(info: UpdateInfo, onDismiss: () -> Unit) {
                 )
                 if (downloading) {
                     Spacer(Modifier.height(16.dp))
-                    LinearProgressIndicator(progress = progress / 100f, modifier = Modifier.fillMaxWidth())
-                    Text("Downloading… $progress%", color = MioTextSecondary, fontSize = 12.sp)
+                    LinearProgressIndicator(progress = progress / 100f, modifier = Modifier.fillMaxWidth(), color = MioCyan)
+                    Spacer(Modifier.height(8.dp))
+                    // Design system: the "downloading" state gets its own
+                    // icon, not just colour or text.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Download, contentDescription = "Downloading", tint = MioCyan, modifier = Modifier.size(16.dp))
+                        Text(" Downloading… $progress%", color = MioTextSecondary, fontSize = 12.sp)
+                    }
                 }
             }
         },

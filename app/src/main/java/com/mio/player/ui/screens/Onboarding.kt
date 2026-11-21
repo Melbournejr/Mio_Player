@@ -34,10 +34,10 @@ import kotlinx.coroutines.launch
         "Studio sound, anywhere" to "High-res playback, DSD decoding and a full 10-band equalizer.",
         "Lyrics that follow the song" to "Synced lyrics, found automatically.")
     var page by remember { mutableStateOf(0) }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.weight(1f))
         Text(pages[page].first, color = MioText, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(12.dp)); Text(pages[page].second, color = MioTextSecondary, fontSize = 15.sp)
+        Spacer(Modifier.height(12.dp)); Text(pages[page].second, color = MioTextSecondary, fontSize = 14.sp)
         Spacer(Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             pages.indices.forEach { i ->
@@ -56,10 +56,10 @@ import kotlinx.coroutines.launch
     val container = (ctx.applicationContext as com.mio.player.MioApp).container
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp)) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
         Spacer(Modifier.height(48.dp))
         Text("Welcome back", color = MioText, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Your library stays on your device.", color = MioTextSecondary)
+        Text("Your library stays on your device.", color = MioTextSecondary, fontSize = 14.sp)
         Spacer(Modifier.height(32.dp))
         OutlinedTextFieldLocal("Your name (optional)", name) { name = it }
         Spacer(Modifier.height(24.dp))
@@ -77,7 +77,7 @@ import kotlinx.coroutines.launch
     }
 }
 @Composable fun OutlinedTextFieldLocal(label: String, value: String, onChange: (String) -> Unit) {
-    androidx.compose.material3.OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth(),
+    androidx.compose.material3.OutlinedTextField(value, onChange, label = { Text(label, fontSize = 14.sp) }, modifier = Modifier.fillMaxWidth(),
         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(focusedTextColor = MioText, unfocusedTextColor = MioText, focusedBorderColor = MioCyan, unfocusedBorderColor = MioDivider),
         shape = InputShape)
 }
@@ -87,7 +87,7 @@ import kotlinx.coroutines.launch
     val scope = rememberCoroutineScope()
     val genres = listOf("Pop","Chill","Lo-Fi","Rock","Jazz","EDM","Classical","Hip-Hop","R&B","Acoustic")
     val selected = remember { mutableStateListOf<String>() }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp)) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
         Text("What do you love to hear?", color = MioText, fontSize = 26.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(16.dp))
         androidx.compose.foundation.lazy.grid.LazyVerticalGrid(columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.weight(1f)) {

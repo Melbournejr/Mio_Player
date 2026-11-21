@@ -6,6 +6,7 @@ import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.db.TrackEntity
+import com.mio.player.data.log.MioLog
 import com.mio.player.data.model.AudioFormat
 import com.mio.player.data.model.DsdDisplay
 import java.io.File
@@ -65,6 +66,11 @@ class MusicScanner(private val ctx: Context) {
                     if (info != null) {
                         if (durationMs <= 0L) durationMs = info.first
                         dsdRate = DsdDisplay.dsdRateFor(info.second)
+                    } else {
+                        // v1.1.4: a DSD file whose header cannot be read
+                        // shows plain "DSD" — log it so the next user log
+                        // names the file instead of failing silently.
+                        MioLog.event(ctx, "DSD header unreadable (label falls back to DSD): $path")
                     }
                 }
                 out += TrackEntity(id = id, title = c.getString(tI) ?: path.substringAfterLast('/'),
@@ -98,9 +104,14 @@ class MusicScanner(private val ctx: Context) {
                     var durationMs = 0L
                     var dsdRate: String? = null
                     if (isDsd) {
-                        dsdInfoForUri(f.uri, name.endsWith(".dff", ignoreCase = true))?.let {
-                            durationMs = it.first
-                            dsdRate = DsdDisplay.dsdRateFor(it.second)
+                        val info = dsdInfoForUri(f.uri, name.endsWith(".dff", ignoreCase = true))
+                        if (info != null) {
+                            durationMs = info.first
+                            dsdRate = DsdDisplay.dsdRateFor(info.second)
+                        } else {
+                            // v1.1.4: see scanMediaStore — log the file so
+                            // a still-unreadable header is diagnosable.
+                            MioLog.event(ctx, "DSD header unreadable (label falls back to DSD): $relPath")
                         }
                     }
                     out += TrackEntity(id = (f.uri.toString().hashCode().toLong() and 0xffffffffL) or (1L shl 40),
@@ -161,15 +172,29 @@ class MusicScanner(private val ctx: Context) {
         ctx.contentResolver.openInputStream(uri)?.use { if (isDff) dffInfo(it) else dsfInfo(it) }
     }.getOrNull()
 
-    // --- DFF header rate + duration (v1.1.3) ---
+    // --- DFF header rate + duration (v1.1.3, header fixed v1.1.4) ---
     // DFF (DSDIFF) layout, big-endian throughout — mirrors
     // DsdExtractor.parseDff/parseProp (same chunk IDs, same widths):
-    //   "FRM8" + u64 form size + "DSD " form type, then chunks, each =
-    //   4-byte id + u64 BE size + payload. The PROP chunk payload is
-    //   "SND " + sub-chunks, each = 4-byte id + u64 BE size + payload;
-    //   FS carries the sample rate as u32 BE, CHNL the channel count as
-    //   u16 BE, CMPR "DST " means DST-compressed. Note the FS id is
-    //   "FS  " (space-padded) — trim it, as the 1.1.2 extractor fix does.
+    //   "FRM8" + u64 form size + "DSD " form type (a 16-byte form
+    //   header: 4 + 8 + 4), then chunks, each = 4-byte id + u64 BE
+    //   size + payload. The PROP chunk payload is "SND " + sub-chunks,
+    //   each = 4-byte id + u64 BE size + payload; FS carries the sample
+    //   rate as u32 BE, CHNL the channel count as u16 BE, CMPR "DST "
+    //   means DST-compressed. Note the FS id is "FS  " (space-padded) —
+    //   trim it, as the 1.1.2 extractor fix does.
+    //   v1.1.4 ROOT CAUSE (why every .dff showed plain "DSD" in
+    //   v1.1.3): this function read only a 12-byte form header and
+    //   checked for "DSD " at offset 8. But offset 8 is inside the
+    //   u64 form size — the "DSD " form type sits at offset 12, after
+    //   the full 8-byte size. Bytes 8..11 are the LOW 4 bytes of the
+    //   form size, which for A1.Hello.dff are 0x18E97E44 (file
+    //   ~398 MiB), never "DSD " — so the check failed for every .dff,
+    //   dffInfo() always returned null, and dsdRate stayed null even
+    //   though DsdExtractor (which consumes the 4-byte "FRM8" magic
+    //   first and then reads 12 more bytes = 16 total) parsed the
+    //   same file fine ("DFF header OK: ch=2 dsdRate=5644800").
+    //   The DSF path was unaffected — dsfInfo() checks "fmt " at the
+    //   correct offset 28 — which is why only .dff labels were wrong.
     //   The "DSD " chunk's size is the audio data size in bytes, so
     //   durationMs = dataSize * 8 / channels * 1000 / sampleRate.
     //   DST-compressed files have no plain DSD data chunk, so duration
@@ -207,10 +232,10 @@ class MusicScanner(private val ctx: Context) {
             }
             return true
         }
-        val formHead = ByteArray(12)
+        val formHead = ByteArray(16)
         if (!readExact(formHead)) return@runCatching null
         if (String(formHead, 0, 4, Charsets.US_ASCII) != "FRM8") return@runCatching null
-        if (String(formHead, 8, 4, Charsets.US_ASCII) != "DSD ") return@runCatching null
+        if (String(formHead, 12, 4, Charsets.US_ASCII) != "DSD ") return@runCatching null
         var sampleRate = 0
         var channels = 0
         var dstCompressed = false

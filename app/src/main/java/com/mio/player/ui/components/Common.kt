@@ -114,29 +114,34 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
  *  paused) the bars sit low and still: fixed per-bar heights determined
  *  by the bar index only.
  *
- *  SCALING (v1.1.3, Fix 1): the FFT tap emits small magnitudes — the
- *  user's v1.1.2 log shows maxLevel ≈ 0.042 on loud playback — so the
- *  raw values are boosted in the UI layer only (WaveformTap's levels
- *  are untouched) before mapping to height:
- *      norm   = sqrt(min(level * WAVEFORM_GAIN, 1f))   // GAIN = 12
+ *  SCALING (v1.1.4, Fix 3 — was v1.1.3, GAIN = 12): the v1.1.3 gain was
+ *  calibrated on the tap's first-frame log (maxLevel ≈ 0.042), but that
+ *  frame is the first 5.8 ms of a track — decoder settling / near
+ *  silence — not loud playback. Steady-state low-band levels are
+ *  >= 0.083 (measured from the user's v1.1.3 video: bars 0-14 pinned
+ *  at the full 112 dp for 30 s straight), so GAIN = 12 pinned every
+ *  loud bar at full height and hid all variation between bars. GAIN
+ *  is now 4: only a level >= 0.25 (bin peak >= 0.0625, about -12 dB)
+ *  reaches full height, so loud bars stay tall but differ from each
+ *  other, and quiet bars stay visible. The raw values are boosted in
+ *  the UI layer only (WaveformTap's levels are untouched):
+ *      norm   = sqrt(min(level * WAVEFORM_GAIN, 1f))   // GAIN = 4
  *      height = WAVEFORM_MIN_HEIGHT_DP + norm * (ROW_HEIGHT_DP - MIN)
- *  The sqrt curve lifts quiet passages (a 0.01 level stays clearly
- *  visible) while loud passages saturate gently instead of clipping
- *  flat, so neighbouring bars differ by tens of dp and the wave
- *  visibly dances. Computed heights on the 112 dp row (min stub 10 dp):
+ *  Computed heights on the 112 dp row (min stub 10 dp):
  *      level 0.00  -> norm 0.000 ->  10.0 dp (short stub, never invisible)
- *      level 0.01  -> norm 0.346 ->  45.3 dp (~40% of the row)
- *      level 0.042 -> norm 0.710 ->  82.4 dp (~74% of the row)
- *      level 1.00  -> norm 1.000 -> 112.0 dp (full height)
- *  (Old rendering was 8 + level*48, so 0.042 rendered a ~10 dp bar —
- *  flat and tiny.) Bars are painted with the theme gradient (Deep Wave:
+ *      level 0.01  -> norm 0.200 ->  30.4 dp
+ *      level 0.042 -> norm 0.410 ->  51.8 dp
+ *      level 0.10  -> norm 0.632 ->  74.5 dp
+ *      level 0.20  -> norm 0.894 -> 101.2 dp
+ *      level 0.25  -> norm 1.000 -> 112.0 dp (full height)
+ *  Bars are painted with the theme gradient (Deep Wave:
  *  teal #14B8A6 -> cyan #22D3EE, vertical, bottom -> top), rounded,
  *  5 dp wide. */
-// Waveform scaling constants (v1.1.3, Fix 1) — see the LiveWaveform KDoc
-// for the math and the computed heights.
+// Waveform scaling constants (v1.1.4, Fix 3 — was v1.1.3 GAIN = 12) —
+// see the LiveWaveform KDoc for the math and the computed heights.
 private const val WAVEFORM_ROW_HEIGHT_DP = 112f
 private const val WAVEFORM_MIN_HEIGHT_DP = 10f
-private const val WAVEFORM_GAIN = 12f
+private const val WAVEFORM_GAIN = 4f
 private const val WAVEFORM_LIVE_THRESHOLD = 0.005f
 @Suppress("UNUSED_PARAMETER")
 @Composable fun LiveWaveform(levels: FloatArray, playing: Boolean, progress: Float, modifier: Modifier = Modifier) {

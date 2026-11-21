@@ -133,8 +133,8 @@ import kotlinx.coroutines.launch
     LaunchedEffect(currentIndex) {
         if (lines.isNotEmpty()) runCatching { listState.animateScrollToItem((currentIndex - 2).coerceAtLeast(0)) }
     }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp)) {
-        Text(t?.title ?: "Lyrics", color = MioText, fontSize = 22.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+        Text(t?.title ?: "Lyrics", color = MioText, fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         Text("Source: $source", color = MioTextSecondary, fontSize = 12.sp)
         Spacer(Modifier.height(16.dp))
         LazyColumn(Modifier.weight(1f), state = listState) {

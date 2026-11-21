@@ -124,6 +124,11 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
     private var dataBytesRead = 0L
     private var sampleTimeUs = 0L
     private var endOfInput = false
+    // v1.1.4: proof logging (see read()). Counters only — no per-packet
+    // logging, the loader delivers ~689 packets/s for DSD128.
+    private var packetsDelivered = 0L
+    private var firstSampleLogged = false
+    private var eightMbLogged = false
 
     override fun sniff(input: ExtractorInput): Boolean {
         return try {
@@ -163,16 +168,33 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
         val remaining = current.dataSize - dataBytesRead
         if (remaining <= 0) {
             endOfInput = true
+            log("DSD end of input: packets=$packetsDelivered bytes=$dataBytesRead")
             return Extractor.RESULT_END_OF_INPUT
         }
         val packetBytes = minOf(current.packetSize.toLong(), remaining).toInt()
         val bytesRead = trackOutput?.sampleData(input, packetBytes, true) ?: 0
         if (bytesRead <= 0) {
             endOfInput = true
+            log("DSD end of input (short read): packets=$packetsDelivered bytes=$dataBytesRead")
             return Extractor.RESULT_END_OF_INPUT
         }
         trackOutput?.sampleMetadata(sampleTimeUs, 0, bytesRead, 0, null)
         dataBytesRead += bytesRead
+        packetsDelivered++
+        // v1.1.4: prove samples actually flow extractor -> decoder.
+        // First packet: delivery starts. 8 MB: delivery passed the
+        // load-control target, so the loader/extractor are not the
+        // bottleneck — if playback still stalls past this line, the
+        // blockage is downstream (decoder / sink), and the decimator's
+        // "first output" line says which side of the decoder it is on.
+        if (!firstSampleLogged) {
+            firstSampleLogged = true
+            log("DSD first sample: ${bytesRead}B pts=${sampleTimeUs}us packet=${current.packetSize} dataSize=${current.dataSize}")
+        }
+        if (!eightMbLogged && dataBytesRead >= 8 * 1024 * 1024L) {
+            eightMbLogged = true
+            log("DSD extractor delivered 8MB: packets=$packetsDelivered pts=${sampleTimeUs}us")
+        }
         // 1 bit per sample per channel: bytes -> samples -> time.
         sampleTimeUs += bytesRead * 8L / current.channelCount * 1_000_000L / current.sampleRateHz
         return Extractor.RESULT_CONTINUE
@@ -444,6 +466,13 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
             .setSampleRate(pcmSampleRateHz)
             .setChannelCount(channelCount)
             .setAverageBitrate(sampleRateHz * channelCount) // 1 bit per sample per channel
+            // v1.1.4: FfmpegAudioRenderer sizes the decoder's initial
+            // input buffer from maxInputSize (default 5760). DSF packets
+            // (blockSize * channels, typically 8192) exceed that, so
+            // without this the decoder regrows its input buffer on
+            // every packet. The extractor never emits a sample bigger
+            // than packetSize, so this is exact.
+            .setMaxInputSize(packetSize)
             .build()
         val bytesPerSecond = sampleRateHz.toLong() * channelCount / 8
         val seekMap = DsdSeekMap(durationUs, dataStart, dataSize, bytesPerSecond, packetSize, sampleRateHz, channelCount)

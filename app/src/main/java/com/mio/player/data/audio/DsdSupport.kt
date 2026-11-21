@@ -45,10 +45,30 @@ package com.mio.player.data.audio
  */
 object DsdSupport {
     fun isDsd(path: String): Boolean { val p = path.lowercase(); return p.endsWith(".dsf") || p.endsWith(".dff") }
+    /** DSD rate label from the true DSD sample rate in Hz. Mirrors
+     *  DsdDisplay.dsdRateFor (data.model): a rate below a real DSD rate
+     *  (including 0 / unknown) is "DSD", never a guessed "DSD64".
+     *  (v1.1.4: the old `else -> "DSD64"` guessed DSD64 for any
+     *  unknown rate.) */
     fun dsdRateFromSampleRateHz(dsdSampleRateHz: Int): String = when {
         dsdSampleRateHz >= 11_289_600 -> "DSD256"
         dsdSampleRateHz >= 5_644_800 -> "DSD128"
-        else -> "DSD64"
+        dsdSampleRateHz >= 2_822_400 -> "DSD64"
+        else -> "DSD"
+    }
+    /** DSD rate label from the PCM rate DsdExtractor puts in
+     *  Format.sampleRate (the DSD rate / 8: 352800 Hz for DSD64,
+     *  705600 for DSD128, 1411200 for DSD256). Exact match only — any
+     *  other rate returns null, so a transcode WAV (176400 Hz) or any
+     *  non-DSD format can never be mislabelled as a DSD rate. Only
+     *  call this for a track whose Format MIME is "audio/dsd" or
+     *  "audio/x-dsd-dff" and whose URI is still the raw .dsf/.dff;
+     *  the result feeds Track.displayFormatWithLiveRate. (v1.1.4) */
+    fun dsdRateFromPcmSampleRateHz(pcmSampleRateHz: Int): String? = when (pcmSampleRateHz) {
+        352_800 -> "DSD64"
+        705_600 -> "DSD128"
+        1_411_200 -> "DSD256"
+        else -> null
     }
     fun pcmSampleRateFor(dsdRate: String): Int = when (dsdRate) {
         "DSD128" -> 352_800; "DSD256" -> 705_600; else -> 176_400
