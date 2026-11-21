@@ -189,7 +189,7 @@ public final class DsdDecodeProbe {
         if (outputBuffer != null) {
           gotOutput = true;
           outputBytes = outputBuffer.data != null ? outputBuffer.data.remaining() : 0;
-          decoder.releaseOutputBuffer(outputBuffer);
+          decoder.releaseProbeOutputBuffer(outputBuffer);
           break;
         }
         int lastResult = decoder.getLastDecodeResult();

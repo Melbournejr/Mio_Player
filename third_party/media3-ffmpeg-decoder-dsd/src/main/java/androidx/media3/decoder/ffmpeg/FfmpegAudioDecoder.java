@@ -114,6 +114,16 @@ import java.util.List;
     return lastDecodeOutputBytes;
   }
 
+  /**
+   * Releases an output buffer dequeued by {@link DsdDecodeProbe}. {@code releaseOutputBuffer}
+   * is protected in {@code SimpleDecoder} (package {@code androidx.media3.decoder}) and the
+   * probe lives in {@code androidx.media3.decoder.ffmpeg} without subclassing the decoder, so
+   * it cannot call it directly — this public passthrough is the only bridge.
+   */
+  public void releaseProbeOutputBuffer(SimpleDecoderOutputBuffer outputBuffer) {
+    releaseOutputBuffer(outputBuffer);
+  }
+
   public FfmpegAudioDecoder(
       Format format,
       int numInputBuffers,
