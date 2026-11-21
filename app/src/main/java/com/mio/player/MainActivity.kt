@@ -8,6 +8,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import android.os.SystemClock
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -51,6 +54,15 @@ fun musicPermission(): String =
     else Manifest.permission.READ_EXTERNAL_STORAGE
 fun hasMusicPermission(ctx: Context): Boolean =
     ContextCompat.checkSelfPermission(ctx, musicPermission()) == PackageManager.PERMISSION_GRANTED
+/** v1.1.9 TASK 1 — rapid-tab-tap debounce (black screen fix).
+ *  MUST be a file-level var, not remember{} inside MainScaffold:
+ *  every tab destination creates a NEW MainScaffold instance, so a
+ *  remembered timestamp would reset on every navigation and the
+ *  debounce would be useless exactly when it is needed. Written and
+ *  read only on the main thread (NavigationBarItem onClick), so no
+ *  synchronization is needed. */
+private var lastTabNavUptimeMs = 0L
+private const val TAB_NAV_DEBOUNCE_MS = 300L
 /** Restore saved sound settings (EQ bands, bass, virtualizer, loudness,
  *  balance, crossfade, ReplayGain, speed) at startup. AudioEffectsManager
  *  remembers the values, so they are re-applied when the effects are
@@ -104,7 +116,20 @@ suspend fun restoreSoundSettings(ctx: Context) {
         Box(Modifier.fillMaxSize().background(com.mio.player.ui.theme.MioBg)) {}
         return
     }
-    NavHost(nav, startDestination = if (onboarded == true) Routes.HOME else Routes.SPLASH) {
+    // v1.1.9 TASK 1 — black screen on rapid tab taps: navigation-compose
+    // 2.7.7 defaults to a fade + scale transition (~700 ms). Rapid taps
+    // queued overlapping transitions; an interrupted transition disposed
+    // the outgoing destination while the incoming was still at ~0 alpha,
+    // leaving only the window background (black) — the video frame g50
+    // shows Library stuck at ~5% opacity with a bright status bar. This
+    // app has no designed screen transition to preserve, so tab (and all)
+    // switches are instant. The MioBg modifier is belt-and-braces: even
+    // mid-transition the surface behind a destination is the theme
+    // colour, never black.
+    NavHost(nav, startDestination = if (onboarded == true) Routes.HOME else Routes.SPLASH,
+        modifier = Modifier.fillMaxSize().background(com.mio.player.ui.theme.MioBg),
+        enterTransition = { EnterTransition.None }, exitTransition = { ExitTransition.None },
+        popEnterTransition = { EnterTransition.None }, popExitTransition = { ExitTransition.None }) {
         composable(Routes.SPLASH) { SplashScreen { nav.navigate(Routes.ONBOARDING) { popUpTo(Routes.SPLASH) { inclusive = true } } } }
         composable(Routes.ONBOARDING) { OnboardingScreen(onDone = { scope.launch { container.settings.setOnboarded(true) }; nav.navigate(Routes.LOGIN) }, onSkip = { scope.launch { container.settings.setOnboarded(true) }; nav.navigate(Routes.HOME) }) }
         composable(Routes.LOGIN) { LoginScreen(onDone = { nav.navigate(Routes.GENRES) }) }
@@ -135,7 +160,30 @@ suspend fun restoreSoundSettings(ctx: Context) {
     val queue by playerVm.queue.collectAsState(); val idx by playerVm.index.collectAsState(); val playing by playerVm.isPlaying.collectAsState()
     val tabs = listOf(Triple(Routes.HOME, "Trang chủ", Icons.Default.Home), Triple(Routes.SEARCH, "Tìm kiếm", Icons.Default.Search),
         Triple(Routes.LIBRARY, "Thư viện", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Hồ sơ", Icons.Default.Person))
-    val goTab: (String) -> Unit = { r -> if (current != r) nav.navigate(r) { popUpTo(Routes.HOME) } }
+    // v1.1.9 TASK 1 — black screen on rapid tab taps. The old goTab did
+    // nav.navigate(r) { popUpTo(Routes.HOME) } with NO launchSingleTop /
+    // restoreState / saveState: every tap pushed a NEW destination
+    // instance on top of the stack after popping to HOME, so rapid taps
+    // queued several overlapping fade transitions and recreated the
+    // bottom bar (and its GradientIcon drawWithCache + SrcIn rect)
+    // mid-transition — that is when the icons rendered as grey circles /
+    // a red square blob. Now: standard bottom-nav block (single top
+    // instance per tab, state saved/restored across tabs) + a 300 ms
+    // debounce so a second NavController transaction cannot start while
+    // the previous one is still being applied.
+    val goTab: (String) -> Unit = { r ->
+        if (current != r) {
+            val now = SystemClock.uptimeMillis()
+            if (now - lastTabNavUptimeMs >= TAB_NAV_DEBOUNCE_MS) {
+                lastTabNavUptimeMs = now
+                nav.navigate(r) {
+                    launchSingleTop = true
+                    restoreState = true
+                    popUpTo(Routes.HOME) { saveState = true }
+                }
+            }
+        }
+    }
     // LANDSCAPE (v1.1.5): a bottom NavigationBar + MiniPlayer costs ~150 dp
     // of a ~360 dp-tall landscape screen, leaving lists and content
     // squeezed. The standard landscape pattern is a side NavigationRail
@@ -160,7 +208,12 @@ suspend fun restoreSoundSettings(ctx: Context) {
         }
         return
     }
+    // v1.1.9 TASK 1: containerColor + content background are MioBg so
+    // the Scaffold surface itself is the theme colour — even if a
+    // destination is ever mid-transition, the surface behind it is
+    // never the black window background.
     Scaffold(
+        containerColor = com.mio.player.ui.theme.MioBg,
         bottomBar = {
             Column {
                 queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId) }
@@ -177,5 +230,5 @@ suspend fun restoreSoundSettings(ctx: Context) {
                 }
             }
         }
-    ) { pad -> Box(Modifier.padding(pad)) { content() } }
+    ) { pad -> Box(Modifier.padding(pad).fillMaxSize().background(com.mio.player.ui.theme.MioBg)) { content() } }
 }

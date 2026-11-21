@@ -88,14 +88,17 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
 val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical", "Hip-Hop", "R&B", "Acoustic")
 @Composable fun SearchScreen(libVm: LibraryViewModel, playerVm: PlayerViewModel, nav: NavHostController) {
     var q by remember { mutableStateOf("") }
-    val tracks by libVm.tracks.collectAsState()
+    // Search results are a separate flow (v1.1.9 TASK 3): reading
+    // libVm.tracks here used to let search() overwrite the full
+    // library list, so Home/Profile then showed the filtered count.
+    val results by libVm.searchResults.collectAsState()
     val queue by playerVm.queue.collectAsState(); val idx by playerVm.index.collectAsState()
     val currentId = queue.getOrNull(idx)?.id
     // Landscape (v1.1.5): 4 genre columns instead of 2 — a 2-column grid
     // on a wide screen leaves each card half the screen wide.
     val landscape = isLandscape()
     Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
-        OutlinedTextFieldLocal("Search songs, artists, albums", q) { q = it; if (q.isBlank()) libVm.load() else libVm.search(q) }
+        OutlinedTextFieldLocal("Search songs, artists, albums", q) { q = it; if (q.isBlank()) libVm.search("") else libVm.search(q) }
         Spacer(Modifier.height(12.dp))
         if (q.isBlank()) {
             SectionTitle("Browse genres")
@@ -108,7 +111,7 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
                 }
             }
         } else {
-            LazyColumn { items(tracks) { t -> TrackRow(t, onClick = { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, isPlaying = t.id == currentId) } }
+            LazyColumn { items(results) { t -> TrackRow(t, onClick = { playerVm.playQueue(results, results.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, isPlaying = t.id == currentId) } }
         }
     }
 }
