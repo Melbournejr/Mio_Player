@@ -44,7 +44,7 @@ the `AUDIO_ALAC` case:
 case "audio/dsd":
   return "dsd_lsbf_planar";
 case "audio/x-dsd-dff":
-  return "dsd_msbf";
+  return "dsd_lsbf_planar";
 ```
 
 - `audio/dsd` → `dsd_lsbf_planar`: the mica-music patch
@@ -54,14 +54,41 @@ case "audio/x-dsd-dff":
   verified by diffing it against stock 1.9.0 — mica's only change in this
   file is this case plus an `audio/ape` case, which was **not** taken).
   DSF stores one block per channel, matching FFmpeg's planar decoder.
-- `audio/x-dsd-dff` → `dsd_msbf`: added per the Mio plan (not in mica).
-  DFF is MSB-first; DST-compressed `.dff` is out of scope.
+- `audio/x-dsd-dff` → `dsd_lsbf_planar` (v1.1.5, changed from `dsd_msbf`):
+  DFF stores its bytes channel-interleaved, MSB-first. FFmpeg's own
+  demuxer (libavformat/dsfdec.c) pairs DSDIFF with a *planar* decoder and
+  de-interleaves in the demuxer; the raw-interleaved `dsd_msbf` mapping
+  was never exercised by any proven reference and every real DSD packet
+  returned "no output" through it (v1.1.2–v1.1.4). `DsdExtractor` now
+  does the demuxer's job — de-interleave (all left bytes, then all
+  right bytes) + bit-reverse every byte — so DFF arrives as planar LSBF
+  and both containers share the one mica-proven decoder. The transform
+  is exact (a permutation plus a per-byte bit reversal), so it cannot
+  change the audio, only the layout. DST-compressed `.dff` is out of
+  scope.
 - These MIME strings must match `DsdExtractor.MIME_TYPE_DSF` /
   `MIME_TYPE_DFF` in `:app` (`"audio/dsd"` / `"audio/x-dsd-dff"`).
 
 The FFmpeg build must enable the decoders `dsd_lsbf`, `dsd_msbf`,
 `dsd_lsbf_planar`, `dsd_msbf_planar` or `FfmpegLibrary.supportsFormat()`
 will log "No ... decoder available" and refuse the format at runtime.
+(`dsd_msbf` / `dsd_msbf_planar` are no longer *used* by the app after
+v1.1.5, but the build still enables all four so a future mapping change
+never silently loses a decoder.)
+
+## Diagnostics (v1.1.5)
+
+- `FfmpegAudioDecoder.DsdDecodeListener` (set by `PlayerManager`): reports
+  decoder init and the raw `ffmpegDecode` result of the first 8 DSD packets
+  per decoder instance. SimpleDecoder swallows 0 / -1 results, so without
+  this the log could never say whether the decoder rejected packets or
+  just never emitted.
+- `DsdDecodeProbe` (same package): feeds one synthetic DSD-silence packet
+  through a fresh `FfmpegAudioDecoder` at startup and reports the raw
+  decode result — the experiment that settles "decoder vs extractor vs
+  sink". See its KDoc for how to read the result.
+- `FfmpegLibrary.hasDecoderByName(String)`: public probe for one FFmpeg
+  codec name (e.g. `"dsd_lsbf_planar"`).
 
 ## Build notes
 

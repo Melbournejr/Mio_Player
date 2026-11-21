@@ -28,7 +28,34 @@ import java.io.IOException
  * MIME types (must match FfmpegLibrary.getCodecName() in the vendored
  * decoder module — the other half of this feature):
  *  - DSF -> [MIME_TYPE_DSF] ("audio/dsd")       -> dsd_lsbf_planar
- *  - DFF -> [MIME_TYPE_DFF] ("audio/x-dsd-dff") -> dsd_msbf
+ *  - DFF -> [MIME_TYPE_DFF] ("audio/x-dsd-dff") -> dsd_lsbf_planar (v1.1.5)
+ *
+ * DFF transform (v1.1.5 — why DFF also uses dsd_lsbf_planar): a DFF file
+ * stores its DSD bytes channel-INTERLEAVED, MSB-first (byte 0 = left
+ * sample-byte 0, byte 1 = right sample-byte 0, ...; first sample in time
+ * is each byte's MSB). FFmpeg's own demuxer (libavformat/dsfdec.c) pairs
+ * DSDIFF with a PLANAR decoder and de-interleaves in the demuxer — the
+ * old mapping (raw interleaved bytes -> dsd_msbf) was never exercised by
+ * any proven reference, and through v1.1.2–v1.1.4 every real DSD packet
+ * returned "no output" from ffmpegDecode. This extractor now does the
+ * demuxer's job: [transformDffPacketToPlanarLsbf] de-interleaves (all
+ * left bytes, then all right bytes) and bit-reverses every byte, so DFF
+ * arrives as planar LSBF and both containers share the one mica-proven
+ * decoder (dsd_lsbf_planar — the decoder mica-music proves in ExoPlayer;
+ * dsd_msbf_planar would be FFmpeg's literal pairing, but no reference
+ * proves it in ExoPlayer). The transform is exact — a permutation plus a
+ * per-byte bit reversal, no bits lost — so it can only change the layout,
+ * never the audio.
+ *
+ * Timestamps (v1.1.5 — the "594,184" question, settled): the read()
+ * timestamp math is
+ *   sampleTimeUs += bytes * 8 / channels * 1_000_000 / dsdRateHz
+ * which for the user's DSD128 .dff (2048-byte packets, 2 ch, 5644800 Hz)
+ * is exactly 1451 us per packet, so after 4096 packets (8 MB) the pts is
+ * 4095 * 1451 = 5,941,845 us. The handoff's "594,184" is that number with
+ * its final digit dropped in transcription — the extractor was never 10x
+ * slow. read() now logs the expected pts alongside the actual pts, so the
+ * next user log proves it numerically instead of by arithmetic.
  *
  * Deliberately NOT handled here — the extractor rejects them, so
  * PlayerManager's onPlayerError falls back to the FFmpegKit transcode
@@ -103,7 +130,9 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
     companion object {
         /** DSF sample MIME type. The vendored decoder maps it to "dsd_lsbf_planar". */
         const val MIME_TYPE_DSF = "audio/dsd"
-        /** DFF sample MIME type. The vendored decoder maps it to "dsd_msbf". */
+        /** DFF sample MIME type. The vendored decoder maps it to "dsd_lsbf_planar"
+         *  (v1.1.5 — was "dsd_msbf"); the packets are transformed first, see
+         *  [transformDffPacketToPlanarLsbf]. */
         const val MIME_TYPE_DFF = "audio/x-dsd-dff"
 
         private val DSF_MAGIC = byteArrayOf('D'.code.toByte(), 'S'.code.toByte(), 'F'.code.toByte(), ' '.code.toByte())
@@ -111,6 +140,49 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
         private const val MAX_PROP_SIZE_BYTES = 64 * 1024
         private const val DEFAULT_BLOCK_SIZE_PER_CHANNEL = 4096
         private const val DFF_PACKET_BLOCKS = 1024
+
+        /** Per-byte bit reversal (DFF is MSB-first, dsd_lsbf_planar wants LSB-first).
+         *  Built once: reversing bit i of a byte is its own inverse, so the table
+         *  is exact and branch-free in the packet loop. */
+        private val BIT_REVERSE_TABLE: ByteArray = ByteArray(256) { i ->
+            var v = i
+            var r = 0
+            repeat(8) { r = (r shl 1) or (v and 1); v = v shr 1 }
+            r.toByte()
+        }
+
+        /**
+         * v1.1.5: converts one DFF packet from the file layout (channel-interleaved,
+         * MSB-first) to the decoder layout (planar, LSB-first: all channel-0 bytes,
+         * then all channel-1 bytes, ..., each byte bit-reversed).
+         *
+         * [src] holds [length] file bytes starting at offset 0; [dst] must hold at
+         * least [length] bytes. Returns the number of bytes written, which is
+         * [length] rounded DOWN to a multiple of [channelCount] (a trailing partial
+         * frame at end-of-file — at most channelCount-1 bytes — is dropped; it can
+         * only occur on the final packet and is inaudible). The caller must use the
+         * returned count, not [length], for sampleMetadata and the timestamp math.
+         * Pure function, no allocation — the extractor reuses its scratch buffers.
+         */
+        fun transformDffPacketToPlanarLsbf(
+            src: ByteArray,
+            length: Int,
+            channelCount: Int,
+            dst: ByteArray
+        ): Int {
+            if (channelCount <= 0) return 0
+            val frames = length / channelCount
+            val outLen = frames * channelCount
+            for (ch in 0 until channelCount) {
+                val dstBase = ch * frames
+                var srcPos = ch
+                for (i in 0 until frames) {
+                    dst[dstBase + i] = BIT_REVERSE_TABLE[src[srcPos].toInt() and 0xFF]
+                    srcPos += channelCount
+                }
+            }
+            return outLen
+        }
     }
 
     /** Factory so PlayerManager can prepend this extractor before DefaultExtractorsFactory.
@@ -129,6 +201,11 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
     private var packetsDelivered = 0L
     private var firstSampleLogged = false
     private var eightMbLogged = false
+    // v1.1.5: reusable DFF scratch (read -> transform -> sampleData).
+    // Sized to the stream's packet size on first use; reused so the
+    // transform allocates nothing per packet.
+    private var dffScratchIn: ByteArray? = null
+    private var dffScratchOut: ByteArray? = null
 
     override fun sniff(input: ExtractorInput): Boolean {
         return try {
@@ -172,14 +249,53 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
             return Extractor.RESULT_END_OF_INPUT
         }
         val packetBytes = minOf(current.packetSize.toLong(), remaining).toInt()
-        val bytesRead = trackOutput?.sampleData(input, packetBytes, true) ?: 0
-        if (bytesRead <= 0) {
-            endOfInput = true
-            log("DSD end of input (short read): packets=$packetsDelivered bytes=$dataBytesRead")
-            return Extractor.RESULT_END_OF_INPUT
+        // v1.1.5: DFF packets are transformed before delivery (see the class
+        // KDoc): the file's interleaved-MSBF bytes go to the decoder as
+        // planar-LSBF. DSF packets are already planar-LSBF and go through
+        // untouched, straight from the input into the sample queue.
+        // `deliveredBytes` is what sampleMetadata and the timestamp math use;
+        // `fileBytesRead` is what the remaining-bytes accounting uses. They
+        // are equal except for a truncated final DFF packet (<= 7 bytes).
+        val deliveredBytes: Int
+        val fileBytesRead: Int
+        if (current.isDff) {
+            val scratchIn = dffScratchIn?.takeIf { it.size >= packetBytes }
+                ?: ByteArray(packetBytes).also { dffScratchIn = it }
+            val scratchOut = dffScratchOut?.takeIf { it.size >= packetBytes }
+                ?: ByteArray(packetBytes).also { dffScratchOut = it }
+            var offset = 0
+            while (offset < packetBytes) {
+                val n = input.read(scratchIn, offset, packetBytes - offset)
+                if (n <= 0) break // -1 = end of input; 0 = no progress, never spin
+                offset += n
+            }
+            if (offset <= 0) {
+                endOfInput = true
+                log("DSD end of input (short read): packets=$packetsDelivered bytes=$dataBytesRead")
+                return Extractor.RESULT_END_OF_INPUT
+            }
+            deliveredBytes = transformDffPacketToPlanarLsbf(
+                scratchIn, offset, current.channelCount, scratchOut
+            )
+            if (deliveredBytes <= 0) {
+                endOfInput = true
+                log("DSD end of input (transform empty): packets=$packetsDelivered bytes=$dataBytesRead")
+                return Extractor.RESULT_END_OF_INPUT
+            }
+            trackOutput?.sampleData(ParsableByteArray(scratchOut, deliveredBytes), deliveredBytes)
+            fileBytesRead = offset
+        } else {
+            val bytesRead = trackOutput?.sampleData(input, packetBytes, true) ?: 0
+            if (bytesRead <= 0) {
+                endOfInput = true
+                log("DSD end of input (short read): packets=$packetsDelivered bytes=$dataBytesRead")
+                return Extractor.RESULT_END_OF_INPUT
+            }
+            deliveredBytes = bytesRead
+            fileBytesRead = bytesRead
         }
-        trackOutput?.sampleMetadata(sampleTimeUs, 0, bytesRead, 0, null)
-        dataBytesRead += bytesRead
+        trackOutput?.sampleMetadata(sampleTimeUs, 0, deliveredBytes, 0, null)
+        dataBytesRead += fileBytesRead
         packetsDelivered++
         // v1.1.4: prove samples actually flow extractor -> decoder.
         // First packet: delivery starts. 8 MB: delivery passed the
@@ -189,14 +305,18 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
         // "first output" line says which side of the decoder it is on.
         if (!firstSampleLogged) {
             firstSampleLogged = true
-            log("DSD first sample: ${bytesRead}B pts=${sampleTimeUs}us packet=${current.packetSize} dataSize=${current.dataSize}")
+            log("DSD first sample: ${deliveredBytes}B pts=${sampleTimeUs}us packet=${current.packetSize} packetUs=${current.packetDurationUs} dataSize=${current.dataSize}")
         }
         if (!eightMbLogged && dataBytesRead >= 8 * 1024 * 1024L) {
             eightMbLogged = true
-            log("DSD extractor delivered 8MB: packets=$packetsDelivered pts=${sampleTimeUs}us")
+            // v1.1.5: the expected pts settles the "594,184" question in
+            // the log itself: pts must equal (packets-1) * packetUs.
+            // DSD128 .dff: 4095 * 1451 = 5,941,845 us.
+            val expectedPtsUs = (packetsDelivered - 1) * current.packetDurationUs
+            log("DSD extractor delivered 8MB: packets=$packetsDelivered pts=${sampleTimeUs}us expectedPts=${expectedPtsUs}us packetUs=${current.packetDurationUs}")
         }
         // 1 bit per sample per channel: bytes -> samples -> time.
-        sampleTimeUs += bytesRead * 8L / current.channelCount * 1_000_000L / current.sampleRateHz
+        sampleTimeUs += deliveredBytes * 8L / current.channelCount * 1_000_000L / current.sampleRateHz
         return Extractor.RESULT_CONTINUE
     }
 
@@ -224,7 +344,11 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
         val dataSize: Long,
         val packetSize: Int,
         val sampleRateHz: Int,
-        val channelCount: Int
+        val channelCount: Int,
+        /** True for DFF: read() transforms each packet (see class KDoc). */
+        val isDff: Boolean,
+        /** Timestamp advance of one full packet, in us (packetSize * 8 / ch * 1e6 / rate). */
+        val packetDurationUs: Long
     )
 
     @Throws(IOException::class)
@@ -316,7 +440,8 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
             packetSize = blockSize * channelCount,
             dataStart = dataStart,
             dataSize = dataSize,
-            durationUs = durationUs
+            durationUs = durationUs,
+            isDff = false
         )
     }
 
@@ -389,7 +514,8 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
             packetSize = DFF_PACKET_BLOCKS * channelCount,
             dataStart = dataStart,
             dataSize = dataSize,
-            durationUs = durationUs
+            durationUs = durationUs,
+            isDff = true
         )
     }
 
@@ -448,7 +574,8 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
         packetSize: Int,
         dataStart: Long,
         dataSize: Long,
-        durationUs: Long
+        durationUs: Long,
+        isDff: Boolean
     ): DsdStreamInfo {
         // sampleRateHz here is the TRUE DSD bit rate (2822400 for DSD64)
         // and stays that way for all time math (duration, seek, sample
@@ -476,7 +603,8 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
             .build()
         val bytesPerSecond = sampleRateHz.toLong() * channelCount / 8
         val seekMap = DsdSeekMap(durationUs, dataStart, dataSize, bytesPerSecond, packetSize, sampleRateHz, channelCount)
-        return DsdStreamInfo(format, seekMap, dataStart, dataSize, packetSize, sampleRateHz, channelCount)
+        val packetDurationUs = packetSize * 8L / channelCount * 1_000_000L / sampleRateHz
+        return DsdStreamInfo(format, seekMap, dataStart, dataSize, packetSize, sampleRateHz, channelCount, isDff, packetDurationUs)
     }
 
     /** Byte-offset SeekMap. DSD is constant-bit-rate, so time <-> offset is exact. */

@@ -12,8 +12,9 @@ package com.mio.player.data.audio
  *  1. Detect .dsf / .dff by extension (DSD64 = 2.8224 MHz, DSD128 = 5.6448 MHz,
  *     DSD256 = 11.2896 MHz, 1-bit).
  *  2. NATIVE path (default): DsdExtractor frames the raw DSD bytes and the
- *     vendored FFmpeg DSD decoder (extension renderer, float output)
- *     decodes them during playback. No WAV cache, no pre-decode wait —
+ *     vendored FFmpeg DSD decoder (extension renderer, int16 output, float
+ *     OFF — mica-music's proven config since v1.1.5) decodes them during
+ *     playback. No WAV cache, no pre-decode wait —
  *     a DSD track starts playing immediately, like any other file.
  *  3. FALLBACK path (only when native decode fails — DST-compressed .dff,
  *     an unsupported DSF variant, a malformed header): decode DSD ->

@@ -31,12 +31,15 @@ import com.mio.player.ui.theme.*
 import com.mio.player.ui.viewmodel.LibraryViewModel
 import com.mio.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.launch
+// Landscape (v1.1.5): the screens in this file are scrolling lists /
+// columns, so they already rotate — only the side margin adapts via
+// screenHorizontalPadding() (20 dp portrait, 48 dp landscape).
 @Composable fun AlbumDetailScreen(libVm: LibraryViewModel, playerVm: PlayerViewModel, nav: NavHostController) {
     val tracks by libVm.tracks.collectAsState()
     val queue by playerVm.queue.collectAsState(); val idx by playerVm.index.collectAsState()
     val currentId = queue.getOrNull(idx)?.id
     val first = tracks.firstOrNull()
-    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         if (first != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AlbumArt(first.albumId, Modifier.size(120.dp), CardLarge)
@@ -63,7 +66,7 @@ import kotlinx.coroutines.launch
 @Composable fun ArtistScreen(libVm: LibraryViewModel, playerVm: PlayerViewModel, nav: NavHostController) {
     val tracks by libVm.tracks.collectAsState()
     val artists = tracks.groupBy { it.artist }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         SectionTitle("Artists")
         LazyColumn { items(artists.entries.toList()) { (name, list) ->
             Row(Modifier.fillMaxWidth().clickable { nav.navigate("artist_detail/${android.net.Uri.encode(name)}") }.padding(vertical = 10.dp)) {
@@ -83,7 +86,7 @@ import kotlinx.coroutines.launch
     val followed by settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_FOLLOWED_ARTISTS, emptySet<String>()).collectAsState(initial = emptySet())
     val scope = rememberCoroutineScope()
     val isFollowed = name in followed
-    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, null, tint = MioText) }
             Text("Artist", color = MioTextSecondary, fontSize = 14.sp)
@@ -133,7 +136,7 @@ import kotlinx.coroutines.launch
     LaunchedEffect(currentIndex) {
         if (lines.isNotEmpty()) runCatching { listState.animateScrollToItem((currentIndex - 2).coerceAtLeast(0)) }
     }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         Text(t?.title ?: "Lyrics", color = MioText, fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         Text("Source: $source", color = MioTextSecondary, fontSize = 12.sp)
         Spacer(Modifier.height(16.dp))
@@ -157,7 +160,7 @@ import kotlinx.coroutines.launch
     // 1.0.9: the old plain Column cut off the bottom on small phones.
     // LazyColumn scrolls, and adds the PDF's Account / Music quality /
     // Downloads rows that were missing.
-    LazyColumn(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    LazyColumn(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         item {
             SectionTitle("Profile")
             Text(if (userName.isBlank()) "Local listener" else userName, color = MioText, fontSize = 20.sp)
@@ -227,7 +230,7 @@ import kotlinx.coroutines.launch
     LaunchedEffect(Unit) {
         text = "=== CRASH LOG ===\n${MioLog.readCrash(ctx)}\n\n=== EVENT LOG ===\n${MioLog.readLog(ctx)}"
     }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, null, tint = MioText) }
             Text("Nhật ký lỗi", color = MioText, fontSize = 22.sp, fontWeight = FontWeight.Bold)

@@ -67,6 +67,19 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
     private val _levels = MutableStateFlow(FloatArray(bars) { 0f })
     val levels: StateFlow<FloatArray> = _levels.asStateFlow()
 
+    /**
+     * v1.1.5 (visualizer styles): the newest mono PCM samples, in time
+     * order, for the Wave / oscilloscope style. Published together with
+     * each FFT frame (~10 Hz, same cadence as [levels]) as the tail of
+     * that frame's 8192-sample window — real samples from the ring
+     * buffer, never synthesised. A Wave composable draws this array
+     * directly (linear amplitude, no gain fudge, no time-based motion);
+     * when playback is paused [clearLevels] zeroes it so the line goes
+     * flat instead of freezing on the last frame.
+     */
+    private val _pcmFrame = MutableStateFlow(FloatArray(PCM_FRAME_SIZE) { 0f })
+    val pcmFrame: StateFlow<FloatArray> = _pcmFrame.asStateFlow()
+
     /** The single tap instance installed in the sink chain. */
     val fftProcessor: AudioProcessor = FftTapAudioProcessor()
 
@@ -121,6 +134,9 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
             ringCount = 0
             lastFftNs = 0L
             last = FloatArray(bars) { 0f }
+            // v1.1.5: a new track / rate must not leave the previous
+            // track's PCM on the Wave style's screen.
+            _pcmFrame.value = FloatArray(PCM_FRAME_SIZE) { 0f }
             // Log every format change (once per track / rate change),
             // not just the first ever: the rate is what decides the
             // FFT bin width, so a DSD -> MP3 switch must be visible.
@@ -189,6 +205,9 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
                 readPos = (readPos + 1) % RING_SIZE
             }
             val out = computeBands(frame, sampleRate)
+            // v1.1.5: the Wave style's oscilloscope data — the newest
+            // PCM_FRAME_SIZE samples of this same window, in time order.
+            _pcmFrame.value = frame.copyOfRange(FFT_SIZE - PCM_FRAME_SIZE, FFT_SIZE)
             // v1.1.4 diagnostics: the v1.1.3 log only ever showed the
             // FIRST frame (the first 5.8 ms of a track — decoder
             // settling / leading silence, maxLevel 0.042), which is how
@@ -352,6 +371,8 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
             ringWrite = 0
             ringCount = 0
             lastFftNs = 0L
+            // v1.1.5: a seek must not leave a stale PCM frame on the Wave style.
+            _pcmFrame.value = FloatArray(PCM_FRAME_SIZE) { 0f }
         }
 
         override fun reset() {
@@ -374,6 +395,8 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
     fun clearLevels() {
         last = FloatArray(bars) { 0f }
         _levels.value = FloatArray(bars) { 0f }
+        // v1.1.5: also flatten the Wave style (see pcmFrame KDoc).
+        _pcmFrame.value = FloatArray(PCM_FRAME_SIZE) { 0f }
     }
 
     fun release() {
@@ -385,6 +408,9 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
     companion object {
         private const val FFT_SIZE = 8192
         private const val RING_SIZE = 16384
+        /** v1.1.5: Wave-style oscilloscope window — the newest 1024 mono
+         *  samples (~5.8 ms at 176.4 kHz, ~23 ms at 44.1 kHz). */
+        private const val PCM_FRAME_SIZE = 1024
         private const val FFT_INTERVAL_MS = 100L // ~10 Hz publish rate
         // Diagnostic logging (v1.1.4): first frames + one per period.
         private const val FFT_LOG_FIRST_FRAMES = 5

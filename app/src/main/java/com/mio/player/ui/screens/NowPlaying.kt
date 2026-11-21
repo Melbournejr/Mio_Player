@@ -23,7 +23,7 @@ import androidx.navigation.NavHostController
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.LyricLine
 import com.mio.player.ui.components.AlbumArt
-import com.mio.player.ui.components.LiveWaveform
+import com.mio.player.ui.visualizer.VisualizerPanel
 import com.mio.player.ui.components.TrackRow
 import com.mio.player.ui.components.formatDuration
 import com.mio.player.ui.navigation.Routes
@@ -64,6 +64,7 @@ import kotlinx.coroutines.delay
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
     val queue by vm.queue.collectAsState(); val idx by vm.index.collectAsState(); val playing by vm.isPlaying.collectAsState()
     val levels by vm.pm.waveform.levels.collectAsState()
+    val pcmFrame by vm.pm.waveform.pcmFrame.collectAsState()
     val shuffleOn by vm.pm.shuffleEnabled.collectAsState()
     val repeatMode by vm.pm.repeatMode.collectAsState()
     val converting by vm.pm.isConvertingDsd.collectAsState()
@@ -159,7 +160,7 @@ import kotlinx.coroutines.delay
             Text(err, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 12.sp)
         }
         Spacer(Modifier.height(12.dp))
-        LiveWaveform(levels, playing, (if (totalMs > 0) pos.toFloat() / totalMs else 0f).coerceIn(0f, 1f), Modifier.fillMaxWidth())
+        VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth())
         Slider(value = pos.toFloat().coerceIn(0f, totalF), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..totalF, modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(formatDuration(pos), color = MioTextSecondary, fontSize = 12.sp)

@@ -34,14 +34,17 @@ import java.security.MessageDigest
  * - Cache key includes file size + last-modified, so a replaced .dsf at
  *   the same path no longer serves a stale WAV.
  * - The copied DSD input (dsd-input/) is deleted after decode, and the
- *   WAV cache is pruned to ~1 GB, so storage can no longer fill up
- *   silently and make every later decode fail with ENOSPC.
+ *   WAV cache is pruned to 512 MB (v1.1.5, was ~1 GB), so storage can no
+ *   longer fill up silently and make every later decode fail with ENOSPC.
  * - renameTo's result is now checked (it was ignored, and a failed
  *   rename was reported as success pointing at a stale file).
  */
 object DsdDecoder {
     private val decodeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inflight = mutableMapOf<String, Deferred<Uri?>>()
+
+    /** v1.1.5: hard cap for the whole-file transcode WAV cache (see [pruneCache]). */
+    const val DSD_CACHE_CAP_BYTES: Long = 512L * 1024 * 1024
 
     private fun cacheKey(track: Track): String {
         val f = File(track.path)
@@ -114,19 +117,55 @@ object DsdDecoder {
         }
     }
 
-    /** Keep the WAV cache under ~1 GB: delete oldest files first. */
+    /** v1.1.5: keep the WAV cache under 512 MB — delete OLDEST files first.
+     *  The old 1 GB cap let the app grow to ~500 MB of stale transcode WAVs
+     *  (user log 2026-11-21: Total 509 MB, Cache 409 MB) while native decode
+     *  kept failing; every failed native play added another ~200 MB WAV.
+     *  512 MB still holds two full DSD128 album-tracks' WAVs, and the
+     *  transcode is only a last-resort fallback now — native playback (when
+     *  it works) deletes its own stale WAV via deleteCachedWav. Never
+     *  deletes a WAV whose decode is in flight (the [inflight] key is the
+     *  cache filename without ".wav"). Logs what it deleted so the next
+     *  user log shows the cache shrinking instead of growing. */
     private fun pruneCache(context: Context) {
         runCatching {
             val dir = File(context.cacheDir, "dsd-cache")
             val files = dir.listFiles()?.sortedBy { it.lastModified() } ?: return
             var total = files.sumOf { it.length() }
-            val cap = 1L shl 30
+            val cap = DSD_CACHE_CAP_BYTES
+            if (total <= cap) return
+            val inflightKeys = synchronized(inflight) { inflight.keys.toSet() }
+            var deletedBytes = 0L
+            var deletedCount = 0
             for (f in files) {
                 if (total <= cap) break
-                total -= f.length()
-                f.delete()
+                if (inflightKeys.contains(f.nameWithoutExtension)) continue
+                val size = f.length()
+                if (f.delete()) {
+                    total -= size
+                    deletedBytes += size
+                    deletedCount++
+                }
+            }
+            if (deletedCount > 0) {
+                MioLog.event(
+                    context,
+                    "DSD cache pruned to cap: deleted $deletedCount WAV(s) ${deletedBytes / 1024}KB, total now ${total / 1024}KB (cap ${cap / 1024 / 1024}MB)"
+                )
             }
         }
+    }
+
+    /**
+     * v1.1.5: public entry point for the startup prune (PlayerManager init).
+     * The cap used to be enforced only inside doDecode — i.e. only when a
+     * NEW transcode ran — so a 409 MB pile of stale WAVs sat there forever
+     * once native decode started working. Pruning at startup (off the main
+     * thread) makes the cap hold even when nothing new is decoded. Never
+     * throws; never deletes in-flight decodes (see [pruneCache]).
+     */
+    fun pruneCacheNow(context: Context) {
+        pruneCache(context)
     }
 
     /** Resolve the DSD file to a real readable file. MediaStore tracks

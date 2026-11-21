@@ -39,6 +39,12 @@ import java.util.List;
   private static final int AUDIO_DECODER_ERROR_INVALID_DATA = -1;
   private static final int AUDIO_DECODER_ERROR_OTHER = -2;
 
+  /** Mio Player v1.1.5: how many DSD ffmpegDecode results each decoder instance reports
+   *  to the DsdDecodeListener. DSD128 delivers ~689 packets/s, so 8 packets is the
+   *  startup burst only — enough to tell 0 from -1 from real output, without
+   *  logging on every packet for a whole track. */
+  private static final int DSD_DECODE_LOG_PACKETS = 8;
+
   // FLAC parsing constants
   private static final byte[] flacStreamMarker = {'f', 'L', 'a', 'C'};
   private static final int FLAC_METADATA_TYPE_STREAM_INFO = 0;
@@ -54,6 +60,59 @@ import java.util.List;
   private boolean hasOutputFormat;
   private volatile int channelCount;
   private volatile int sampleRate;
+
+  /**
+   * Mio Player v1.1.5 — DSD decode diagnostics. The decoder runs inside ExoPlayer and the
+   * app cannot see what ffmpegDecode returns: SimpleDecoder silently swallows a 0
+   * (no output) or -1 (invalid data) result, so a DSD track that never produces a
+   * sample looks exactly like a stuck loader. This listener reports the raw result of
+   * the first few DSD packets of each decoder instance to the app's log, which is
+   * what distinguishes "decoder got INVALIDDATA" from "decoder got EAGAIN forever"
+   * from "decoder produced output but the sink dropped it". Non-DSD codecs never
+   * fire it. Set once by the app (PlayerManager); may be null.
+   */
+  public interface DsdDecodeListener {
+    /** A DSD decoder instance initialised successfully (avcodec_open2 accepted it). */
+    void onDsdInit(String codecName, int sampleRate, int channelCount, boolean outputFloat);
+
+    /**
+     * One ffmpegDecode call. {@code result} is the raw return: bytes of PCM written
+     * (> 0), 0 (no output for this packet), -1 (invalid data, packet skipped),
+     * -2 (hard error, decode fails). {@code outputBytes} is the bytes handed to the
+     * sink (0 unless result > 0).
+     */
+    void onDsdDecode(String codecName, int inputSize, int result, int outputBytes);
+  }
+
+  private static volatile @Nullable DsdDecodeListener dsdDecodeListener;
+
+  public static void setDsdDecodeListener(@Nullable DsdDecodeListener listener) {
+    dsdDecodeListener = listener;
+  }
+
+  /** First-N decode events per decoder instance (see DSD_DECODE_LOG_PACKETS). */
+  private int dsdDecodeLoggedCount;
+
+  /**
+   * Raw result of the most recent ffmpegDecode call on this instance
+   * (bytes written, 0, -1, or -2), or {@link Integer#MIN_VALUE} if decode has not
+   * run yet. The startup probe (DsdDecodeProbe) reads this after queueing one
+   * synthetic packet — it is how the probe tells 0 from -1, which
+   * dequeueOutputBuffer alone cannot (both surface as "no output buffer").
+   */
+  private volatile int lastDecodeResult = Integer.MIN_VALUE;
+
+  private volatile int lastDecodeOutputBytes;
+
+  /** Raw ffmpegDecode result of the most recent decode call (see {@link #lastDecodeResult}). */
+  public int getLastDecodeResult() {
+    return lastDecodeResult;
+  }
+
+  /** PCM bytes produced by the most recent decode call (0 unless the result was > 0). */
+  public int getLastDecodeOutputBytes() {
+    return lastDecodeOutputBytes;
+  }
 
   public FfmpegAudioDecoder(
       Format format,
@@ -76,6 +135,12 @@ import java.util.List;
         ffmpegInitialize(codecName, extraData, outputFloat, format.sampleRate, format.channelCount);
     if (nativeContext == 0) {
       throw new FfmpegDecoderException("Initialization failed.");
+    }
+    if (codecName.startsWith("dsd")) {
+      DsdDecodeListener listener = dsdDecodeListener;
+      if (listener != null) {
+        listener.onDsdInit(codecName, format.sampleRate, format.channelCount, outputFloat);
+      }
     }
     setInitialInputBufferSize(initialInputBufferSize);
   }
@@ -118,6 +183,20 @@ import java.util.List;
     int result =
         ffmpegDecode(
             nativeContext, inputData, inputSize, outputBuffer, outputData, outputBufferSize);
+    if (codecName.startsWith("dsd")) {
+      // Record first, then report: the probe reads these fields after queueing, and
+      // the listener is the only record of a 0 / -1 result (SimpleDecoder swallows
+      // both as "no output buffer" — see the class KDoc on the listener).
+      lastDecodeResult = result;
+      lastDecodeOutputBytes = result > 0 ? result : 0;
+      if (dsdDecodeLoggedCount < DSD_DECODE_LOG_PACKETS) {
+        dsdDecodeLoggedCount++;
+        DsdDecodeListener listener = dsdDecodeListener;
+        if (listener != null) {
+          listener.onDsdDecode(codecName, inputSize, result, lastDecodeOutputBytes);
+        }
+      }
+    }
     if (result == AUDIO_DECODER_ERROR_OTHER) {
       return new FfmpegDecoderException("Error decoding (see logcat).");
     } else if (result == AUDIO_DECODER_ERROR_INVALID_DATA) {

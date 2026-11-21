@@ -37,6 +37,31 @@ jobs:
         run: gradle assembleDebug --stacktrace
       - name: Rename APK to Mio_Player-<tag>.apk
         run: cp app/build/outputs/apk/debug/app-debug.apk "Mio_Player-${{ github.ref_name }}.apk"
+      # v1.1.5 release gate (DSD .so): v1.1.2 shipped the STALE libffmpegJNI.so
+      # (old build, no createContext patch) because nothing checked which .so
+      # was inside the APK — the failure was only found by comparing hashes
+      # afterwards. This step extracts the .so from the built APK and fails
+      # the release if its SHA-256 is not the expected build (FFmpeg 6.0,
+      # NDK r26d, DSD createContext patch, all four DSD decoders; committed
+      # 2026-11-21, sha 59245f9c…). The app also logs the loaded .so's hash
+      # at startup (PlayerManager.EXPECTED_FFMPEG_SO_SHA256) — if the .so is
+      # ever deliberately rebuilt, update BOTH hashes together.
+      - name: Verify libffmpegJNI.so inside APK (release gate)
+        env:
+          EXPECTED_FFMPEG_SO_SHA256: 59245f9ce27b78740189870fce74312a1014b4f694110daa6b83d1c77a69ffb7
+        run: |
+          set -eux
+          APK="Mio_Player-${{ github.ref_name }}.apk"
+          unzip -p "$APK" lib/arm64-v8a/libffmpegJNI.so > /tmp/libffmpegJNI.so
+          ls -l /tmp/libffmpegJNI.so
+          ACTUAL="$(sha256sum /tmp/libffmpegJNI.so | cut -d' ' -f1)"
+          echo "libffmpegJNI.so in APK: sha256=$ACTUAL"
+          echo "expected:               sha256=$EXPECTED_FFMPEG_SO_SHA256"
+          if [ "$ACTUAL" != "$EXPECTED_FFMPEG_SO_SHA256" ]; then
+            echo "::error::libffmpegJNI.so inside the APK does not match the expected build ($EXPECTED_FFMPEG_SO_SHA256). The .so in third_party/media3-ffmpeg-decoder-dsd/src/main/jniLibs/arm64-v8a/ is stale or was rebuilt without updating the gate — see PlayerManager.EXPECTED_FFMPEG_SO_SHA256. Refusing to release."
+            exit 1
+          fi
+          echo "libffmpegJNI.so matches the expected build."
       - name: Create GitHub Release with APK
         uses: softprops/action-gh-release@v2
         with:

@@ -40,7 +40,10 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
     // Featured album = the album with the most tracks; playlists = albums.
     val albums = tracks.groupBy { it.album }.entries.sortedByDescending { it.value.size }
     val featured = albums.firstOrNull()
-    LazyColumn(Modifier.fillMaxSize().background(MioBg).padding(horizontal = 20.dp)) {
+    // Landscape (v1.1.5): lists scroll the same way, but the 20 dp
+    // portrait margin leaves content stretched edge to edge on a wide
+    // screen — the shared screenHorizontalPadding() widens it to 48 dp.
+    LazyColumn(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding())) {
         item { Spacer(Modifier.height(16.dp)); Text("Good evening", color = MioText, fontSize = 26.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold); Text("${tracks.size} songs in your library", color = MioTextSecondary, fontSize = 13.sp) }
         if (featured != null) {
             item {
@@ -88,12 +91,15 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
     val tracks by libVm.tracks.collectAsState()
     val queue by playerVm.queue.collectAsState(); val idx by playerVm.index.collectAsState()
     val currentId = queue.getOrNull(idx)?.id
-    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    // Landscape (v1.1.5): 4 genre columns instead of 2 — a 2-column grid
+    // on a wide screen leaves each card half the screen wide.
+    val landscape = isLandscape()
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         OutlinedTextFieldLocal("Search songs, artists, albums", q) { q = it; if (q.isBlank()) libVm.load() else libVm.search(q) }
         Spacer(Modifier.height(12.dp))
         if (q.isBlank()) {
             SectionTitle("Browse genres")
-            androidx.compose.foundation.lazy.grid.LazyVerticalGrid(columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.weight(1f)) {
+            androidx.compose.foundation.lazy.grid.LazyVerticalGrid(columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(if (landscape) 4 else 2), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.weight(1f)) {
                 items(GENRES.size) { i ->
                     val g = GENRES[i]
                     androidx.compose.material3.Card(Modifier.fillMaxWidth().height(64.dp).clickable { q = g; libVm.search(g) }, colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MioSurfaceRaised), shape = CardLarge) {
@@ -138,13 +144,25 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
             .sortedBy { it.name.lowercase() }
     }
     val openFolder = folders.firstOrNull { it.key == openFolderKey }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp)) {
+    // Landscape (v1.1.5): the portrait header stacks Scan + Add-folder +
+    // Albums vertically (~200 dp) — on a ~360 dp-tall landscape screen
+    // that leaves almost no room for the song list. Side by side instead.
+    val landscape = isLandscape()
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         SectionTitle("Library")
-        GradientButton("Scan music folders") { libVm.scan() }
-        Spacer(Modifier.height(8.dp))
-        androidx.compose.material3.TextButton(onClick = { folderPicker.launch(null) }) { Text("Add a music folder", color = MioCyan) }
-        Spacer(Modifier.height(8.dp))
-        androidx.compose.material3.TextButton(onClick = { nav.navigate(Routes.ALBUM) }) { Text("Albums & artists", color = MioCyan) }
+        if (landscape) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                GradientButton("Scan music folders", modifier = Modifier.weight(1f)) { libVm.scan() }
+                androidx.compose.material3.TextButton(onClick = { folderPicker.launch(null) }) { Text("Add a music folder", color = MioCyan, maxLines = 1) }
+                androidx.compose.material3.TextButton(onClick = { nav.navigate(Routes.ALBUM) }) { Text("Albums & artists", color = MioCyan, maxLines = 1) }
+            }
+        } else {
+            GradientButton("Scan music folders") { libVm.scan() }
+            Spacer(Modifier.height(8.dp))
+            androidx.compose.material3.TextButton(onClick = { folderPicker.launch(null) }) { Text("Add a music folder", color = MioCyan) }
+            Spacer(Modifier.height(8.dp))
+            androidx.compose.material3.TextButton(onClick = { nav.navigate(Routes.ALBUM) }) { Text("Albums & artists", color = MioCyan) }
+        }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth()) {
             LibraryTab("Songs", selected = tab == 0) { tab = 0; openFolderKey = null }
@@ -160,8 +178,16 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
                 }
             }
         } else if (openFolder == null) {
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(folders) { f -> FolderRow(f) { openFolderKey = f.key } }
+            // Landscape (v1.1.5): folders in 2 columns — a single-column
+            // list of full-width cards wastes the wide screen.
+            if (landscape) {
+                androidx.compose.foundation.lazy.grid.LazyVerticalGrid(columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+                    items(folders.size) { i -> FolderRow(folders[i]) { openFolderKey = folders[i].key } }
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(folders) { f -> FolderRow(f) { openFolderKey = f.key } }
+                }
             }
         } else {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {

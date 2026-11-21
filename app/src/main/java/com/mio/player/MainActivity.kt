@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
@@ -23,6 +24,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.*
 import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.ui.components.GradientIcon
+import com.mio.player.ui.components.isLandscape
 import com.mio.player.ui.components.MiniPlayer
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.screens.*
@@ -111,7 +113,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
         composable(Routes.SEARCH) { MainScaffold(nav, Routes.SEARCH, libVm, playerVm) { SearchScreen(libVm, playerVm, nav) } }
         composable(Routes.LIBRARY) { MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { LibraryScreen(libVm, playerVm, nav) } }
         composable(Routes.PROFILE) { MainScaffold(nav, Routes.PROFILE, libVm, playerVm) { ProfileScreen(libVm, nav) } }
-        composable(Routes.NOW_PLAYING) { NowPlayingScreen(playerVm, nav) }
+        composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, nav) }
         // Design system (p.8): bottom navigation + mini player are
         // mandatory on every screen. Album / Artist / Lyrics previously
         // had neither — no way back to Home/Search/Library/Profile
@@ -131,14 +133,40 @@ suspend fun restoreSoundSettings(ctx: Context) {
 }
 @Composable fun MainScaffold(nav: NavHostController, current: String, libVm: LibraryViewModel, playerVm: PlayerViewModel, content: @Composable () -> Unit) {
     val queue by playerVm.queue.collectAsState(); val idx by playerVm.index.collectAsState(); val playing by playerVm.isPlaying.collectAsState()
+    val tabs = listOf(Triple(Routes.HOME, "Trang chủ", Icons.Default.Home), Triple(Routes.SEARCH, "Tìm kiếm", Icons.Default.Search),
+        Triple(Routes.LIBRARY, "Thư viện", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Hồ sơ", Icons.Default.Person))
+    val goTab: (String) -> Unit = { r -> if (current != r) nav.navigate(r) { popUpTo(Routes.HOME) } }
+    // LANDSCAPE (v1.1.5): a bottom NavigationBar + MiniPlayer costs ~150 dp
+    // of a ~360 dp-tall landscape screen, leaving lists and content
+    // squeezed. The standard landscape pattern is a side NavigationRail
+    // (same 4 tabs, same gradient selected icon) with the MiniPlayer
+    // pinned at the bottom of the content column instead. Portrait keeps
+    // the bottom bar + mini player exactly as before.
+    if (isLandscape()) {
+        Row(Modifier.fillMaxSize().background(com.mio.player.ui.theme.MioBg)) {
+            NavigationRail(containerColor = com.mio.player.ui.theme.MioSurface) {
+                tabs.forEach { (r, label, icon) ->
+                    NavigationRailItem(selected = current == r, onClick = { goTab(r) },
+                        icon = { if (current == r) GradientIcon(icon, null) else Icon(icon, null, tint = com.mio.player.ui.theme.MioTextSecondary) },
+                        label = { Text(label, color = if (current == r) com.mio.player.ui.theme.MioText else com.mio.player.ui.theme.MioTextSecondary, fontSize = 11.sp) },
+                        colors = NavigationRailItemDefaults.colors(selectedIconColor = androidx.compose.ui.graphics.Color.White, unselectedIconColor = com.mio.player.ui.theme.MioTextSecondary,
+                            selectedTextColor = com.mio.player.ui.theme.MioText, unselectedTextColor = com.mio.player.ui.theme.MioTextSecondary, indicatorColor = androidx.compose.ui.graphics.Color.Transparent))
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Box(Modifier.weight(1f)) { content() }
+                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId) }
+            }
+        }
+        return
+    }
     Scaffold(
         bottomBar = {
             Column {
                 queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId) }
                 NavigationBar(containerColor = com.mio.player.ui.theme.MioSurface) {
-                    listOf(Triple(Routes.HOME, "Trang chủ", Icons.Default.Home), Triple(Routes.SEARCH, "Tìm kiếm", Icons.Default.Search),
-                        Triple(Routes.LIBRARY, "Thư viện", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Hồ sơ", Icons.Default.Person)).forEach { (r, label, icon) ->
-                        NavigationBarItem(selected = current == r, onClick = { if (current != r) nav.navigate(r) { popUpTo(Routes.HOME) } },
+                    tabs.forEach { (r, label, icon) ->
+                        NavigationBarItem(selected = current == r, onClick = { goTab(r) },
                             // Design system: the selected icon uses the theme
                             // gradient; unselected icons are secondary text.
                             icon = { if (current == r) GradientIcon(icon, null) else Icon(icon, null, tint = com.mio.player.ui.theme.MioTextSecondary) },

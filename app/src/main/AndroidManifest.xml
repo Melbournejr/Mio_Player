@@ -19,7 +19,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MioPlayer"
         tools:targetApi="34">
+        <!-- v1.1.5: NO portrait lock — the app rotates. There never was
+             an android:screenOrientation here (the "no landscape UI" was
+             portrait-only layouts, not a lock); "unspecified" is stated
+             explicitly so a future edit cannot silently re-lock it. -->
         <activity android:name=".MainActivity" android:exported="true"
+            android:screenOrientation="unspecified"
             android:theme="@style/Theme.MioPlayer">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

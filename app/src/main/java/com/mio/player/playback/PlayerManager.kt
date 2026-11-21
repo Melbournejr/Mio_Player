@@ -1,21 +1,27 @@
 package com.mio.player.playback
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.media.AudioManager
+import android.net.Uri
+import android.os.Handler
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.media3.common.*
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.common.util.Util
+import androidx.media3.decoder.ffmpeg.DsdDecodeProbe
+import androidx.media3.decoder.ffmpeg.FfmpegAudioDecoder
+import androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer
 import androidx.media3.decoder.ffmpeg.FfmpegLibrary
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
-import androidx.media3.exoplayer.audio.ForwardingAudioSink
+import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.Extractor
@@ -30,15 +36,25 @@ import com.mio.player.data.model.Track
 import com.mio.player.data.prefs.SettingsStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.security.MessageDigest
 import kotlin.math.roundToInt
 /** Gapless, high-res playback.
- *  - Native DSD (v1.1.0): .dsf/.dff are played directly — DsdExtractor
- *    frames the raw DSD bytes and the vendored FFmpeg DSD decoder
- *    (extension renderer, EXTENSION_RENDERER_MODE_PREFER, float output)
- *    decodes them in-process. DSD tracks go into the playlist as raw
- *    URIs, so playback starts immediately with no pre-decode wait.
+ *  - Native DSD (v1.1.0, reworked v1.1.5 onto mica-music's proven config):
+ *    .dsf/.dff are played directly — DsdExtractor frames the raw DSD bytes
+ *    (DFF packets de-interleaved + bit-reversed to planar LSBF) and the
+ *    vendored FFmpeg DSD decoder (extension renderer,
+ *    EXTENSION_RENDERER_MODE_PREFER, int16 output) decodes them in-process.
+ *    Float output is OFF and the decimator runs INSIDE DefaultAudioSink's
+ *    int16 processor chain — the opposite of the v1.1.0–v1.1.4 setup (float
+ *    ON, decimator in a ForwardingAudioSink wrapper outside the sink),
+ *    which never produced one output sample: the sink was downstream of
+ *    a decoder that returned no output, and 705600 Hz float could never
+ *    have opened an AudioTrack anyway. See the renderers-factory KDoc
+ *    below. DSD tracks go into the playlist as raw URIs, so playback
+ *    starts immediately with no pre-decode wait.
  *  - Fallback: if native decode fails for a track (DST-compressed .dff,
  *    an unsupported DSF variant, a malformed header), onPlayerError
  *    decodes it once to a cached PCM WAV with DsdDecoder (FFmpegKit)
@@ -59,18 +75,46 @@ import kotlin.math.roundToInt
 class PlayerManager(private val ctx: Context) {
     companion object {
         /**
-         * DSD decoders output float PCM, so float AudioTrack output must be
-         * on for the native DSD path to run at full quality.
+         * v1.1.5 — float output is OFF (mica-music's proven DSD config).
          *
-         * RISK — EQ vs float output: the app's AudioEffect-based EQ
-         * (AudioEffectsManager, attached to the audio session) may NOT
-         * process float output — on some devices / Android versions the
-         * EQ silently does nothing while float output is on. If the EQ
-         * stops having any effect, flip this to false: DSD still plays
-         * (decoder output is converted to 16-bit PCM) and the EQ works
-         * again. Re-test the EQ on a DSD track after any change here.
+         * v1.1.0–v1.1.4 ran float ON on the theory that the FFmpeg DSD
+         * decoder "outputs float PCM". It does — but float output was one
+         * of the two unproven elements in a path that never produced a
+         * single output sample, and it forced the decimator into a
+         * ForwardingAudioSink wrapper outside the sink (DefaultAudioSink
+         * drops its whole processor chain in float mode) plus a
+         * 705600 Hz -> 176400 Hz AudioTrack the framework was never
+         * proven to open. mica-music (lecoix/mica-music, branch
+         * exoplayer-only, Apache 2.0 — the only proven ExoPlayer DSD
+         * reference) runs float OFF, the decimator inside
+         * DefaultAudioSink's int16 processor chain, and split DSD/PCM
+         * sinks. This flag is that move: the decoder now emits 16-bit PCM
+         * (FfmpegAudioRenderer.shouldOutputFloat returns false once the
+         * sink reports float unsupported), the decimator runs in the
+         * sink chain, and the AudioTrack opens at 176400 Hz int16.
+         *
+         * EQ: AudioEffectsManager attaches to the AudioTrack's audio
+         * session, which exists identically on the int16 path — int16 is
+         * the classic AudioEffect path, and the EQ the user confirmed
+         * working in v1.1.3 keeps working. Do NOT flip this back to true
+         * without re-proving native DSD end to end: float ON also revives
+         * the wrapper, which is deleted in v1.1.5.
          */
-        const val ENABLE_AUDIO_FLOAT_OUTPUT = true
+        const val ENABLE_AUDIO_FLOAT_OUTPUT = false
+
+        /**
+         * Expected SHA-256 of the libffmpegJNI.so the app was built
+         * against (the 2026-11-21 rebuild: FFmpeg 6.0, NDK r26d, DSD
+         * createContext patch, all four DSD decoders). The startup probe
+         * hashes the loaded .so and logs match/mismatch, and release.yml
+         * fails the release if the .so inside the APK differs — so a stale
+         * or unpatched .so can never again ship silently (v1.1.2 shipped
+         * the old .so once because nothing checked). If the .so is ever
+         * deliberately rebuilt, update this constant AND the release.yml
+         * gate to the new hash together.
+         */
+        const val EXPECTED_FFMPEG_SO_SHA256 =
+            "59245f9ce27b78740189870fce74312a1014b4f694110daa6b83d1c77a69ffb7"
 
         /**
          * v1.1.3 (OOM fix) — hard cap on the loader's sample queue.
@@ -115,40 +159,140 @@ class PlayerManager(private val ctx: Context) {
     val fx = AudioEffectsManager()
     val waveform = WaveformTap(context = ctx)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    // v1.1.5: the enableAudioOutputPlaybackParameters flag buildAudioSink
+    // receives (factory default — the app never sets it). buildAudioRenderers
+    // has no such parameter, so the DSD sink is built from the value captured
+    // here. createRenderers always builds the sink before the renderers, so
+    // the capture has happened by the time it is read.
+    private var dsdSinkPlaybackParams = true
     val player: ExoPlayer = ExoPlayer.Builder(ctx)
         .setRenderersFactory(
-            // v1.1.4: the DSD decimation processor MUST run on the float
-            // path too — see DsdFloatAudioSink. DefaultAudioSink's
-            // setAudioProcessors() only fills the DefaultAudioProcessor
-            // Chain, which Media3 1.9 EXCLUDES from the pipeline
-            // whenever float output is in use (DefaultAudioSink.
-            // configure: the chain is only added in the non-float
-            // branch; the Builder doc says "Audio processing ... will
-            // not be available when float output is in use"). The
-            // decoder outputs float PCM at 705600 Hz for DSD128, so
-            // with the decimator dropped the sink tried to open an
-            // AudioTrack at 705600 Hz — impossible (Android caps at
-            // 192 kHz) — and native DSD never produced a single frame:
-            // BUFFERING, loader stopped at the 8 MiB cap ("not
-            // loading"), StuckPlayerException after ~4 s. The wrapper
-            // runs [decimator, FFT tap] itself, ahead of the delegate
-            // sink, for every PCM format — float output stays ON (EQ
-            // path untouched) and the AudioTrack now opens at 176400 Hz.
+            // v1.1.5 — mica-music's proven DSD topology (replaces the
+            // v1.1.4 DsdFloatAudioSink wrapper, deleted in v1.1.5).
+            //
+            // WHAT WAS WRONG (Worker A diagnosis, from the v1.1.2–v1.1.4
+            // user logs): every DSD packet returned "no output" (0 bytes)
+            // or "invalid data" (-1) from ffmpegDecode, and Media3's
+            // SimpleDecoder silently swallows both — no output buffer was
+            // ever dequeued, DecoderAudioRenderer never called
+            // audioSink.configure(...), so the sink (and the v1.1.4 wrapper
+            // and the decimator inside it) was NEVER REACHED. The v1.1.4
+            // claim ("DefaultAudioSink drops the custom chain in float
+            // mode") is true about the sink but wrong as the cause — the
+            // sink is downstream of the decoder and never gets configured
+            // without a first output buffer. The wrapper therefore fixed
+            // nothing, and it added two unproven elements of its own:
+            // float output at 705600 Hz, and a format-rewriting
+            // ForwardingAudioSink outside the sink. Downstream landmine
+            // on top: even with output, the wrapper handed 176400 Hz FLOAT
+            // to DefaultAudioSink, and a 176400 Hz float AudioTrack was
+            // never proven to open.
+            //
+            // THE PROVEN CONFIG (mica-music, branch exoplayer-only,
+            // Apache 2.0 — the only reference that demonstrably plays DSD
+            // in ExoPlayer; our DSD path before v1.1.5 had no proven
+            // reference and was the opposite in every choice):
+            //  - float output OFF (ENABLE_AUDIO_FLOAT_OUTPUT = false):
+            //    the FFmpeg decoder emits 16-bit PCM.
+            //  - decimator INSIDE DefaultAudioSink's processor chain via
+            //    Builder.setAudioProcessors(...) — the chain Media3 1.9
+            //    only includes on the non-float path, so this only works
+            //    with float off.
+            //  - SPLIT sinks: the FFmpeg (DSD) renderer gets its own sink
+            //    with [decimator, FFT tap]; the MediaCodec (PCM) renderer
+            //    gets a sink with [FFT tap] only. The decimator is a
+            //    strict passthrough below 352800 Hz, so the split changes
+            //    nothing for PCM — it exists so the DSD rate change
+            //    (705600 -> 176400 Hz) lives only in the DSD sink, exactly
+            //    as in mica, instead of in a wrapper around a shared sink.
+            //  - the FFT tap stays installed in BOTH sinks (same
+            //    WaveformTap.fftProcessor instance): it sees PCM for ALL
+            //    formats, as the visualizer requires. Only one renderer
+            //    drives the tap at a time — ExoPlayer drives all renderers
+            //    sequentially on its single playback thread, and a track
+            //    switch flushes the old sink before configuring the new
+            //    one — so sharing the instance across the two sinks is
+            //    safe. Do NOT "fix" this by giving each sink its own tap:
+            //    WaveformTap owns exactly one fftProcessor and its
+            //    levels/pcmFrame flows come from that one instance.
+            //  - DFF no longer uses dsd_msbf: see DsdExtractor (packets
+            //    are de-interleaved + bit-reversed to planar LSBF, and
+            //    both containers now use mica's dsd_lsbf_planar).
+            //
+            // What this does NOT fix (honest scope): if the probe below
+            // shows the decoder still returns 0 / -1 for a synthetic
+            // packet, the failure is inside the JNI/decoder layer, not
+            // the sink — and the next step is streaming decode (see the
+            // v1.1.5 report), not another sink rework.
             object : DefaultRenderersFactory(ctx) {
                 override fun buildAudioSink(
                     context: Context,
                     enableFloatOutput: Boolean,
                     enableAudioOutputPlaybackParameters: Boolean
                 ): AudioSink? {
-                    val delegate = DefaultAudioSink.Builder(context)
+                    dsdSinkPlaybackParams = enableAudioOutputPlaybackParameters
+                    // PCM sink: FFT tap only, float off. The decimator is
+                    // deliberately NOT here — it belongs to the DSD sink.
+                    return DefaultAudioSink.Builder(context)
                         .setEnableFloatOutput(enableFloatOutput)
                         .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParameters)
+                        .setAudioProcessors(arrayOf(waveform.fftProcessor))
                         .build()
-                    return DsdFloatAudioSink(
-                        delegate,
-                        ctx.applicationContext,
-                        waveform.fftProcessor
+                }
+
+                override fun buildAudioRenderers(
+                    context: Context,
+                    extensionRendererMode: Int,
+                    mediaCodecSelector: MediaCodecSelector,
+                    enableDecoderFallback: Boolean,
+                    audioSink: AudioSink,
+                    eventHandler: Handler?,
+                    eventListener: AudioRendererEventListener?,
+                    out: ArrayList<Renderer>
+                ) {
+                    // audioSink is the PCM sink from buildAudioSink above.
+                    val mediaCodecRenderer = MediaCodecAudioRenderer(
+                        context, mediaCodecSelector, enableDecoderFallback,
+                        eventHandler, eventListener, audioSink
                     )
+                    // DSD sink: decimator + FFT tap, float off. Built here
+                    // (not in buildAudioSink) because the factory builds
+                    // exactly ONE sink through buildAudioSink and hands it
+                    // to buildAudioRenderers as the shared sink — the split
+                    // needs a second one, and this override is where the
+                    // renderers are assembled.
+                    val dsdSink = DefaultAudioSink.Builder(context)
+                        .setEnableFloatOutput(false)
+                        .setEnableAudioOutputPlaybackParameters(dsdSinkPlaybackParams)
+                        .setAudioProcessors(
+                            arrayOf(DsdDecimationAudioProcessor(ctx.applicationContext), waveform.fftProcessor)
+                        )
+                        .build()
+                    val ffmpegRenderer = if (extensionRendererMode ==
+                        DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+                    ) {
+                        null
+                    } else {
+                        runCatching {
+                            FfmpegAudioRenderer(eventHandler, eventListener, dsdSink)
+                        }.onFailure {
+                            MioLog.event(ctx, "FFmpeg audio renderer unavailable: ${it::class.java.simpleName}: ${it.message}")
+                        }.getOrNull()
+                    }
+                    // EXTENSION_RENDERER_MODE_PREFER (what the app sets):
+                    // the FFmpeg renderer goes first so DSD (which only it
+                    // handles) is tried before MediaCodec. ON: MediaCodec
+                    // first. OFF: MediaCodec only (ffmpegRenderer is null).
+                    if (extensionRendererMode ==
+                        DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER &&
+                        ffmpegRenderer != null
+                    ) {
+                        out.add(ffmpegRenderer)
+                        out.add(mediaCodecRenderer)
+                    } else {
+                        out.add(mediaCodecRenderer)
+                        if (ffmpegRenderer != null) out.add(ffmpegRenderer)
+                    }
                 }
             }.apply {
                 setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
@@ -230,11 +374,42 @@ class PlayerManager(private val ctx: Context) {
     private val _shuffleEnabled = MutableStateFlow(false); val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF); val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
     init {
-        // v1.1.1 native-DSD probe: proves (or kills) the wiring hypothesis
-        // in the next user log. getCodecName() is package-private static so
-        // it cannot be called from here; supportsFormat() covers it (it
-        // calls getCodecName + ffmpegHasDecoder internally).
+        // v1.1.5 native-DSD diagnostics (see logNativeDsdProbe /
+        // runDsdDecodeProbe below): the probe proves the wiring AND the
+        // decoder itself, and the decode listener records what real DSD
+        // packets return. Both log to mio-log.txt — the proof for the next
+        // user log. The cache prune keeps the DSD WAV cache under its cap
+        // even when no new transcode runs (see DsdDecoder.pruneCacheNow).
         logNativeDsdProbe()
+        FfmpegAudioDecoder.setDsdDecodeListener(
+            object : FfmpegAudioDecoder.DsdDecodeListener {
+                override fun onDsdInit(
+                    codecName: String, sampleRate: Int, channelCount: Int, outputFloat: Boolean
+                ) {
+                    MioLog.event(
+                        ctx,
+                        "DSD decoder init: codec=$codecName sr=$sampleRate ch=$channelCount float=$outputFloat"
+                    )
+                }
+
+                override fun onDsdDecode(
+                    codecName: String, inputSize: Int, result: Int, outputBytes: Int
+                ) {
+                    // result: >0 = PCM bytes written; 0 = no output for
+                    // this packet; -1 = invalid data (packet skipped);
+                    // -2 = hard error. Only the first 8 packets per
+                    // decoder instance fire (see FfmpegAudioDecoder).
+                    MioLog.event(
+                        ctx,
+                        "DSD decode: codec=$codecName in=${inputSize}B result=$result out=${outputBytes}B"
+                    )
+                }
+            }
+        )
+        runDsdDecodeProbe()
+        scope.launch(Dispatchers.IO) {
+            runCatching { DsdDecoder.pruneCacheNow(ctx.applicationContext) }
+        }
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(v: Boolean) { _isPlaying.value = v }
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
@@ -257,6 +432,28 @@ class PlayerManager(private val ctx: Context) {
             }
             override fun onPlayerError(error: PlaybackException) {
                 MioLog.event(ctx, "Player error: ${error.errorCodeName} ${error.message}")
+                // v1.1.5: buffer state at the error — the numbers that say
+                // whether the player was starved (loading, nothing
+                // buffered) or stalled WITH data queued (decoder/sink
+                // produced nothing while the loader had already delivered).
+                // The v1.1.2–v1.1.4 StuckPlayerException was the second
+                // case: totalBuffered stayed at the 8 MiB cap while
+                // isLoading=false, i.e. the loader was done and the
+                // decoder had not consumed/emitted. Do NOT "fix" a stall
+                // by raising the load-control targets or disabling the
+                // stuck detector — the detector is the thing reporting
+                // correctly here.
+                runCatching {
+                    MioLog.event(
+                        ctx,
+                        "Player error buffer state: state=${player.playbackState} " +
+                            "isLoading=${player.isLoading} " +
+                            "buffered=${player.totalBufferedDuration}us " +
+                            "bufferedPos=${player.bufferedPosition}ms " +
+                            "pos=${player.currentPosition}ms " +
+                            "duration=${player.duration}ms"
+                    )
+                }
                 // v1.1.1: log the FULL cause chain. v1.1.0 only recorded
                 // "Source error" here, which hides the ParserException
                 // message (e.g. "DSF data chunk not found") that names the
@@ -479,14 +676,19 @@ class PlayerManager(private val ctx: Context) {
     fun isDsdCurrent(): Boolean = currentTrack?.let { DsdSupport.isDsd(it.path) } ?: false
     fun release() { scope.cancel(); fx.release(); waveform.release(); player.release() }
 
-    /** v1.1.1 native-DSD wiring probe (see the init call). Logs one line
-     *  at app start so the next user log proves or kills the wiring
-     *  hypothesis without guessing. Expected on a working build:
-     *  `ffmpegAvailable=true dsd=true dff=true rendererClass=true`.
+    /** v1.1.5 native-DSD wiring probe (see the init call). Logs at app start
+     *  so the next user log proves or kills the wiring hypothesis without
+     *  guessing. Expected on a working build:
+     *  `ffmpegAvailable=true dsd=true dff=true rendererClass=true
+     *  hasDsdLsbfPlanar=true ... soShaMatch=true`.
      *  `ffmpegAvailable=false` means libffmpegJNI.so did not load at all;
      *  `dsd=false` with available=true means the .so loaded but has no
      *  DSD decoder (e.g. it was built without the DSD codec or without
-     *  the JNI channel-layout patch — see DsdExtractor's KDoc). */
+     *  the JNI channel-layout patch — see DsdExtractor's KDoc).
+     *  `soShaMatch=false` means the loaded .so is NOT the build the app
+     *  was verified against (stale/unpatched .so — the v1.1.2 failure
+     *  mode); playback continues, but native DSD is suspect until the
+     *  .so is rebuilt and this line reads true. */
     private fun logNativeDsdProbe() {
         runCatching {
             val available = FfmpegLibrary.isAvailable()
@@ -497,284 +699,120 @@ class PlayerManager(private val ctx: Context) {
                 true
             }.getOrDefault(false)
             val version = runCatching { FfmpegLibrary.getVersion() }.getOrNull()
+            // Per-codec proof: supportsFormat only covers the two MIME
+            // types; the .so must contain the planar decoder both now use.
+            val hasLsbfPlanar = if (available) FfmpegLibrary.hasDecoderByName("dsd_lsbf_planar") else false
+            val hasMsbfPlanar = if (available) FfmpegLibrary.hasDecoderByName("dsd_msbf_planar") else false
+            val hasLsbf = if (available) FfmpegLibrary.hasDecoderByName("dsd_lsbf") else false
+            val hasMsbf = if (available) FfmpegLibrary.hasDecoderByName("dsd_msbf") else false
+            val soShaMatch = logLoadedFfmpegSoSha()
             MioLog.event(
                 ctx,
-                "Native DSD probe: ffmpegAvailable=$available version=$version dsd=$dsd dff=$dff rendererClass=$renderer"
+                "Native DSD probe: ffmpegAvailable=$available version=$version dsd=$dsd dff=$dff rendererClass=$renderer " +
+                    "hasDsdLsbfPlanar=$hasLsbfPlanar hasDsdMsbfPlanar=$hasMsbfPlanar " +
+                    "hasDsdLsbf=$hasLsbf hasDsdMsbf=$hasMsbf float=$ENABLE_AUDIO_FLOAT_OUTPUT soShaMatch=$soShaMatch"
             )
         }.onFailure {
             MioLog.event(ctx, "Native DSD probe FAILED: ${it::class.java.simpleName}: ${it.message}")
         }
     }
-}
-
-/**
- * v1.1.4 (Fix 1 — native-DSD stuck error): runs the DSD decimator (and
- * the FFT waveform tap) on the FLOAT output path, where Media3 1.9
- * silently drops DefaultAudioSink's whole custom processor chain.
- *
- * ROOT CAUSE (proven by reading Media3 1.9.0 source, not by guessing):
- *  - DefaultAudioSink.Builder.setAudioProcessors() only fills the
- *    DefaultAudioProcessorChain.
- *  - DefaultAudioSink.configure() builds the processing pipeline as
- *    [trimming, channelMapping] + (float ? [toFloat] : [toInt16, chain]).
- *    In float mode the chain — our DsdDecimationAudioProcessor and the
- *    FFT tap — is NOT in the pipeline at all. The Builder doc says it
- *    plainly: "Audio processing ... will not be available when float
- *    output is in use."
- *  - The FFmpeg DSD decoder always outputs float here
- *    (FfmpegAudioRenderer.shouldOutputFloat: the sink reports PCM 16-bit
- *    AND float at 705600 Hz as SUPPORTED_DIRECTLY — the support check
- *    never looks at the sample rate — so float wins), at the raw PCM
- *    rate: 705600 Hz for the user's DSD128 .dff.
- *  - With the decimator dropped, the sink's after-processing format
- *    stayed 705600 Hz float, so it tried to open an AudioTrack at
- *    705600 Hz. Android AudioTrack caps at 192 kHz, so no audio path
- *    can ever come up, the renderer never becomes ready, the player
- *    sits in BUFFERING, the loader stops at the 8 MiB cap ("not
- *    loading"), and ExoPlayer fires StuckPlayerException. The decoder
- *    itself was fine — FFmpeg's DSD decoder emits one PCM frame per
- *    input packet, immediately, with no pre-roll — but its output
- *    never reached an AudioTrack.
- *  - Corroboration in the v1.1.3 user log: the "DSD decimation ON"
- *    line is ABSENT (the decimator's configure() never ran), while the
- *    FFT tap did log — but only for the 16-bit MP3 / fallback-WAV
- *    tracks, where the chain IS included.
- *  - The 8 MiB load-control cap (v1.1.3 OOM fix) is NOT the cause and
- *    is left untouched: the renderer never consumed anything, so the
- *    queue never drained and the loader never resumed. With the sink
- *    fixed, 8 MiB is ~5.7 s of DSD128 against a 1 s ready threshold,
- *    and local-disk refill takes milliseconds.
- *
- * FIX: this ForwardingAudioSink owns a two-processor chain
- * [DsdDecimationAudioProcessor, fftTap] and runs it BEFORE the delegate
- * DefaultAudioSink, for every PCM format — the same workaround
- * mica-music uses for its hi-res float path (MicaFloatDspAudioSink).
- * The chain is driven directly (not via Media3's AudioProcessingPipeline:
- * that helper's constructor takes a Guava ImmutableList and :app does
- * not depend on Guava, and with two processors that each emit at most
- * one output buffer per input the direct chain is exact). Float output stays enabled (ENABLE_AUDIO_FLOAT_OUTPUT untouched, EQ
- * path untouched — the delegate still creates the AudioTrack on the
- * same audio session, so AudioEffectsManager attaches exactly as
- * before), and the delegate now sees 176400 Hz float for DSD, a rate
- * AudioTrack accepts. Non-DSD audio is unaffected: the decimator
- * passes everything below 352800 Hz through untouched, the FFT tap
- * already ran on the 16-bit path, and the processor order relative to
- * the delegate's own silence/speed processors is unchanged (wrapper
- * first, then the delegate's chain).
- *
- * The wrapper mirrors DefaultAudioSink's own retain-and-retry contract:
- * the delegate may return false from handleBuffer (AudioTrack not
- * ready / backpressure) and then keeps the exact buffer object — so
- * the wrapper retains its pending output and re-presents the SAME
- * object on retry, never re-processing input that was already
- * consumed. End-of-stream drains the chain into the delegate
- * before the delegate's playToEndOfStream runs.
- *
- * Logging (the proof for the next user log): configure() logs the
- * input -> output rate mapping whenever the decimator changes the
- * rate, and the decimator logs its first output with a timestamp.
- * If native DSD really starts, both lines MUST appear. If only the
- * configure line appears, the decoder is producing PCM and the
- * AudioTrack is the problem. If neither appears, the decoder never
- * emitted.
- */
-@OptIn(UnstableApi::class)
-private class DsdFloatAudioSink(
-    delegate: AudioSink,
-    private val logContext: Context?,
-    private val fftTap: AudioProcessor
-) : ForwardingAudioSink(delegate) {
-
-    private val decimator = DsdDecimationAudioProcessor(logContext)
-    private var chainNeedsFlush = false
-    private var processingEnabled = false
-    private var inputBuffer: ByteBuffer? = null
-    private var inputAccessUnitCount = 0
-    private var outputBuffer: ByteBuffer? = null
-
-    private fun log(msg: String) {
-        val ctx = logContext ?: return
-        runCatching { MioLog.event(ctx, msg) }
-    }
-
-    override fun configure(inputFormat: Format, specifiedBufferSize: Int, outputChannels: IntArray?) {
-        // Non-PCM (offload / passthrough) has no processor chain: pass
-        // straight through to the delegate.
-        if (inputFormat.sampleMimeType != MimeTypes.AUDIO_RAW ||
-            !Util.isEncodingLinearPcm(inputFormat.pcmEncoding)
-        ) {
-            processingEnabled = false
-            chainNeedsFlush = false
-            inputBuffer = null
-            outputBuffer = null
-            super.configure(inputFormat, specifiedBufferSize, outputChannels)
-            return
-        }
-        val inFormat = AudioProcessor.AudioFormat(inputFormat)
-        val midFormat = decimator.configure(inFormat)
-        val outFormat = fftTap.configure(midFormat)
-        chainNeedsFlush = true
-        processingEnabled = true
-        val delegateFormat = inputFormat.buildUpon()
-            .setSampleRate(outFormat.sampleRate)
-            .setChannelCount(outFormat.channelCount)
-            .setPcmEncoding(outFormat.encoding)
-            .build()
-        super.configure(delegateFormat, specifiedBufferSize, outputChannels)
-        // Log only when the decimator actually changes the rate — that
-        // is exactly the DSD case, and the AudioTrack rate is what used
-        // to be impossible (705600 Hz) before this fix.
-        if (outFormat.sampleRate != inFormat.sampleRate) {
-            log(
-                "DSD sink configure: ${inFormat.sampleRate}Hz enc=${inFormat.encoding} " +
-                    "ch=${inFormat.channelCount} -> ${outFormat.sampleRate}Hz " +
-                    "enc=${outFormat.encoding} ch=${outFormat.channelCount}"
-            )
-        }
-    }
-
-    override fun handleBuffer(
-        buffer: ByteBuffer,
-        presentationTimeUs: Long,
-        encodedAccessUnitCount: Int
-    ): Boolean {
-        if (!processingEnabled) {
-            return super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
-        }
-        if (chainNeedsFlush) {
-            // configure() stages the new format; flush both processors
-            // before the first buffer of the new stream — same
-            // lazy-flush rule as DefaultAudioSink (which flushes its
-            // pipeline inside handleBuffer before processing).
-            decimator.flush()
-            fftTap.flush()
-            chainNeedsFlush = false
-        }
-        if (inputBuffer == null) {
-            // First sight of this buffer. An empty buffer is consumed.
-            if (!buffer.hasRemaining()) return true
-            inputBuffer = buffer
-            inputAccessUnitCount = encodedAccessUnitCount
-        }
-        // Else: retry of the same buffer after backpressure — the
-        // retained inputBuffer is the same object; do NOT re-queue it.
-        processBuffers(presentationTimeUs)
-        if (inputBuffer?.hasRemaining() == false) {
-            inputBuffer = null
-            inputAccessUnitCount = 0
-            return true
-        }
-        return false
-    }
 
     /**
-     * Runs one input buffer through [decimator] then [fftTap] and returns
-     * the chain output (possibly empty). Each processor emits at most one
-     * output buffer per input, and the tap is a pure passthrough, so a
-     * single pass is exact — no pull loop is needed.
+     * v1.1.5: hashes the loaded libffmpegJNI.so and compares it with the
+     * expected build (EXPECTED_FFMPEG_SO_SHA256). Logs the hash and the
+     * match, returns the match (false when the file cannot be read — the
+     * probe line then says soShaMatch=false and native DSD is suspect).
+     * Log-only: a mismatch never blocks playback; the FFmpegKit transcode
+     * fallback still works.
      */
-    private fun runChain(input: ByteBuffer): ByteBuffer {
-        var buffer = input
-        if (decimator.isActive()) {
-            decimator.queueInput(buffer)
-            buffer = decimator.output
-        }
-        if (fftTap.isActive()) {
-            fftTap.queueInput(buffer)
-            buffer = fftTap.output
-        }
-        return buffer
-    }
-
-    /**
-     * Mirrors DefaultAudioSink.processBuffers: drain retained output
-     * first, then feed more input — never feeding input while undrained
-     * output exists.
-     */
-    private fun processBuffers(presentationTimeUs: Long) {
-        drainOutputBuffer(presentationTimeUs)
-        if (outputBuffer != null) return
-        val input = inputBuffer ?: return
-        if (!input.hasRemaining()) return
-        val out = runChain(input)
-        if (out.hasRemaining()) {
-            outputBuffer = out
-            drainOutputBuffer(presentationTimeUs)
-        }
-    }
-
-    private fun drainOutputBuffer(presentationTimeUs: Long) {
-        val out = outputBuffer ?: return
-        if (!out.hasRemaining()) {
-            outputBuffer = null
-            return
-        }
-        val handled = try {
-            super.handleBuffer(out, presentationTimeUs, inputAccessUnitCount)
-        } catch (e: AudioSink.InitializationException) {
-            // The delegate could not open its AudioTrack — log the
-            // failure and let the error surface instead of stalling
-            // silently into another StuckPlayerException.
-            log("DSD sink AudioTrack init FAILED: ${e::class.java.simpleName}: ${e.message}")
-            throw e
-        }
-        if (handled) {
-            // The delegate consumed the whole buffer (it only returns
-            // true once its retained input is fully written).
-            outputBuffer = null
-        }
-        // Else: the delegate retained this exact buffer object and will
-        // keep draining it on retry; keep outputBuffer so the next call
-        // re-presents the same object.
-    }
-
-    override fun playToEndOfStream() {
-        if (processingEnabled) {
-            // End the chain first: the decimator drops its partial
-            // group, so the final pull below is normally empty — run it
-            // anyway, then drain anything retained to the delegate
-            // before the delegate ends its own stream.
-            decimator.queueEndOfStream()
-            fftTap.queueEndOfStream()
-            val finalOut = if (fftTap.isActive()) fftTap.output
-                else if (decimator.isActive()) decimator.output
-                else AudioProcessor.EMPTY_BUFFER
-            if (finalOut.hasRemaining() && outputBuffer == null) {
-                outputBuffer = finalOut
+    private fun logLoadedFfmpegSoSha(): Boolean {
+        return runCatching {
+            val dir = ctx.applicationInfo.nativeLibraryDir
+            val so = File(dir, "libffmpegJNI.so")
+            if (!so.exists()) {
+                MioLog.event(ctx, "DSD .so check: libffmpegJNI.so NOT FOUND in $dir")
+                return false
             }
-            drainOutputBuffer(C.TIME_END_OF_SOURCE)
+            val digest = MessageDigest.getInstance("SHA-256")
+            so.inputStream().use { input ->
+                val buf = ByteArray(8192)
+                var n: Int
+                while (input.read(buf).also { n = it } > 0) digest.update(buf, 0, n)
+            }
+            val sha = digest.digest().joinToString("") { "%02x".format(it) }
+            val match = sha.equals(EXPECTED_FFMPEG_SO_SHA256, ignoreCase = true)
+            MioLog.event(
+                ctx,
+                "DSD .so check: sha256=${sha.take(16)}… expected=${EXPECTED_FFMPEG_SO_SHA256.take(16)}… match=$match size=${so.length()}B"
+            )
+            match
+        }.onFailure {
+            MioLog.event(ctx, "DSD .so check FAILED: ${it::class.java.simpleName}: ${it.message}")
+            false
+        }.getOrDefault(false)
+    }
+
+    /**
+     * v1.1.5 — the step-1 probe (see DsdDecodeProbe): one synthetic DSD
+     * packet per container through a fresh decoder, on a background
+     * thread so decoder init (up to ~1 s) never blocks the main thread.
+     *
+     * The packets are DSD silence (0x69), the value FFmpeg itself uses
+     * for DSD silence — content the decoder cannot reject as malformed
+     * audio. The DFF packet is run through the exact transform the
+     * extractor applies to real packets
+     * (DsdExtractor.transformDffPacketToPlanarLsbf), so the probe tests
+     * the shipped DFF path byte-for-byte; the DSF packet is the planar
+     * layout the extractor delivers untouched (one 4096-byte block per
+     * channel). Both use DSD128 rates (the user's failing files) and
+     * outputFloat=false — the production int16 path.
+     *
+     * How to read the lines (see DsdDecodeProbe.KDoc for the full key):
+     *  - decodeResult > 0 + gotOutput=true: the decoder WORKS. Any
+     *    real-playback failure is then in the extractor's packets or
+     *    downstream of the decoder — not the decoder.
+     *  - decodeResult == 0: the decoder swallows packets without
+     *    emitting (receive-side stall).
+     *  - decodeResult == -1: the decoder rejects packets as invalid
+     *    data (send-side: wrong codec/layout/init).
+     *  - ERROR=...: decoder init failed outright.
+     * If EITHER probe fails, the in-ExoPlayer FFmpeg path is not proven
+     * and the next step is streaming decode (see the v1.1.5 report) —
+     * do not answer it with another sink change.
+     */
+    private fun runDsdDecodeProbe() {
+        if (!FfmpegLibrary.isAvailable()) {
+            MioLog.event(ctx, "DSD probe skipped: ffmpeg library not available")
+            return
         }
-        super.playToEndOfStream()
-    }
-
-    override fun isEnded(): Boolean {
-        if (!processingEnabled) return super.isEnded()
-        if (!decimator.isEnded() || !fftTap.isEnded()) return false
-        if (outputBuffer?.hasRemaining() == true) return false
-        if (inputBuffer?.hasRemaining() == true) return false
-        return super.isEnded()
-    }
-
-    override fun flush() {
-        // Also the renderer's seek path: clear both processors and drop
-        // retained buffers so the next stream starts clean.
-        decimator.flush()
-        fftTap.flush()
-        chainNeedsFlush = false
-        inputBuffer = null
-        inputAccessUnitCount = 0
-        outputBuffer = null
-        super.flush()
-    }
-
-    override fun reset() {
-        decimator.reset()
-        fftTap.reset()
-        chainNeedsFlush = false
-        processingEnabled = false
-        inputBuffer = null
-        outputBuffer = null
-        super.reset()
+        scope.launch(Dispatchers.Default) {
+            runCatching {
+                // DSF: 4096 bytes per channel, planar LSBF, 0x69 silence.
+                val dsfPacket = ByteArray(4096 * 2) { 0x69.toByte() }
+                val dsf = DsdDecodeProbe.probe(
+                    DsdExtractor.MIME_TYPE_DSF, dsfPacket,
+                    /* sampleRate= */ 705_600, /* channelCount= */ 2,
+                    /* outputFloat= */ false
+                )
+                MioLog.event(ctx, dsf.toLogLine())
+                // DFF: 2048 interleaved MSBF bytes -> the extractor's
+                // transform -> 2048 planar LSBF bytes (0x69 -> 0x96).
+                val dffRaw = ByteArray(2048) { 0x69.toByte() }
+                val dffTransformed = ByteArray(2048)
+                val dffLen = DsdExtractor.transformDffPacketToPlanarLsbf(
+                    dffRaw, dffRaw.size, 2, dffTransformed
+                )
+                val dff = DsdDecodeProbe.probe(
+                    DsdExtractor.MIME_TYPE_DFF,
+                    dffTransformed.copyOf(dffLen),
+                    /* sampleRate= */ 705_600, /* channelCount= */ 2,
+                    /* outputFloat= */ false
+                )
+                MioLog.event(ctx, dff.toLogLine())
+            }.onFailure {
+                MioLog.event(ctx, "DSD probe FAILED: ${it::class.java.simpleName}: ${it.message}")
+            }
+        }
     }
 }
 
@@ -783,16 +821,16 @@ private class DsdFloatAudioSink(
  * down to a rate AudioTrack can play, by boxcar-averaging [downsampleFactor]
  * consecutive samples per channel.
  *
- * Why this exists: the extractor now reports the PCM output rate
- * (sampleRate / 8 — 352800 Hz for DSD64), so the decoder emits float PCM
- * at 352800 Hz. AudioTrack cannot play 352800 Hz, so without this the
+ * Why this exists: the extractor reports the PCM output rate
+ * (sampleRate / 8 — 352800 Hz for DSD64), so the decoder emits PCM at
+ * 352800 Hz and up. AudioTrack cannot play 352800 Hz, so without this the
  * sink would fail at AudioTrack init even after the decoder works. This
  * is the same role as mica-music's DsdDecimationAudioProcessor
  * (branch exoplayer-only, Apache 2.0), simplified: same-encoding output
- * (float stays float, so the EQ/float path is unchanged) and a fixed
- * 176400 / 88200 Hz ladder instead of per-device capability probing —
- * both divide every DSD rate (2822400 / 5644800 / 11289600) exactly, so
- * the boxcar window is always an integer number of samples.
+ * (int16 stays int16) and a fixed 176400 / 88200 Hz ladder instead of
+ * per-device capability probing — both divide every DSD rate
+ * (2822400 / 5644800 / 11289600) exactly, so the boxcar window is always
+ * an integer number of samples.
  *
  * Activation is strictly gated: input rate >= 352800 Hz AND float/16-bit
  * PCM AND at least 1 channel. Everything else passes through untouched
@@ -801,11 +839,13 @@ private class DsdFloatAudioSink(
  * A rate >= 352800 Hz that divides by neither 176400 nor 88200 also
  * passes through (and logs a warning) rather than guessing a factor.
  *
- * v1.1.4: this processor NO LONGER runs via DefaultAudioSink's
- * setAudioProcessors — Media3 1.9 excludes that whole chain on the
- * float path, so the decimator never ran for DSD at all (the v1.1.3
- * stuck error). It now runs inside DsdFloatAudioSink, ahead of the
- * delegate sink, for every PCM format.
+ * v1.1.5: this processor runs inside DefaultAudioSink's int16 processor
+ * chain (setAudioProcessors, DSD sink only — see PlayerManager's
+ * renderers factory). That is mica's placement. v1.1.4 ran it inside a
+ * ForwardingAudioSink wrapper on the float path instead; the wrapper is
+ * deleted in v1.1.5 — the decoder never emitted, so the wrapper was never
+ * reached, and float output is off now anyway (DefaultAudioSink drops
+ * its chain in float mode, which is why the wrapper existed at all).
  *
  * Only this processor's input/output runs on the playback thread; logging
  * is best-effort via MioLog.
