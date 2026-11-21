@@ -14,6 +14,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.zip.ZipException
+import java.util.zip.ZipFile
 
 /**
  * OTA update via GitHub Releases — no Play Store, no server of our own.
@@ -89,13 +91,62 @@ object OtaUpdateChecker {
         }.getOrNull()
     }
 
-    /** Download the APK to cache and return the file. Reports 0..100 progress. */
+    /**
+     * True only if [file] is a complete, structurally valid APK (ZIP).
+     *
+     * Opening it with [ZipFile] reads the ZIP end-of-central-directory (EOCD)
+     * record at the very end of the file, so any file truncated by an
+     * interrupted download fails here with [ZipException] (or returns no
+     * entries) instead of being treated as a finished download. A valid APK
+     * always contains entries (AndroidManifest.xml, classes.dex, ...).
+     */
+    fun isValidApk(file: File): Boolean {
+        if (!file.isFile || file.length() <= 0) return false
+        return runCatching {
+            ZipFile(file).use { zip ->
+                zip.entries().hasMoreElements()
+            }
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Download the APK to cache and return the file, or null on failure.
+     * Reports 0..100 progress.
+     *
+     * Safety against interrupted downloads (user report 2026-11-21):
+     * - The download goes to a ".tmp" file in the same directory. Only a
+     *   download that finishes AND passes validation is renamed to the
+     *   final "mio-player-<version>.apk" path, so the final path never
+     *   holds a partial file written by this version.
+     * - Completion is validated two ways: the bytes received must match
+     *   the release asset's Content-Length, and the file must open as a
+     *   valid ZIP/APK (see [isValidApk]). A failed check deletes the
+     *   partial file and returns null, so the next check re-downloads
+     *   from 0% instead of offering "Install" for a broken file.
+     * - Legacy partials: a partial file left at the final path by the old
+     *   version (which wrote there directly) is validated the same way
+     *   and deleted if invalid, never returned as complete.
+     * - No HTTP Range resume: a stale .tmp is discarded and the download
+     *   restarts from 0%. Simpler and always correct.
+     */
     suspend fun downloadApk(context: Context, info: UpdateInfo, onProgress: (Int) -> Unit): File? =
         withContext(Dispatchers.IO) {
+            val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+            val file = File(dir, "mio-player-${info.versionName}.apk")
+            val tmpFile = File(dir, "mio-player-${info.versionName}.apk.tmp")
+
+            // Legacy partial (or a good file) left at the final path by the
+            // old version: only a structurally valid APK may be reused.
+            // An invalid one is deleted so it can never reach installApk.
+            if (file.exists()) {
+                if (isValidApk(file)) return@withContext file
+                file.delete()
+            }
+            // A stale temp file means a previous download was interrupted;
+            // discard it and start again from 0% (no resume).
+            tmpFile.delete()
+
             runCatching {
-                val dir = File(context.cacheDir, "updates").apply { mkdirs() }
-                val file = File(dir, "mio-player-${info.versionName}.apk")
-                if (file.exists() && file.length() > 0) return@withContext file
                 val conn = (URL(info.apkUrl).openConnection() as HttpURLConnection).apply {
                     setRequestProperty("User-Agent", "MioPlayer-OTA")
                     connectTimeout = 15_000
@@ -104,19 +155,51 @@ object OtaUpdateChecker {
                 if (conn.responseCode !in 200..299) return@withContext null
                 val total = conn.contentLengthLong
                 var done = 0L
-                conn.inputStream.use { input ->
-                    FileOutputStream(file).use { out ->
-                        val buf = ByteArray(32 * 1024)
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            done += n
-                            if (total > 0) onProgress(((done * 100 / total).toInt()).coerceIn(0, 100))
+                try {
+                    conn.inputStream.use { input ->
+                        FileOutputStream(tmpFile).use { out ->
+                            val buf = ByteArray(32 * 1024)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                done += n
+                                if (total > 0) onProgress(((done * 100 / total).toInt()).coerceIn(0, 100))
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    // Interrupted mid-download (network drop, storage error,
+                    // ...): never leave a partial file behind.
+                    tmpFile.delete()
+                    throw e
+                }
+                // Size check: a download that ends early will not match the
+                // release asset's Content-Length.
+                if (total > 0 && done != total) {
+                    tmpFile.delete()
+                    return@withContext null
+                }
+                // Structural check: the file must be a complete, valid APK.
+                if (!isValidApk(tmpFile)) {
+                    tmpFile.delete()
+                    return@withContext null
+                }
+                // Only now does the file become the installable one.
+                if (tmpFile.renameTo(file)) return@withContext file
+                // renameTo can fail across filesystems; fall back to copy.
+                runCatching {
+                    tmpFile.copyTo(file, overwrite = true)
+                    tmpFile.delete()
+                }.onFailure {
+                    // The temp file itself is a valid APK, so it is still
+                    // safe to install; the next check will just re-download
+                    // because the final path is still empty.
+                    return@withContext tmpFile
                 }
                 file
+            }.onFailure {
+                tmpFile.delete()
             }.getOrNull()
         }
 

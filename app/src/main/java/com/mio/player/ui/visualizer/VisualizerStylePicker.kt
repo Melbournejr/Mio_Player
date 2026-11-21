@@ -43,14 +43,16 @@ import kotlinx.coroutines.launch
  * coordinator only passes the live audio data.
  */
 
-/** Row of five style chips. Selected chip: theme gradient, white text.
+/** Row of four style chips. Selected chip: theme gradient, white text.
  *  Unselected: raised surface, secondary text. No icons — the labels
- *  ("Cột / Sóng / Tròn / Gương / Giọt nước") are the style names.
- *  v1.1.7: the row is horizontally scrollable — five chips at 13 sp
- *  with 14 dp padding are ~337 dp wide, wider than the ~320 dp left
- *  on a 360 dp screen after Now Playing's 20 dp side margins, so the
- *  last chip ("Giọt nước") would otherwise be cut off. When the row
- *  fits (wider screens) it stays centred and does not scroll. */
+ *  ("Cột / Sóng / Tròn / Gương") are the style names.
+ *  v1.1.8: Droplet ("Giọt nước") removed at the user's request, so the
+ *  row is back to four chips. The row stays horizontally scrollable
+ *  (v1.1.7) as a safety for narrow screens, but four chips fit the
+ *  ~320 dp left on a 360 dp screen after Now Playing's 20 dp side
+ *  margins, so it normally stays centred and does not scroll.
+ *  Chips come from VisualizerStyle.values(), so the enum is the single
+ *  source of truth — no hardcoded chip anywhere. */
 @Composable
 fun VisualizerStylePicker(
     selected: VisualizerStyle,
