@@ -3,25 +3,18 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
-import android.os.Handler
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.media3.common.*
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.decoder.ffmpeg.DsdDecodeProbe
-import androidx.media3.decoder.ffmpeg.FfmpegAudioDecoder
-import androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer
 import androidx.media3.decoder.ffmpeg.FfmpegLibrary
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.Renderer
-import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
-import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.Extractor
@@ -159,12 +152,6 @@ class PlayerManager(private val ctx: Context) {
     val fx = AudioEffectsManager()
     val waveform = WaveformTap(context = ctx)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    // v1.1.5: the enableAudioOutputPlaybackParameters flag buildAudioSink
-    // receives (factory default — the app never sets it). buildAudioRenderers
-    // has no such parameter, so the DSD sink is built from the value captured
-    // here. createRenderers always builds the sink before the renderers, so
-    // the capture has happened by the time it is read.
-    private var dsdSinkPlaybackParams = true
     val player: ExoPlayer = ExoPlayer.Builder(ctx)
         .setRenderersFactory(
             // v1.1.5 — mica-music's proven DSD topology (replaces the
@@ -198,23 +185,19 @@ class PlayerManager(private val ctx: Context) {
             //    Builder.setAudioProcessors(...) — the chain Media3 1.9
             //    only includes on the non-float path, so this only works
             //    with float off.
-            //  - SPLIT sinks: the FFmpeg (DSD) renderer gets its own sink
-            //    with [decimator, FFT tap]; the MediaCodec (PCM) renderer
-            //    gets a sink with [FFT tap] only. The decimator is a
-            //    strict passthrough below 352800 Hz, so the split changes
-            //    nothing for PCM — it exists so the DSD rate change
-            //    (705600 -> 176400 Hz) lives only in the DSD sink, exactly
-            //    as in mica, instead of in a wrapper around a shared sink.
-            //  - the FFT tap stays installed in BOTH sinks (same
+            //  - ONE shared sink (the stock factory builds exactly one
+            //    sink through buildAudioSink and hands it to both
+            //    renderers): [decimator, FFT tap]. The decimator is a
+            //    strict passthrough below 352800 Hz, so it changes
+            //    nothing for PCM, and it decimates 705600 -> 176400 Hz
+            //    int16 for DSD — exactly as in mica, instead of in a
+            //    wrapper around a shared sink. (A split-sink override of
+            //    buildAudioRenderers was tried first and removed: the
+            //    override did not match the stock 1.9.0 signature, and
+            //    the split buys nothing over the passthrough decimator.)
+            //  - the FFT tap stays installed in the shared sink (same
             //    WaveformTap.fftProcessor instance): it sees PCM for ALL
-            //    formats, as the visualizer requires. Only one renderer
-            //    drives the tap at a time — ExoPlayer drives all renderers
-            //    sequentially on its single playback thread, and a track
-            //    switch flushes the old sink before configuring the new
-            //    one — so sharing the instance across the two sinks is
-            //    safe. Do NOT "fix" this by giving each sink its own tap:
-            //    WaveformTap owns exactly one fftProcessor and its
-            //    levels/pcmFrame flows come from that one instance.
+            //    formats, as the visualizer requires.
             //  - DFF no longer uses dsd_msbf: see DsdExtractor (packets
             //    are de-interleaved + bit-reversed to planar LSBF, and
             //    both containers now use mica's dsd_lsbf_planar).
@@ -230,70 +213,22 @@ class PlayerManager(private val ctx: Context) {
                     enableFloatOutput: Boolean,
                     enableAudioOutputPlaybackParameters: Boolean
                 ): AudioSink? {
-                    dsdSinkPlaybackParams = enableAudioOutputPlaybackParameters
-                    // PCM sink: FFT tap only, float off. The decimator is
-                    // deliberately NOT here — it belongs to the DSD sink.
+                    // Single shared sink, float off: [decimator, FFT tap].
+                    // The decimator passes PCM (< 352800 Hz) through
+                    // untouched and decimates DSD 705600 -> 176400 Hz
+                    // int16; the tap sees PCM for ALL formats.
                     return DefaultAudioSink.Builder(context)
                         .setEnableFloatOutput(enableFloatOutput)
                         .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParameters)
-                        .setAudioProcessors(arrayOf(waveform.fftProcessor))
+                        .setAudioProcessors(
+                            arrayOf(
+                                DsdDecimationAudioProcessor(ctx.applicationContext),
+                                waveform.fftProcessor
+                            )
+                        )
                         .build()
                 }
 
-                override fun buildAudioRenderers(
-                    context: Context,
-                    extensionRendererMode: Int,
-                    mediaCodecSelector: MediaCodecSelector,
-                    enableDecoderFallback: Boolean,
-                    audioSink: AudioSink,
-                    eventHandler: Handler?,
-                    eventListener: AudioRendererEventListener?,
-                    out: ArrayList<Renderer>
-                ) {
-                    // audioSink is the PCM sink from buildAudioSink above.
-                    val mediaCodecRenderer = MediaCodecAudioRenderer(
-                        context, mediaCodecSelector, enableDecoderFallback,
-                        eventHandler, eventListener, audioSink
-                    )
-                    // DSD sink: decimator + FFT tap, float off. Built here
-                    // (not in buildAudioSink) because the factory builds
-                    // exactly ONE sink through buildAudioSink and hands it
-                    // to buildAudioRenderers as the shared sink — the split
-                    // needs a second one, and this override is where the
-                    // renderers are assembled.
-                    val dsdSink = DefaultAudioSink.Builder(context)
-                        .setEnableFloatOutput(false)
-                        .setEnableAudioOutputPlaybackParameters(dsdSinkPlaybackParams)
-                        .setAudioProcessors(
-                            arrayOf(DsdDecimationAudioProcessor(ctx.applicationContext), waveform.fftProcessor)
-                        )
-                        .build()
-                    val ffmpegRenderer = if (extensionRendererMode ==
-                        DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
-                    ) {
-                        null
-                    } else {
-                        runCatching {
-                            FfmpegAudioRenderer(eventHandler, eventListener, dsdSink)
-                        }.onFailure {
-                            MioLog.event(ctx, "FFmpeg audio renderer unavailable: ${it::class.java.simpleName}: ${it.message}")
-                        }.getOrNull()
-                    }
-                    // EXTENSION_RENDERER_MODE_PREFER (what the app sets):
-                    // the FFmpeg renderer goes first so DSD (which only it
-                    // handles) is tried before MediaCodec. ON: MediaCodec
-                    // first. OFF: MediaCodec only (ffmpegRenderer is null).
-                    if (extensionRendererMode ==
-                        DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER &&
-                        ffmpegRenderer != null
-                    ) {
-                        out.add(ffmpegRenderer)
-                        out.add(mediaCodecRenderer)
-                    } else {
-                        out.add(mediaCodecRenderer)
-                        if (ffmpegRenderer != null) out.add(ffmpegRenderer)
-                    }
-                }
             }.apply {
                 setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
                 setEnableAudioFloatOutput(ENABLE_AUDIO_FLOAT_OUTPUT)
@@ -381,8 +316,8 @@ class PlayerManager(private val ctx: Context) {
         // user log. The cache prune keeps the DSD WAV cache under its cap
         // even when no new transcode runs (see DsdDecoder.pruneCacheNow).
         logNativeDsdProbe()
-        FfmpegAudioDecoder.setDsdDecodeListener(
-            object : FfmpegAudioDecoder.DsdDecodeListener {
+        FfmpegLibrary.setDsdDecodeListener(
+            object : FfmpegLibrary.DsdDecodeListener {
                 override fun onDsdInit(
                     codecName: String, sampleRate: Int, channelCount: Int, outputFloat: Boolean
                 ) {

@@ -61,35 +61,6 @@ import java.util.List;
   private volatile int channelCount;
   private volatile int sampleRate;
 
-  /**
-   * Mio Player v1.1.5 — DSD decode diagnostics. The decoder runs inside ExoPlayer and the
-   * app cannot see what ffmpegDecode returns: SimpleDecoder silently swallows a 0
-   * (no output) or -1 (invalid data) result, so a DSD track that never produces a
-   * sample looks exactly like a stuck loader. This listener reports the raw result of
-   * the first few DSD packets of each decoder instance to the app's log, which is
-   * what distinguishes "decoder got INVALIDDATA" from "decoder got EAGAIN forever"
-   * from "decoder produced output but the sink dropped it". Non-DSD codecs never
-   * fire it. Set once by the app (PlayerManager); may be null.
-   */
-  public interface DsdDecodeListener {
-    /** A DSD decoder instance initialised successfully (avcodec_open2 accepted it). */
-    void onDsdInit(String codecName, int sampleRate, int channelCount, boolean outputFloat);
-
-    /**
-     * One ffmpegDecode call. {@code result} is the raw return: bytes of PCM written
-     * (> 0), 0 (no output for this packet), -1 (invalid data, packet skipped),
-     * -2 (hard error, decode fails). {@code outputBytes} is the bytes handed to the
-     * sink (0 unless result > 0).
-     */
-    void onDsdDecode(String codecName, int inputSize, int result, int outputBytes);
-  }
-
-  private static volatile @Nullable DsdDecodeListener dsdDecodeListener;
-
-  public static void setDsdDecodeListener(@Nullable DsdDecodeListener listener) {
-    dsdDecodeListener = listener;
-  }
-
   /** First-N decode events per decoder instance (see DSD_DECODE_LOG_PACKETS). */
   private int dsdDecodeLoggedCount;
 
@@ -147,7 +118,7 @@ import java.util.List;
       throw new FfmpegDecoderException("Initialization failed.");
     }
     if (codecName.startsWith("dsd")) {
-      DsdDecodeListener listener = dsdDecodeListener;
+      FfmpegLibrary.DsdDecodeListener listener = FfmpegLibrary.getDsdDecodeListener();
       if (listener != null) {
         listener.onDsdInit(codecName, format.sampleRate, format.channelCount, outputFloat);
       }
@@ -201,7 +172,7 @@ import java.util.List;
       lastDecodeOutputBytes = result > 0 ? result : 0;
       if (dsdDecodeLoggedCount < DSD_DECODE_LOG_PACKETS) {
         dsdDecodeLoggedCount++;
-        DsdDecodeListener listener = dsdDecodeListener;
+        FfmpegLibrary.DsdDecodeListener listener = FfmpegLibrary.getDsdDecodeListener();
         if (listener != null) {
           listener.onDsdDecode(codecName, inputSize, result, lastDecodeOutputBytes);
         }

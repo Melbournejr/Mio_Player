@@ -48,6 +48,42 @@ public final class FfmpegLibrary {
   private FfmpegLibrary() {}
 
   /**
+   * Mio Player v1.1.5 — DSD decode diagnostics. The decoder runs inside ExoPlayer and the
+   * app cannot see what ffmpegDecode returns: SimpleDecoder silently swallows a 0 (no
+   * output) or -1 (invalid data) result, so a DSD track that never produces a sample looks
+   * exactly like a stuck loader. This listener reports the raw result of the first few DSD
+   * packets of each decoder instance to the app's log, which is what distinguishes "decoder
+   * got INVALIDDATA" from "decoder got EAGAIN forever" from "decoder produced output but the
+   * sink dropped it". Non-DSD codecs never fire it. Set once by the app (PlayerManager); may
+   * be null. Lives here (not on FfmpegAudioDecoder) because that class is package-private and
+   * the app cannot reference it or a listener nested in it.
+   */
+  public interface DsdDecodeListener {
+    /** A DSD decoder instance initialised successfully (avcodec_open2 accepted it). */
+    void onDsdInit(String codecName, int sampleRate, int channelCount, boolean outputFloat);
+
+    /**
+     * One ffmpegDecode call. {@code result} is the raw return: bytes of PCM written
+     * (> 0), 0 (no output for this packet), -1 (invalid data, packet skipped),
+     * -2 (hard error, decode fails). {@code outputBytes} is the bytes handed to the
+     * sink (0 unless result > 0).
+     */
+    void onDsdDecode(String codecName, int inputSize, int result, int outputBytes);
+  }
+
+  private static volatile @Nullable DsdDecodeListener dsdDecodeListener;
+
+  /** Registers the listener reported to on DSD decoder init / decode (see above). */
+  public static void setDsdDecodeListener(@Nullable DsdDecodeListener listener) {
+    dsdDecodeListener = listener;
+  }
+
+  /** Returns the listener registered via {@link #setDsdDecodeListener}. */
+  public static @Nullable DsdDecodeListener getDsdDecodeListener() {
+    return dsdDecodeListener;
+  }
+
+  /**
    * Override the names of the FFmpeg native libraries. If an application wishes to call this
    * method, it must do so before calling any other method defined by this class, and before
    * instantiating a {@link FfmpegAudioRenderer} or {@link ExperimentalFfmpegVideoRenderer}
