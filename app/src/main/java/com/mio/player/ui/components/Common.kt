@@ -59,10 +59,13 @@ import com.mio.player.ui.theme.*
         modifier = modifier.drawWithCache {
             onDrawWithContent {
                 drawIntoCanvas { canvas ->
-                    val checkpoint = canvas.saveLayer(size.toRect(), Paint())
+                    // Compose Canvas has no restoreToCount (that is
+                    // android.graphics.Canvas): saveLayer returns Unit
+                    // and restore() pops the layer it opened.
+                    canvas.saveLayer(size.toRect(), Paint())
                     drawContent()
                     drawRect(brush = gradient, blendMode = BlendMode.SrcIn)
-                    canvas.restoreToCount(checkpoint)
+                    canvas.restore()
                 }
             }
         })
