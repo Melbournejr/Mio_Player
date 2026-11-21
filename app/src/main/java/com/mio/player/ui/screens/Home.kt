@@ -218,7 +218,7 @@ private fun safTreeRoot(uri: Uri): String {
 }
 /** One tab of the Library tab row. Selected tab: text in primary color
  *  with a theme-gradient indicator; unselected: secondary text, no bar. */
-@Composable private fun LibraryTab(text: String, selected: Boolean, onClick: () -> Unit) {
+@Composable private fun RowScope.LibraryTab(text: String, selected: Boolean, onClick: () -> Unit) {
     Column(Modifier.weight(1f).clickable { onClick() }.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text, color = if (selected) MioText else MioTextSecondary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(6.dp))
