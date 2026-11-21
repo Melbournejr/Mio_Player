@@ -1,5 +1,6 @@
 package com.mio.player.data.db
 import androidx.room.*
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 @Entity(tableName = "tracks")
 data class TrackEntity(@PrimaryKey val id: Long, val title: String, val artist: String, val album: String,
