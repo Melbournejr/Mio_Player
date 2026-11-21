@@ -78,6 +78,21 @@ import java.net.URLEncoder
  *    diacritics ("Sự Thật Nghiệt Ngã") and nothing from MusicBrainz
  *    — no source has it, so the manual fetch correctly reports a
  *    miss for that track; no new source was added.
+ *
+ * v1.1.14 — joined-word queries ("25 Minutes" case): a file named
+ * "25Minutes-MichaelLearnsTo" (artist tag "MTLR") used to derive
+ * the query "25Minutes MichaelLearnsTo", for which iTunes returns
+ * 0 results — although the song exists (verified live: "25 Minutes
+ * + Michael Learns To Rock" hits immediately). The matcher already
+ * folds spaces away (normKey strips non-alphanumerics), so the
+ * failure was purely the QUERY. fetchForInner now tries query
+ * variants in order (see queryVariants): as-is, then the spaced
+ * form ("25Minutes" -> "25 Minutes", "MichaelLearnsTo" ->
+ * "Michael Learns To"), then — for a short all-caps artist like
+ * "MTLR" — title-only (duration-guarded). Applies to auto-fetch,
+ * manual fetch and the dialog alike, since all three go through
+ * fetchForInner. Diacritics folding and the duration check are
+ * unchanged.
  */
 class MetadataRepository(
     private val ctx: Context,
@@ -270,8 +285,26 @@ class MetadataRepository(
         val wantAlbumForFill = isUnknownAlbum(track.album)
         val wantCover = !coverFile(track.id).exists()
 
-        val hit = tryItunes(title, queryArtist, track.durationMs)
-            ?: tryMusicBrainz(title, queryArtist, track.durationMs)
+        val hit = run {
+            // v1.1.14: try the query variants in order — iTunes
+            // first for every variant (fast, no rate limit), then
+            // MusicBrainz for every variant. Same source priority as
+            // before, just more queries: the as-is query, the spaced
+            // variant, and (acronym artist only) title-only.
+            val variants = queryVariants(title, queryArtist, track.durationMs)
+            var found: Hit? = null
+            for ((qt, qa) in variants) {
+                found = tryItunes(qt, qa, track.durationMs)
+                if (found != null) break
+            }
+            if (found == null) {
+                for ((qt, qa) in variants) {
+                    found = tryMusicBrainz(qt, qa, track.durationMs)
+                    if (found != null) break
+                }
+            }
+            found
+        }
         if (hit == null) {
             // Record the miss like the existing path — but never wipe
             // a manual entry: the user's typed correction outlives a
@@ -283,7 +316,7 @@ class MetadataRepository(
                     TrackMetadataEntity(track.id, null, null, null, "none", now)
                 )
             }
-            MioLog.event(ctx, "Metadata miss: \"$title\" artist=${queryArtist ?: "?"}")
+            MioLog.event(ctx, "Metadata miss: \"$title\" artist=${queryArtist ?: "?"} tried=${queryVariants(title, queryArtist, track.durationMs).size} variants")
             return ManualFetchResult(found = false)
         }
         // Only the fields the track actually lacks are stored — a
@@ -381,6 +414,58 @@ class MetadataRepository(
 
     private fun durationOk(resultMs: Long, wantMs: Long): Boolean =
         wantMs <= 0 || resultMs <= 0 || kotlin.math.abs(resultMs - wantMs) <= DURATION_TOLERANCE_MS
+
+    // --- v1.1.14: joined-word queries ("25 Minutes" case) ---
+    // A filename/tag like "25Minutes-MichaelLearnsTo" (artist tag
+    // "MTLR") derives the query "25Minutes MichaelLearnsTo" — and
+    // iTunes returns 0 results for it, although the song exists:
+    // "25 Minutes + Michael Learns To Rock" returns "25 Minutes |
+    // Michael Learns to Rock | Pop Rocks | 264000ms" immediately
+    // (verified live from this VM 2026-11-21). The matcher already
+    // folds spaces away (normKey strips non-alphanumerics), so the
+    // failure is purely the QUERY — the API tokenises on the
+    // space-less string. The fix is to also try a SPACED variant.
+    /** "25Minutes" -> "25 Minutes", "MichaelLearnsTo" -> "Michael
+     *  Learns To", "OnlyC" -> "Only C". Spaces are inserted at
+     *  digit->letter and lowercase->uppercase boundaries; an
+     *  all-caps acronym ("MTLR") has no boundary and is left alone.
+     *  A name that already has spaces is returned unchanged. */
+    private fun splitJoinedWords(s: String): String =
+        s.replace(Regex("""(\d)([A-Za-z])"""), "$1 $2")
+            .replace(Regex("""([a-z])([A-Z])"""), "$1 $2")
+            .replace(Regex("""\s+"""), " ").trim()
+
+    /** A short all-caps artist ("MTLR", "M4U", "U2"): an acronym or
+     *  abbreviation, never a full name to match against — the
+     *  matcher would reject the real artist ("Michael Learns to
+     *  Rock") outright, so an acronym artist also earns a
+     *  title-only retry (duration guards the match). */
+    private fun isAcronymArtist(s: String?): Boolean {
+        if (s.isNullOrBlank()) return false
+        val t = s.trim()
+        return t.length in 2..5 && t.any { it.isLetter() } &&
+            t.all { it.isUpperCase() || it.isDigit() }
+    }
+
+    /** The query pairs to try, in order. (1) as derived; (2) the
+     *  spaced variant when it differs ("25Minutes MichaelLearnsTo"
+     *  -> "25 Minutes Michael Learns To"); (3) title-only when the
+     *  artist is an acronym — only when the duration is known, so
+     *  the 10 s duration check can guard the match. */
+    private fun queryVariants(title: String, artist: String?, durationMs: Long): List<Pair<String, String?>> {
+        val variants = mutableListOf<Pair<String, String?>>()
+        variants += title to artist
+        val spacedTitle = splitJoinedWords(title)
+        val spacedArtist = artist?.let { splitJoinedWords(it) }
+        if (spacedTitle != title || spacedArtist != artist) {
+            variants += spacedTitle to spacedArtist
+        }
+        if ((isAcronymArtist(artist) || isAcronymArtist(spacedArtist)) && durationMs > 0) {
+            val t = spacedTitle
+            if (variants.none { it.first == t && it.second == null }) variants += t to null
+        }
+        return variants
+    }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 

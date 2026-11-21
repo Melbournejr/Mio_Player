@@ -205,6 +205,10 @@ import kotlinx.coroutines.delay
     // the cover shrinks to 120 dp (v1.1.12, was 160 dp in v1.1.6;
     // animated, so the track change does not jump); without lyrics
     // it stays large at 220 dp.
+    // v1.1.14: Ferrofluid / Circular use a 140 dp visualizer row
+    // (was 88 dp for all styles) — the lyrics area loses ~1 line
+    // only while one of those two styles is active; Bars / Wave /
+    // Mirror keep the 88 dp row.
     // v1.1.12 (lyrics room): the cover shrinks further once lyrics
     // are loaded — 160 dp left ~2–3 visible lines, 120 dp leaves
     // ~5–6. Without lyrics it stays large at 220 dp.

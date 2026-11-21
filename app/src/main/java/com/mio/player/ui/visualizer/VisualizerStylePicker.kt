@@ -85,8 +85,12 @@ import kotlinx.coroutines.launch
  *    ([VisualizerStyle.previous()]). A swipe only counts past a
  *    24 dp horizontal offset, so small accidental drags do nothing.
  *  - After a switch a small pill with the new style's label appears
- *    centred over the visualizer for ~1.5 s, then hides itself
- *    (state + [LaunchedEffect] delay — UI chrome only, not audio).
+ *    in the TOP-LEFT corner of the visualizer for ~1.5 s, then hides
+ *    itself (state + [LaunchedEffect] delay — UI chrome only, not
+ *    audio). v1.1.14: it used to sit CENTRED over the visualizer,
+ *    which covered Circular's album-art disc — it now lives in the
+ *    corner, clear of every style's content (the Ferrofluid
+ *    frequency chips own the top-right corner).
  * Tap and swipe coexist as two separate `pointerInput` modifiers:
  * a tap produces no drag, so the drag detector ignores it; a drag
  * cancels the tap detector, so a swipe never also fires a tap — tap
@@ -165,9 +169,13 @@ fun VisualizerPanel(
         contentAlignment = Alignment.Center
     ) {
         MioVisualizer(style, levels, pcmFrame, playing, albumId, coverPath, ferroFreq, Modifier.fillMaxWidth())
+        // v1.1.14: the pill sits in the top-left corner — it used to
+        // sit centred, covering Circular's art disc.
         if (showLabel) {
             Box(
                 Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
                     .background(Color.Black.copy(alpha = 0.65f), CircleShape)
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 contentAlignment = Alignment.Center
