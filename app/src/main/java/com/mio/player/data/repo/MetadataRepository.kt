@@ -301,8 +301,8 @@ class MetadataRepository(
         }
         val manualPrev = existing?.source == "manual" &&
             (!existing.artist.isNullOrBlank() || !existing.album.isNullOrBlank())
-        val storedArtist = if (manualPrev && !existing.artist.isNullOrBlank()) existing.artist else artist
-        val storedAlbum = if (manualPrev && !existing.album.isNullOrBlank()) existing.album else album
+        val storedArtist = if (manualPrev && !existing?.artist.isNullOrBlank()) existing?.artist else artist
+        val storedAlbum = if (manualPrev && !existing?.album.isNullOrBlank()) existing?.album else album
         val storedCover = coverPath ?: existing?.coverPath
         val storedSource = if (manualPrev) "manual" else hit.source
         db.metadataDao().put(
