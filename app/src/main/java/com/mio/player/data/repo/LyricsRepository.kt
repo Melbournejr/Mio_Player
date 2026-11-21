@@ -38,6 +38,17 @@ import java.net.URLEncoder
  *  What fixes Vietnamese coverage here is the derivation below
  *  (both filename orders tried, site folders ignored, junk metadata
  *  artist dropped) plus embedded + sidecar, not a new source.
+ *  1.1.11: a plain/unsynced lyric is NEVER a final answer on its
+ *  own. Embedded / sidecar / cached plain text used to return
+ *  immediately, so LRCLIB was never asked and the track stayed
+ *  static forever ("Ai Là Người Thương Em": "Source: embedded",
+ *  no scroll, while a synced track scrolled fine). Plain text is
+ *  now only a fallback: the lookup continues to the remotes and a
+ *  synced hit anywhere wins. When no synced version exists
+ *  anywhere, the plain text is shown STATIC — no highlight, no
+ *  auto-scroll, and NO timestamps are ever estimated or
+ *  synthesized for it (timing without real timestamps drifts, so
+ *  the user would rather skip it than guess).
  *  1.0.12: two more reasons lyrics came out wrong or missing.
  *  (a) CACHE POISONING: a wrong lyric fetched once (e.g. a cover, or a
  *  same-name song by another artist) was cached forever and served on
@@ -249,22 +260,60 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
      *  for them — the Uri is what lets EmbeddedLyrics open the file.
      *  Defaults to null, so existing 6-arg callers are unaffected. */
     suspend fun getLyrics(artist: String, title: String, album: String?, durationMs: Long, audioPath: String?, playerDurationMs: Long = 0, audioUri: String? = null): Lyrics? {
-        db.lyricsDao().get(artist, title)?.let { e ->
-            return Lyrics(0, parseLrc(e.syncedLrc), e.plainText, e.source)
-        }
         // 1.1.2: effective duration — stored duration first, player's
         // real length when the stored one is 0 (DSD files).
         val effDurationMs = if (durationMs > 0) durationMs else playerDurationMs
+        // 1.1.11: a plain/unsynced lyric is a FALLBACK, never a final
+        // answer. The cached row, the sidecar and the embedded tag
+        // used to return immediately when they held plain text only
+        // (the embedded early `return cache(...)` below), so LRCLIB
+        // was never asked and the track stayed static forever.
+        // A plain text is now only remembered in [plainFallback] and
+        // the lookup continues to the remotes; a synced hit anywhere
+        // wins and overwrites the cache. Only when NO synced version
+        // exists anywhere is the plain text returned — with empty
+        // synced lines, so the UI shows it STATIC (no highlight, no
+        // auto-scroll). No timestamps are ever estimated or
+        // synthesized for plain lyrics. Cache policy is unchanged
+        // (clear only on schema change, see clearStaleCacheIfNeeded);
+        // the one exception is this re-check: a plain-only cached row
+        // is re-looked-up rather than trusted as final, because the
+        // lookup logic changed under it — a synced version may now be
+        // findable that the old early-return never looked for.
+        var plainFallback: String? = null
+        var plainFallbackSource: String? = null
+        db.lyricsDao().get(artist, title)?.let { e ->
+            val synced = parseLrc(e.syncedLrc)
+            if (synced.isNotEmpty()) return Lyrics(0, synced, e.plainText, e.source)
+            // Cached plain only: remember it, keep looking for synced.
+            e.plainText?.takeIf { it.isNotBlank() }?.let {
+                plainFallback = it; plainFallbackSource = e.source
+                MioLog.event(ctx, "Lyrics cached plain only, re-checking for synced: $artist - $title")
+            }
+        }
         // 1) sidecar .lrc next to the audio file
         audioPath?.let { p ->
             val lrc = File(p.substringBeforeLast('.') + ".lrc")
-            if (lrc.exists()) { val lines = parseLrc(lrc.readText()); if (lines.isNotEmpty()) return cache(artist, title, album, effDurationMs, lines, null, "sidecar .lrc") }
+            if (lrc.exists()) {
+                val text = runCatching { lrc.readText() }.getOrNull()
+                val lines = parseLrc(text)
+                if (lines.isNotEmpty()) return cache(artist, title, album, effDurationMs, lines, null, "sidecar .lrc")
+                // Sidecar with no timestamps: its text is a plain
+                // fallback, not a synced hit — keep looking.
+                text?.lines()?.map { it.trim() }
+                    ?.filter { it.isNotEmpty() && !it.startsWith("[") }
+                    ?.joinToString("\n")?.takeIf { it.isNotBlank() }?.let {
+                        plainFallback = it; plainFallbackSource = "sidecar .lrc"
+                    }
+            }
         }
         // 1b) 1.1.6: embedded lyrics in the file's own tags (ID3v2
         // USLT/SYLT, FLAC/OGG Vorbis LYRICS) — before any remote
         // source, because the tag names THIS recording, no guessing.
         // Runs only when there is a file to open (absolute path or
         // content Uri); a miss just falls through to the remotes.
+        // 1.1.11: a plain embedded hit no longer returns here — it
+        // is only the fallback while the remotes are tried for synced.
         runCatching { EmbeddedLyrics.read(ctx, audioPath, audioUri) }.getOrNull()?.let { emb ->
             val lines = parseLrc(emb.syncedLrc)
             if (lines.isNotEmpty()) {
@@ -272,8 +321,8 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
                 return cache(artist, title, album, effDurationMs, lines, null, "embedded")
             }
             emb.plainText?.takeIf { it.isNotBlank() }?.let { plain ->
-                MioLog.event(ctx, "Lyrics embedded HIT (plain): $artist - $title")
-                return cache(artist, title, album, effDurationMs, emptyList(), plain, "embedded")
+                MioLog.event(ctx, "Lyrics embedded HIT (plain, continuing to remotes for synced): $artist - $title")
+                plainFallback = plain; plainFallbackSource = "embedded"
             }
         }
         // Work out what to search for, as (artist, title) candidate
@@ -320,6 +369,7 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         }
         if (pairs.isEmpty()) {
             MioLog.event(ctx, "Lyrics: no match for title=\"$metaTitle\" artist=${metaArtist ?: "?"} durMs=$effDurationMs (no query pair)")
+            plainFallback?.let { return cache(artist, title, album, effDurationMs, emptyList(), it, plainFallbackSource ?: "embedded") }
             return null
         }
         // 1.1.2: diagnostics — the next user log shows exactly what was
@@ -340,6 +390,22 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         // lyrics.ovh, artist-less search. That Adele path is proven
         // by the user's 1.1.5 log and must not change.
         fun titleVariants(qTitle: String) = listOf(qTitle, normalizeTitle(qTitle)).distinct()
+        // 1.1.11: a remote hit only ends the lookup when it is SYNCED.
+        // A plain-only remote hit is remembered as the fallback (only
+        // if no local plain text outranks it — local text names this
+        // recording) and the search goes on for a synced version in
+        // the later pairs / sources. Previously the first plain hit
+        // returned at once, so a later pair/source that HAD synced
+        // lyrics was never tried.
+        var syncedResult: Lyrics? = null
+        fun consider(r: Lyrics?): Boolean {
+            if (r == null) return false
+            if (r.synced.isNotEmpty()) { syncedResult = r; return true }
+            if (plainFallback == null) {
+                r.plain?.takeIf { it.isNotBlank() }?.let { plainFallback = it; plainFallbackSource = r.source }
+            }
+            return false
+        }
         // 2) LRCLIB exact lookup. Try each title variant (raw, then
         //    normalized), without album first (an album mismatch is the
         //    most common reason the exact lookup fails), then with it,
@@ -349,9 +415,9 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         for ((qArtist, qTitle) in pairs) {
             val queryArtist = qArtist?.let { normalizeArtist(it) } ?: continue
             for (tv in titleVariants(qTitle)) {
-                tryGet(queryArtist, tv, null, effDurationMs, artist, title)?.let { return it }
-                if (searchAlbum != null) tryGet(queryArtist, tv, searchAlbum, effDurationMs, artist, title)?.let { return it }
-                if (effDurationMs > 0) tryGet(queryArtist, tv, null, 0, artist, title)?.let { return it }
+                if (consider(tryGet(queryArtist, tv, null, effDurationMs, artist, title))) return syncedResult!!
+                if (searchAlbum != null) if (consider(tryGet(queryArtist, tv, searchAlbum, effDurationMs, artist, title))) return syncedResult!!
+                if (effDurationMs > 0) if (consider(tryGet(queryArtist, tv, null, 0, artist, title))) return syncedResult!!
             }
         }
         // 3) LRCLIB search by title (+ artist when known), each title
@@ -365,7 +431,7 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
             // result whose length is >15 s off the track.
             val maxDiff = if (queryArtist == null && effDurationMs > 0) 15L else Long.MAX_VALUE
             for (tv in titleVariants(qTitle)) {
-                trySearch(queryArtist, tv, effDurationMs, artist, title, maxDiffSec = maxDiff)?.let { return it }
+                if (consider(trySearch(queryArtist, tv, effDurationMs, artist, title, maxDiffSec = maxDiff))) return syncedResult!!
             }
         }
         // 4) Netease Cloud Music — free, no key, and it HAS synced LRC
@@ -375,16 +441,19 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         for ((qArtist, qTitle) in pairs) {
             val queryArtist = qArtist?.let { normalizeArtist(it) } ?: continue
             for (tv in titleVariants(qTitle)) {
-                tryNetease(queryArtist, tv, effDurationMs, artist, title)?.let { return it }
+                if (consider(tryNetease(queryArtist, tv, effDurationMs, artist, title))) return syncedResult!!
             }
         }
         // 5) Last resort: lyrics.ovh — free, no key, plain lyrics only
         //    (no sync). Better than "No lyrics found" for songs neither
         //    LRCLIB nor Netease has.
         for ((qArtist, qTitle) in pairs) {
+            // lyrics.ovh is plain-only, so once any plain fallback
+            // exists this phase cannot improve anything — skip it.
+            if (plainFallback != null) break
             val queryArtist = qArtist?.let { normalizeArtist(it) } ?: continue
             for (tv in titleVariants(qTitle)) {
-                tryLyricsOvh(queryArtist, tv, artist, title)?.let { return it }
+                if (consider(tryLyricsOvh(queryArtist, tv, artist, title))) return syncedResult!!
             }
         }
         // 6) 1.1.2 LAST RESORT: artist-less LRCLIB search, for every
@@ -395,7 +464,16 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         //    the duration must be within 15 s of the track (Adele's
         //    Hello 296 s vs Lionel Richie's ~251 s).
         for (tv in pairs.map { it.second }.flatMap { titleVariants(it) }.distinct()) {
-            trySearch(null, tv, effDurationMs, artist, title, requireSynced = true, maxDiffSec = if (effDurationMs > 0) 15L else Long.MAX_VALUE)?.let { return it }
+            if (consider(trySearch(null, tv, effDurationMs, artist, title, requireSynced = true, maxDiffSec = if (effDurationMs > 0) 15L else Long.MAX_VALUE))) return syncedResult!!
+        }
+        // 1.1.11: no synced version anywhere — return the plain text
+        // (if any) STATIC: empty synced lines, so both the inline
+        // lyrics and LyricsScreen show it as plain text with no
+        // highlight and no auto-scroll. Timestamps are NEVER
+        // synthesized or estimated for plain lyrics.
+        plainFallback?.let {
+            MioLog.event(ctx, "Lyrics plain only (no synced version found), showing static: $artist - $title")
+            return cache(artist, title, album, effDurationMs, emptyList(), it, plainFallbackSource ?: "embedded")
         }
         MioLog.event(ctx, "Lyrics: no match for title=\"$metaTitle\" artist=${metaArtist ?: "?"} durMs=$effDurationMs")
         return null

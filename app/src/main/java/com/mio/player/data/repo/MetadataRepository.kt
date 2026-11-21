@@ -55,6 +55,29 @@ import java.net.URLEncoder
  * for 7 days, so a track no source knows is not hammered on every
  * scan. The Profile toggle (SettingsStore.KEY_AUTO_METADATA,
  * default on) gates every fetch.
+ *
+ * v1.1.11 — MANUAL fetch + diacritic-insensitive matching:
+ *  - fetchForManual(): an explicit user action ("Tìm metadata" on
+ *    Now Playing) retries ONE track on demand. It bypasses BOTH the
+ *    auto toggle and the 7-day retry block — the user asked for it —
+ *    but still only fills fields the track lacks and stores the
+ *    result exactly like the auto path (Room + cover file). The UI
+ *    then swaps the queue item via PlayerManager.updateQueueTrack,
+ *    the same live-update mechanism playQueue() uses.
+ *  - normKey() now folds Vietnamese diacritics (NFD + strip marks,
+ *    đ→d) before comparing. iTunes search itself is
+ *    dash/diacritic-tolerant — verified live from this VM
+ *    2026-11-21, the as-is dash-joined queries already return the
+ *    right top hit — but the matcher rejected those hits whenever
+ *    the library form lacked diacritics: "Dem-Ngay-Xa-Em-OnlyC-
+ *    Lou-Hoa" vs "Đếm Ngày Xa Em" / "Only C & Lou Hoàng", "Buon
+ *    Khong Em" vs "Buồn Không Em", and artist "Noo Phuoc Thin"
+ *    (from the filename) vs "Noo Phước Thịnh". After folding, all
+ *    three match (simulated against the real iTunes responses).
+ *    "OST SuThatNghietNga" returns 0 results from iTunes even with
+ *    diacritics ("Sự Thật Nghiệt Ngã") and nothing from MusicBrainz
+ *    — no source has it, so the manual fetch correctly reports a
+ *    miss for that track; no new source was added.
  */
 class MetadataRepository(
     private val ctx: Context,
@@ -122,15 +145,32 @@ class MetadataRepository(
         }.getOrDefault(false)
     }
 
-    private suspend fun fetchForInner(track: Track): Boolean {
-        if (!autoFetchEnabled()) return false
+    /**
+     * v1.1.11 — MANUAL fetch for one track, from the "Tìm metadata"
+     * action on Now Playing. Same storage as the auto path (Room
+     * `track_metadata` + cover file, only missing fields filled),
+     * but it bypasses BOTH gates the auto path honours: the Profile
+     * auto toggle (an explicit tap is an explicit retry even when
+     * auto-fetch is off) and the 7-day block on a failed attempt
+     * (tracks the auto pass already gave up on are exactly the ones
+     * the user retries by hand). Never throws.
+     */
+    suspend fun fetchForManual(track: Track): Boolean = withContext(Dispatchers.IO) {
+        runCatching { fetchForInner(track, manual = true) }.onFailure {
+            MioLog.event(ctx, "Metadata manual error: ${track.title}: ${it.message}")
+        }.getOrDefault(false)
+    }
+
+    private suspend fun fetchForInner(track: Track, manual: Boolean = false): Boolean {
+        if (!manual && !autoFetchEnabled()) return false
         if (!needsMetadata(track)) return false
         val now = System.currentTimeMillis()
         val existing = db.metadataDao().get(track.id)
         // A recent failed attempt (nothing useful stored) is not
         // retried — a track no source knows must not be re-queried on
-        // every scan / play.
-        if (existing != null && existing.artist == null && existing.album == null &&
+        // every scan / play. A MANUAL fetch skips this block: the
+        // user explicitly asked to try again.
+        if (!manual && existing != null && existing.artist == null && existing.album == null &&
             existing.coverPath == null && now - existing.attemptedAt < RETRY_AFTER_MS
         ) return false
 
@@ -197,8 +237,24 @@ class MetadataRepository(
     }
 
     // --- matching helpers (same normalisation as LyricsRepository) ---
+    // v1.1.11: fold Vietnamese diacritics before comparing, so a
+    // library title/artist without accents still matches the accented
+    // form the sources return ("Buon Khong Em" == "Buồn Không Em",
+    // "Dem Ngay Xa Em" == "Đếm Ngày Xa Em", "Noo Phuoc Thin" is a
+    // prefix of "Noo Phước Thịnh"). NFD splits base letters from
+    // their combining marks (ơ→o+horn, ế→e+circumflex+acute, …);
+    // the marks are stripped, and đ/Đ — which NFD does NOT decompose
+    // — is mapped by hand. The contains-checks in matchesTitle /
+    // matchesArtist and the duration check still guard against a
+    // wrong same-name song, so this only turns misses into hits.
+    private fun foldDiacritics(s: String): String {
+        val decomposed = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+        return decomposed.replace(Regex("""\p{M}"""), "")
+            .replace('đ', 'd').replace('Đ', 'D')
+    }
+
     private fun normKey(s: String): String =
-        s.lowercase().replace(Regex("""(?i)\s+(feat\.?|ft\.?|featuring)\s+.*$"""), "")
+        foldDiacritics(s.lowercase()).replace(Regex("""(?i)\s+(feat\.?|ft\.?|featuring)\s+.*$"""), "")
             .replace(Regex("""[^\p{L}\p{N}]"""), "")
 
     private fun matchesTitle(resultTitle: String, queryTitle: String): Boolean {

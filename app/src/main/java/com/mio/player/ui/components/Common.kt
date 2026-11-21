@@ -14,9 +14,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.toRect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -40,14 +43,27 @@ import com.mio.player.ui.theme.*
 }
 /** An icon painted with the theme gradient (design system: the selected
  *  bottom-nav icon uses the gradient). The icon is drawn in white first,
- *  then the gradient is masked onto it with SrcIn. */
+ *  then the gradient is masked onto it with SrcIn.
+ *
+ *  v1.1.11: the SrcIn rect MUST run inside its own saved layer. Without
+ *  one, SrcIn blends against everything already on the canvas — including
+ *  the opaque NavigationBar background behind the icon — so the gradient
+ *  rect shows as a solid square instead of being masked to the icon
+ *  shape. It only sometimes looked right before (when a layer happened
+ *  to exist, e.g. during the indicator animation). The layer isolates
+ *  the blend destination to just the white icon pixels, so the mask is
+ *  the icon shape on all four tabs. */
 @Composable fun GradientIcon(imageVector: ImageVector, contentDescription: String?, modifier: Modifier = Modifier) {
     val gradient = MioGradient
     Icon(imageVector, contentDescription, tint = Color.White,
         modifier = modifier.drawWithCache {
             onDrawWithContent {
-                drawContent()
-                drawRect(brush = gradient, blendMode = BlendMode.SrcIn)
+                drawIntoCanvas { canvas ->
+                    val checkpoint = canvas.saveLayer(size.toRect(), Paint())
+                    drawContent()
+                    drawRect(brush = gradient, blendMode = BlendMode.SrcIn)
+                    canvas.restoreToCount(checkpoint)
+                }
             }
         })
 }

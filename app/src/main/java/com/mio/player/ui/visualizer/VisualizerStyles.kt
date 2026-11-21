@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -20,6 +21,7 @@ import com.mio.player.ui.components.LiveWaveform
 import com.mio.player.ui.theme.LocalMioColors
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -209,10 +211,11 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
 /**
  * Style 3 — Circular / radial bars. The 32 FFT bands radiate outwards
  * from an inner circle (first band at the top, clockwise). Bar length
- * is the same scaledNorm() as the Bars style, so a loud bass band
- * reaches the same relative length in both styles; bar colour blends
- * along the theme gradient by band index (low = first gradient stop,
- * high = last). With no signal every band is a short fixed stub.
+ * uses Circular's own lift (v1.1.11, see below), steeper than the
+ * shared scaledNorm() the Bars style uses, so the same level change
+ * reads as a bigger radial move; bar colour blends along the theme
+ * gradient by band index (low = first gradient stop, high = last).
+ * With no signal every band is a short fixed stub.
  * The circle is sized by the row height (112 dp), so it fits the same
  * slot as the other styles.
  *
@@ -222,6 +225,30 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
  * pitch — the ring now reads as a small hub with long, chunky rays.
  * At full scale the bar tip just touches the slot edge (the same
  * class of edge-touch the old geometry already had at max level).
+ *
+ * v1.1.11 — responsiveness rework (user: "visualizer tròn chậm quá").
+ * Why it read as slow, measured from the code:
+ *  - Circular reads the same smoothed `levels` as Bars, but its bars
+ *    only travel maxLen = 0.30 × 112 dp = ~34 dp, while a Bars bar
+ *    travels up to ~102 dp on the same row — the same fractional level
+ *    change moves ~3x fewer dp here, so motion is harder to see.
+ *  - The shared lift sqrt(level * 4) saturates at level 0.25, so loud
+ *    bands sit pinned at full length and only the quiet ones move.
+ *  - Upstream lag Circular cannot remove: the 8192-sample FFT window
+ *    is 186 ms at 44.1 kHz (MP3) with ~82% overlap between frames
+ *    (~93 ms group delay), and WaveformTap smooths with attack 0.7
+ *    (tau ~27 ms) / release 0.4 (tau ~65 ms, ~150 ms to fall to 10%).
+ * What changed, Circular only: each bar keeps a displayed value
+ * (remember) that jumps instantly to a rising target and chases a
+ * falling target at 0.75/frame (tau ~24 ms, ~55 ms to 10% of the
+ * published value — the chase hugs the published levels, it cannot
+ * beat the tap's own fall); and the lift is now (level * 4)^0.75
+ * instead of sqrt(level * 4), which widens the visible swing per
+ * doubling of level by ~10% at 0.05 -> 0.10, ~31% at 0.10 -> 0.20
+ * and ~46% at 0.20 -> 0.40, at the cost of slightly less lift below
+ * 0.05 (bars already near the 6 dp floor there). Layout unchanged
+ * (innerR, maxLen, bar width, 6 dp floor), still driven only by the
+ * real FFT levels — no clock, no time-based animation.
  */
 @Composable
 fun VisualizerCircular(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
@@ -230,6 +257,28 @@ fun VisualizerCircular(levels: FloatArray, playing: Boolean, modifier: Modifier 
     val divider = LocalMioColors.current.divider
     val live = isLive(levels)
     val n = levels.size
+    // v1.1.11 — per-bar displayed lengths (Circular-only constants,
+    // kept local so no shared constant is touched). Updated here, in
+    // composition, from the newest published levels only — no clock,
+    // no animation: a rising target is taken instantly, a falling
+    // target is chased at 0.75/frame, so the bars hug the published
+    // levels within ~1 frame instead of adding a second layer of
+    // smoothing on top of WaveformTap's. When idle the chase state is
+    // dropped, so the next live frame attacks instantly from zero
+    // instead of decaying from stale bar lengths.
+    val liftGain = 4f // same gain as the shared sqrt lift; only the exponent changes
+    val liftPower = 0.75f
+    val releaseWeight = 0.75f
+    val displayed = remember(n) { FloatArray(n) }
+    if (live) {
+        for (i in 0 until n) {
+            val target = ((levels[i] * liftGain).coerceIn(0f, 1f)).pow(liftPower)
+            displayed[i] = if (target > displayed[i]) target
+            else displayed[i] + (target - displayed[i]) * releaseWeight
+        }
+    } else {
+        displayed.fill(0f)
+    }
     Canvas(modifier.height(VIS_ROW_HEIGHT_DP.dp).fillMaxWidth()) {
         val cx = size.width / 2f
         val cy = size.height / 2f
@@ -247,7 +296,9 @@ fun VisualizerCircular(levels: FloatArray, playing: Boolean, modifier: Modifier 
             val len = if (live) {
                 // v1.1.8: live floor 6 dp (was 4 dp) so quiet bands still
                 // read as visible rays, not dots at the hub.
-                6.dp.toPx() + scaledNorm(levels[i]) * maxLen
+                // v1.1.11: length from the chased displayed value, not
+                // the raw published level.
+                6.dp.toPx() + displayed[i] * maxLen
             } else {
                 // Idle stub: same 18..30 dp shape as Bars, scaled to the ring.
                 4.dp.toPx() + (idleHeightDp(i) - VIS_MIN_HEIGHT_DP) /

@@ -135,6 +135,11 @@ import kotlinx.coroutines.launch
             loadingLyrics = false
         } ?: run { loadingLyrics = false }
     }
+    // v1.1.11: plain (unsynced) lyrics stay STATIC by design — no
+    // estimated timestamps, no auto-scroll, no highlight. The repo
+    // only fills `lines` when it has real timestamps; when it
+    // doesn't, `plain` is shown as-is below. Do not synthesize
+    // timing here.
     // Live sync: follow the player's real position, highlight the line
     // being sung in teal, and auto-scroll to it (the PDF requires this;
     // 1.0.8 showed all lines plain white and static).

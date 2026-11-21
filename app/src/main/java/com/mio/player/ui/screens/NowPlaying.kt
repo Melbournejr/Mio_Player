@@ -31,6 +31,7 @@ import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
 import com.mio.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 /**
  * v1.1.4 (Fixes 4/5/6/7) — Now Playing vs the design spec (PDF p.4:
  * "Bìa lớn, sóng, tiến trình, Play / Next"):
@@ -98,6 +99,12 @@ import kotlinx.coroutines.delay
     // swap instead of freezing on the value from track start.
     var currentUri by remember { mutableStateOf<Uri?>(null) }
     var showQueue by remember { mutableStateOf(false) }
+    // v1.1.11: manual metadata fetch ("Tìm metadata" below). State
+    // for the button + the inline result line; reset on track change
+    // with the lyrics state above.
+    var metadataBusy by remember { mutableStateOf(false) }
+    var metadataStatus by remember { mutableStateOf<String?>(null) }
+    val metadataScope = rememberCoroutineScope()
     // Inline synced lyrics — same source and call as LyricsScreen
     // (Detail.kt): LyricsRepository via the app container, LRCLIB /
     // sidecar .lrc / embedded, cached in Room.
@@ -119,6 +126,7 @@ import kotlinx.coroutines.delay
         pos = 0L
         currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri
         lines = emptyList(); plain = null; source = "Đang tìm lời…"; loadingLyrics = true
+        metadataStatus = null; metadataBusy = false
         t?.let {
             val repo = (ctx.applicationContext as com.mio.player.MioApp).container.lyricsRepo
             // v1.1.6: pass the track's content Uri so EmbeddedLyrics
@@ -131,6 +139,34 @@ import kotlinx.coroutines.delay
         } ?: run { loadingLyrics = false }
     }
     LaunchedEffect(playing, t?.id) { while (playing) { val pd = vm.pm.player.duration; val total = if (pd != C.TIME_UNSET && pd > 0) pd else (t?.durationMs ?: Long.MAX_VALUE); pos = vm.pm.player.currentPosition.coerceIn(0L, total); currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri; delay(250) } }
+    // v1.1.11: MANUAL metadata fetch for the currently playing
+    // track — the explicit retry path for tracks the auto pass
+    // missed (e.g. "<unknown>" artists the auto-fetch recorded as a
+    // miss and will not retry for 7 days). fetchForManual() bypasses
+    // BOTH the Profile auto toggle and that 7-day block, but stores
+    // the result exactly like auto-fetch (Room + cover file, only
+    // missing fields). A hit swaps the queue item live via
+    // updateQueueTrack — the same mechanism playQueue() uses for the
+    // auto on-play fetch — so the artist/cover appear immediately
+    // without restarting playback. Never blocks playback: the fetch
+    // runs on metadataScope, the UI only shows busy / result text.
+    fun fetchMetadataManually() {
+        val track = t ?: return
+        if (metadataBusy) return
+        val repo = (ctx.applicationContext as com.mio.player.MioApp).container.metadataRepo
+        if (!repo.needsMetadata(track)) { metadataStatus = "Bài này đã có đủ metadata"; return }
+        metadataScope.launch {
+            metadataBusy = true
+            val ok = runCatching { repo.fetchForManual(track) }.getOrDefault(false)
+            if (ok) {
+                vm.pm.updateQueueTrack(repo.mergedTrack(track))
+                metadataStatus = "Đã tìm thấy metadata"
+            } else {
+                metadataStatus = "Không tìm thấy metadata"
+            }
+            metadataBusy = false
+        }
+    }
     // Actual per-track playback state (see the file KDoc): never claim
     // native decode from the file type alone. The fallback WAV is
     // always 176.4 kHz 16-bit stereo (DsdSupport.CACHED_PCM_SAMPLE_RATE_HZ).
@@ -231,6 +267,23 @@ import kotlinx.coroutines.delay
         dsdError?.let { err ->
             Spacer(Modifier.height(8.dp))
             Text(err, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 12.sp)
+        }
+        // v1.1.11: manual metadata action — a visible Vietnamese
+        // label ("Tìm metadata"), not an icon-only affordance, plus
+        // an inline result line. Works even when the Profile auto
+        // toggle is off and even for tracks the auto pass already
+        // failed on (see fetchMetadataManually above).
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { fetchMetadataManually() }, enabled = !metadataBusy) {
+                Icon(Icons.Default.Download, null, tint = MioCyan, modifier = Modifier.size(16.dp))
+                Text("Tìm metadata", color = MioCyan, fontSize = 13.sp)
+            }
+            if (metadataBusy) {
+                CircularProgressIndicator(color = MioCyan, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("  Đang tìm…", color = MioTextSecondary, fontSize = 12.sp)
+            } else {
+                metadataStatus?.let { Text(it, color = MioCyan, fontSize = 12.sp) }
+            }
         }
         Spacer(Modifier.height(12.dp))
         VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth())
