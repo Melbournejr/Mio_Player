@@ -1,5 +1,6 @@
 package com.mio.player.playback.dsd
 
+import android.content.Context
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.ParserException
@@ -12,6 +13,7 @@ import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.SeekPoint
 import androidx.media3.extractor.TrackOutput
+import com.mio.player.data.log.MioLog
 import java.io.EOFException
 import java.io.IOException
 
@@ -41,11 +43,62 @@ import java.io.IOException
  * sample per channel — so time <-> byte offset is exact). Seek positions
  * are aligned down to the packet size.
  *
+ * Sample rate in the emitted Format (v1.1.1 — this was the native-DSD
+ * failure): the Format carries the PCM output rate, sampleRateHz / 8
+ * (352800 Hz for DSD64), NOT the DSD bit rate (2822400 Hz). Three sources
+ * agree: FFmpeg's own DSF demuxer sets codecpar->sample_rate = rate / 8
+ * (libavformat/dsfdec.c), mica-music's DsfFormat.decoderSampleRateHz is
+ * rate / 8, and FFmpeg's DSD decoder (libavcodec/dsddec.c) never reads
+ * avctx->sample_rate at all — it emits one float PCM sample per DSD byte,
+ * so the PCM clock IS rate / 8. The vendored FfmpegAudioDecoder passes
+ * Format.sampleRate straight to ffmpegInitialize, and the JNI reports it
+ * back via ffmpegGetSampleRate for the AudioTrack format, so putting the
+ * 2.8 MHz DSD rate here would make the sink try to open an AudioTrack at
+ * 2.8 MHz. All time math in this file (sample timestamps, durations,
+ * seek positions) still uses the true DSD rate — only the Format's
+ * sampleRate is the divided PCM rate.
+ *
+ * NOTE (v1.1.1): the Format rate alone does not make native DSD play.
+ * The prebuilt libffmpegJNI.so was built from STOCK Media3 1.9.0
+ * ffmpeg_jni.cc, whose createContext() only sets sample_rate /
+ * ch_layout for PCM mu-law / a-law. FFmpeg 6.0 avcodec_open2() rejects
+ * any audio decoder without AV_CODEC_CAP_CHANNEL_CONF when the channel
+ * layout is empty, and the DSD decoders have no CHANNEL_CONF — so
+ * ffmpegInitialize("dsd_lsbf_planar") returns 0 and the decoder can
+ * never initialise until the .so is rebuilt with mica-music's patch
+ * (extend that special case to the four DSD codec IDs). Until then the
+ * player falls back to the FFmpegKit transcode via onPlayerError, which
+ * is why the probe in PlayerManager logs isAvailable/supportsFormat.
+ *
  * This extractor does NO decoding itself — it only frames the DSD bytes.
  * Written against the Media3 1.9.0 Extractor API.
  */
 @OptIn(UnstableApi::class)
-class DsdExtractor : Extractor {
+class DsdExtractor(private val logContext: Context? = null) : Extractor {
+
+    /** Best-effort MioLog line. The extractor runs on ExoPlayer's loader
+     *  thread; the log is what names the exact parse throw site in the
+     *  next user log (v1.1.0 only recorded "Source error"). Null context
+     *  (e.g. unit tests) just skips logging. */
+    private fun log(msg: String) {
+        val ctx = logContext ?: return
+        runCatching { MioLog.event(ctx, msg) }
+    }
+
+    /** Log the site, then throw the malformed-container ParserException
+     *  (ExoPlayer maps it to ERROR_CODE_PARSING_CONTAINER_MALFORMED). */
+    private fun malformed(message: String): Nothing {
+        log("DSD parse FAIL (malformed): $message")
+        throw ParserException.createForMalformedContainer(message, null)
+    }
+
+    /** Log the site, then throw the unsupported-feature ParserException
+     *  (ExoPlayer maps it to ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+     *  which also triggers the transcode fallback, not a crash). */
+    private fun unsupported(message: String): Nothing {
+        log("DSD parse UNSUPPORTED: $message")
+        throw ParserException.createForUnsupportedContainerFeature(message)
+    }
 
     companion object {
         /** DSF sample MIME type. The vendored decoder maps it to "dsd_lsbf_planar". */
@@ -159,7 +212,7 @@ class DsdExtractor : Extractor {
         return when {
             magic.contentEquals(DSF_MAGIC) -> parseDsf(input)
             magic.contentEquals(DFF_MAGIC) -> parseDff(input)
-            else -> throw ParserException.createForMalformedContainer("Not a DSF/DFF stream", null)
+            else -> malformed("Not a DSF/DFF stream, magic='${String(magic, Charsets.US_ASCII)}'")
         }
     }
 
@@ -172,7 +225,7 @@ class DsdExtractor : Extractor {
         input.readFully(fmtHead, 0, fmtHead.size)
         val fmtHeadData = ParsableByteArray(fmtHead)
         if (fmtHeadData.readString(4) != "fmt ") {
-            throw ParserException.createForMalformedContainer("DSF fmt chunk not found", null)
+            malformed("DSF fmt chunk not found, got='${String(fmtHead, 0, 4, Charsets.US_ASCII)}'")
         }
         val fmtSize = fmtHeadData.readLittleEndianLong()
         // Chunk sizes include the 12-byte header (52 = 12 + 40 payload).
@@ -180,10 +233,10 @@ class DsdExtractor : Extractor {
         val payloadSize = when {
             fmtSize in 52..1024 -> (fmtSize - 12).toInt()
             fmtSize in 40..51 -> fmtSize.toInt()
-            else -> throw ParserException.createForMalformedContainer("DSF fmt chunk size invalid: $fmtSize", null)
+            else -> malformed("DSF fmt chunk size invalid: $fmtSize")
         }
         if (payloadSize < 40) {
-            throw ParserException.createForMalformedContainer("DSF fmt chunk too small: $payloadSize", null)
+            malformed("DSF fmt chunk too small: $payloadSize")
         }
         val payload = ByteArray(payloadSize)
         input.readFully(payload, 0, payload.size)
@@ -197,32 +250,29 @@ class DsdExtractor : Extractor {
         val sampleCount = p.readLittleEndianLong()
         val blockSizePerChannel = p.readLittleEndianUnsignedIntToInt()
         if (version != 1 || formatId != 0) {
-            throw ParserException.createForUnsupportedContainerFeature(
-                "Unsupported DSF version=$version format=$formatId")
+            unsupported("Unsupported DSF version=$version format=$formatId")
         }
         if (channelCount !in 1..8 || sampleRate <= 0) {
-            throw ParserException.createForMalformedContainer(
-                "DSF channels=$channelCount sampleRate=$sampleRate", null)
+            malformed("DSF channels=$channelCount sampleRate=$sampleRate")
         }
         if (bitsPerSample != 1) {
             // 8 = MSBF planar. The decoder patch maps "audio/dsd" to
             // dsd_lsbf_planar only, so passing an 8-bit DSF through would
             // decode with the wrong bit order. Reject -> transcode fallback.
-            throw ParserException.createForUnsupportedContainerFeature(
-                "DSF bits/sample=$bitsPerSample not supported natively")
+            unsupported("DSF bits/sample=$bitsPerSample not supported natively")
         }
         // "data" chunk header.
         val dataHead = ByteArray(12)
         input.readFully(dataHead, 0, dataHead.size)
         val dataHeadData = ParsableByteArray(dataHead)
         if (dataHeadData.readString(4) != "data") {
-            throw ParserException.createForMalformedContainer("DSF data chunk not found", null)
+            malformed("DSF data chunk not found, got='${String(dataHead, 0, 4, Charsets.US_ASCII)}'")
         }
         val dataChunkSize = dataHeadData.readLittleEndianLong()
         val dataStart = input.position
         var dataSize = dataChunkSize - 12 // DSF chunk sizes include the 12-byte header
         if (dataSize < 0) {
-            throw ParserException.createForMalformedContainer("DSF data chunk size invalid: $dataChunkSize", null)
+            malformed("DSF data chunk size invalid: $dataChunkSize")
         }
         val inputLength = input.length
         // C.LENGTH_UNSET is an Int in Media3 1.9.0; input.length is Long.
@@ -236,6 +286,7 @@ class DsdExtractor : Extractor {
         } else {
             dataSize * 8L / channelCount * 1_000_000L / sampleRate
         }
+        log("DSF header OK: version=$version formatId=$formatId ch=$channelCount dsdRate=$sampleRate pcmRate=${sampleRate / 8} bits=$bitsPerSample samples=$sampleCount block=$blockSizePerChannel dataSize=$dataSize packet=${blockSize * channelCount} durationUs=$durationUs")
         return buildInfo(
             mimeType = MIME_TYPE_DSF,
             sampleRateHz = sampleRate,
@@ -255,7 +306,7 @@ class DsdExtractor : Extractor {
         val form = ParsableByteArray(formHead)
         form.skipBytes(8)
         if (form.readString(4) != "DSD ") {
-            throw ParserException.createForMalformedContainer("DFF form type is not DSD", null)
+            malformed("DFF form type is not DSD, got='${String(formHead, 8, 4, Charsets.US_ASCII)}'")
         }
         var sampleRate = 0
         var channelCount = 0
@@ -274,7 +325,7 @@ class DsdExtractor : Extractor {
             val id = chunk.readString(4)
             val size = chunk.readUnsignedLongToLong()
             if (size < 0) {
-                throw ParserException.createForMalformedContainer("DFF chunk size invalid", null)
+                malformed("DFF chunk size invalid, id='$id'")
             }
             when (id) {
                 "PROP" -> {
@@ -282,8 +333,7 @@ class DsdExtractor : Extractor {
                     sampleRate = prop.sampleRate
                     channelCount = prop.channelCount
                     if (prop.dstCompressed) {
-                        throw ParserException.createForUnsupportedContainerFeature(
-                            "DST-compressed DFF is not supported natively; transcode fallback will handle it")
+                        unsupported("DST-compressed DFF is not supported natively; transcode fallback will handle it")
                     }
                 }
                 "DSD " -> {
@@ -291,18 +341,16 @@ class DsdExtractor : Extractor {
                     dataSize = size
                 }
                 "DST " -> {
-                    throw ParserException.createForUnsupportedContainerFeature(
-                        "DST-compressed DFF is not supported natively; transcode fallback will handle it")
+                    unsupported("DST-compressed DFF is not supported natively; transcode fallback will handle it")
                 }
                 else -> skipFully(input, size)
             }
         }
         if (dataStart < 0 || dataSize < 0) {
-            throw ParserException.createForMalformedContainer("DFF audio data chunk not found", null)
+            malformed("DFF audio data chunk not found")
         }
         if (sampleRate <= 0 || channelCount !in 1..8) {
-            throw ParserException.createForMalformedContainer(
-                "DFF sampleRate=$sampleRate channels=$channelCount", null)
+            malformed("DFF sampleRate=$sampleRate channels=$channelCount")
         }
         val inputLength = input.length
         if (inputLength != C.LENGTH_UNSET.toLong()) {
@@ -311,6 +359,7 @@ class DsdExtractor : Extractor {
             dataSize = minOf(dataSize, (inputLength - dataStart).coerceAtLeast(0))
         }
         val durationUs = dataSize * 8L / channelCount * 1_000_000L / sampleRate
+        log("DFF header OK: ch=$channelCount dsdRate=$sampleRate pcmRate=${sampleRate / 8} dataSize=$dataSize durationUs=$durationUs")
         return buildInfo(
             mimeType = MIME_TYPE_DFF,
             sampleRateHz = sampleRate,
@@ -374,9 +423,20 @@ class DsdExtractor : Extractor {
         dataSize: Long,
         durationUs: Long
     ): DsdStreamInfo {
+        // sampleRateHz here is the TRUE DSD bit rate (2822400 for DSD64)
+        // and stays that way for all time math (duration, seek, sample
+        // timestamps). The Format, however, carries the PCM output rate
+        // sampleRateHz / 8 (352800 for DSD64) — see the class KDoc: the
+        // FFmpeg DSD decoder emits one float PCM sample per DSD byte, so
+        // the PCM clock is rate / 8, and the decoder + sink are clocked
+        // from this Format value (FfmpegAudioDecoder passes it to
+        // ffmpegInitialize; the renderer builds the AudioTrack format from
+        // ffmpegGetSampleRate). The average bitrate is the DSD input
+        // bitrate and is unchanged.
+        val pcmSampleRateHz = sampleRateHz / 8
         val format = Format.Builder()
             .setSampleMimeType(mimeType)
-            .setSampleRate(sampleRateHz)
+            .setSampleRate(pcmSampleRateHz)
             .setChannelCount(channelCount)
             .setAverageBitrate(sampleRateHz * channelCount) // 1 bit per sample per channel
             .build()

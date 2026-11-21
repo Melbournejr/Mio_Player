@@ -39,6 +39,17 @@ name: Build FFmpeg DSD native lib (arm64-v8a)
 #   Difference: mica enables only dsd_lsbf + dsd_lsbf_planar (DSF only);
 #   this workflow also enables dsd_msbf + dsd_msbf_planar so DFF files
 #   (MSBF) decode too.
+# - JNI PATCH (v1.1.1, mica-music): stock Media3 1.9.0 ffmpeg_jni.cc
+#   createContext() sets sample_rate/ch_layout ONLY for PCM mu-law/a-law.
+#   FFmpeg 6.0 avcodec_open2 rejects an audio decoder with an empty
+#   channel layout unless the codec has AV_CODEC_CAP_CHANNEL_CONF, and
+#   the DSD decoders have no such capability — so ffmpegInitialize()
+#   returned 0 for every DSD file (the v1.1.0 native path could never
+#   work). The "Patch ffmpeg_jni.cc for DSD" step below extends that
+#   condition to the four DSD codec IDs, verbatim from mica-music
+#   (third_party/media3-ffmpeg-decoder/src/main/jni/ffmpeg_jni.cc).
+#   The step fails loudly if the stock pattern is not found, so a
+#   Media3 version bump cannot silently ship an unpatched .so.
 # - No Maven dependencies are added by this workflow: no
 #   androidx.media3:media3-decoder-ffmpeg, no com.arthenica:ffmpeg-kit-*.
 
@@ -101,6 +112,32 @@ jobs:
              "$WORK_DIR/media3/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc" \
              "$WORK_DIR/jni/"
           ls -l "$WORK_DIR/jni/"
+
+      - name: Patch ffmpeg_jni.cc for DSD (mica-music)
+        run: |
+          set -eux
+          python3 - <<PYEOF
+          import pathlib
+          p = pathlib.Path("$WORK_DIR/jni/ffmpeg_jni.cc")
+          text = p.read_text()
+          stock = (
+              "  if (context->codec_id == AV_CODEC_ID_PCM_MULAW ||\n"
+              "      context->codec_id == AV_CODEC_ID_PCM_ALAW) {"
+          )
+          patched = (
+              "  if (context->codec_id == AV_CODEC_ID_PCM_MULAW ||\n"
+              "      context->codec_id == AV_CODEC_ID_PCM_ALAW ||\n"
+              "      context->codec_id == AV_CODEC_ID_DSD_LSBF ||\n"
+              "      context->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR ||\n"
+              "      context->codec_id == AV_CODEC_ID_DSD_MSBF ||\n"
+              "      context->codec_id == AV_CODEC_ID_DSD_MSBF_PLANAR) {"
+          )
+          assert text.count(stock) == 1, f"stock createContext condition not found exactly once (found {text.count(stock)}); Media3 JNI changed, patch must be re-ported"
+          assert "AV_CODEC_ID_DSD_LSBF" not in text, "ffmpeg_jni.cc already contains a DSD patch"
+          p.write_text(text.replace(stock, patched))
+          print("ffmpeg_jni.cc patched for DSD (mica-music)")
+          PYEOF
+          grep -n "AV_CODEC_ID_DSD" "$WORK_DIR/jni/ffmpeg_jni.cc"
 
       - name: Fetch FFmpeg release/6.0 source
         run: |

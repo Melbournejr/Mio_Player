@@ -103,27 +103,43 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
         }
     }
 }
-/** Live audio wave for Now Playing. Bars follow the real FFT levels
- *  from the player's output while playing. If the device refuses the
- *  Visualizer tap, levels stay empty and the bars animate on their own
- *  instead — moving while playing, almost still when paused. */
+/** Live audio wave for Now Playing. Bars follow ONLY the real FFT levels
+ *  from the player's output while playing.
+ *  FIX 3 (v1.1.1): the old fallback drew a sine wave whose bar COLOURS
+ *  followed playback progress, so it looked like a second progress bar
+ *  next to the real time bar — exactly what the user complained about.
+ *  `progress` is kept in the signature only so the existing call site in
+ *  NowPlaying keeps compiling; it is intentionally ignored here and never
+ *  drives bar height or colour. When no live FFT data is available the
+ *  bars sit low and still: fixed per-bar heights with one slow, uniform
+ *  breathing swell shared by ALL bars (same factor, no travelling wave,
+ *  not tied to position or duration), so nothing about them reads as
+ *  playback progress. */
+@Suppress("UNUSED_PARAMETER")
 @Composable fun LiveWaveform(levels: FloatArray, playing: Boolean, progress: Float, modifier: Modifier = Modifier) {
     val live = levels.any { it > 0.02f }
-    val transition = rememberInfiniteTransition(label = "wave")
-    val phase by transition.animateFloat(0f, (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(tween(2400, easing = LinearEasing), RepeatMode.Restart), label = "phase")
+    // One slow global swell for the idle state only: every bar shares the
+    // same factor, so the idle wave never ripples across the bars like a
+    // progress animation. ~3.6 s per breath, +/-10%.
+    val transition = rememberInfiniteTransition(label = "waveIdle")
+    val breathe by transition.animateFloat(0f, (2 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(3600, easing = LinearEasing), RepeatMode.Restart), label = "breathe")
+    val idleScale = 1f + 0.10f * (if (playing) 1f else 0.6f) * sin(breathe.toDouble()).toFloat()
     Row(modifier.height(56.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         val n = levels.size
         for (i in 0 until n) {
             val h = if (live) {
                 8f + levels[i] * 48f
             } else {
-                val amp = if (playing) 1f else 0.25f
-                val s = 0.5f + 0.5f * sin((phase + i * 0.85f).toDouble()).toFloat()
-                10f + s * 34f * amp
+                // Low fixed height per bar (9..14 dp, deterministic from
+                // the bar index only) times the shared breathing factor.
+                // Nothing here depends on position, duration or progress.
+                (9f + 5f * (0.5f + 0.5f * sin(i * 1.7).toFloat())) * idleScale
             }
+            // Uniform colour: live bars teal, idle bars the same teal at
+            // low alpha. No bar is ever coloured by playback progress.
             Box(Modifier.width(4.dp).height(h.dp).clip(CircleShape)
-                .background(if (i.toFloat() / n <= progress) MioCyan else MioDivider))
+                .background(if (live) MioCyan else MioCyan.copy(alpha = 0.4f)))
         }
     }
 }

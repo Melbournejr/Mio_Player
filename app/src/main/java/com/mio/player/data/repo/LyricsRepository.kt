@@ -63,6 +63,57 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
     /** "Adele feat. X" -> "Adele": LRCLIB stores the main artist. */
     fun normalizeArtist(raw: String): String =
         raw.replace(Regex("""(?i)\s+(feat\.?|ft\.?|featuring)\s+.*$"""), "").trim()
+    /** Folder names that carry no artist/album information. Compared
+     *  case-insensitively, after trimming. */
+    private val genericFolderNames = setOf(
+        "music", "dsd", "flac", "audio", "downloads", "download",
+        "album", "albums", "songs", "mp3", "wav", "files"
+    )
+    private fun isGenericFolder(name: String): Boolean =
+        name.trim().lowercase() in genericFolderNames
+    /** MediaStore / the UI surface an unknown artist as "Unknown Artist"
+     *  or "<unknown>" (the screenshot shows "<unknown>"); an unknown
+     *  album likewise. None of these is a real name to query with, so
+     *  all of them count as unknown here. */
+    private fun isUnknownArtist(s: String): Boolean =
+        s.trim().lowercase() in setOf("unknown artist", "<unknown>", "unknown")
+    private fun isUnknownAlbum(s: String): Boolean =
+        s.trim().lowercase() in setOf("unknown album", "<unknown>", "unknown")
+    /** 1.1.1 FIX 4: derive (artist, album) from the folders containing
+     *  the audio file, for tracks whose artist is unknown.
+     *  - Parent folder "Artist - Album" -> artist = before " - ",
+     *    album = after " - ".
+     *  - Otherwise artist = grandparent folder, album = parent folder
+     *    (e.g. ".../Adele/25/A1.Hello.dsf" -> Adele / 25).
+     *  Generic folders are skipped first, so ".../Music/Adele/25/..."
+     *  still yields Adele / 25 and ".../Downloads/Adele/song.dsf"
+     *  yields Adele (album unknown) instead of mistaking "Downloads"
+     *  for the artist or "Adele" for the album. With only one
+     *  meaningful folder (e.g. ".../Adele/song.dsf") it is the artist
+     *  and the album stays unknown. Works on relative SAF paths too
+     *  ("Adele/25/song.dsf" -> Adele / 25) because only '/' segments
+     *  are used. Never throws: any odd path just yields (null, null)
+     *  and the lookup proceeds as before. */
+    fun deriveArtistAlbumFromPath(audioPath: String?): Pair<String?, String?> {
+        return runCatching {
+            if (audioPath.isNullOrBlank()) return Pair(null, null)
+            val segments = audioPath.replace('\\', '/').trim().trimEnd('/')
+                .split('/').map { it.trim() }.filter { it.isNotEmpty() && it != "." }
+            // Last segment is the file name; the rest are folders.
+            if (segments.size < 2) return Pair(null, null)
+            val folders = segments.dropLast(1).filterNot { isGenericFolder(it) }
+            if (folders.isEmpty()) return Pair(null, null)
+            val parent = folders.last()
+            if (" - " in parent) {
+                val parts = parent.split(" - ", limit = 2)
+                val derivedArtist = parts[0].trim().takeIf { it.isNotBlank() && !isGenericFolder(it) }
+                val derivedAlbum = parts.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && !isGenericFolder(it) }
+                return Pair(derivedArtist, derivedAlbum)
+            }
+            if (folders.size >= 2) return Pair(folders[folders.size - 2], folders.last())
+            return Pair(folders[0], null)
+        }.getOrDefault(Pair(null, null))
+    }
     suspend fun getLyrics(artist: String, title: String, album: String?, durationMs: Long, audioPath: String?): Lyrics? {
         db.lyricsDao().get(artist, title)?.let { e ->
             return Lyrics(0, parseLrc(e.syncedLrc), e.plainText, e.source)
@@ -76,7 +127,7 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         // ("Unknown Artist") and no real album ("Unknown Album") — sending
         // those to LRCLIB makes the exact lookup fail, so they are dropped.
         // Many local files are named "Artist - Title.ext": use that.
-        var searchArtist = artist.takeIf { it.isNotBlank() && it != "Unknown Artist" }
+        var searchArtist = artist.takeIf { it.isNotBlank() && !isUnknownArtist(it) }
         var searchTitle = title
         if (searchArtist == null) {
             val base = audioPath?.substringAfterLast('/')?.substringBeforeLast('.') ?: title
@@ -86,7 +137,25 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
                 searchTitle = parts[1].trim()
             }
         }
-        val searchAlbum = album?.takeIf { it.isNotBlank() && it != "Unknown Album" }
+        var searchAlbum = album?.takeIf { it.isNotBlank() && !isUnknownAlbum(it) }
+        // 1.1.1 FIX 4: artist still unknown — derive it from the file
+        // path. The screenshot proved the track artist is "<unknown>":
+        // with a null query artist, matchesArtist() returns true for
+        // ANY artist, so trySearch accepted the first same-title hit —
+        // Adele's "Hello" got (very likely) Lionel Richie's "Hello".
+        // Local libraries are usually laid out Artist/Album/file or
+        // "Artist - Album"/file, so the folders name the artist/album
+        // even when MediaStore and the filename do not. This runs only
+        // when the filename "Artist - Title" split above did not yield
+        // an artist (the derived album is also used to fill a missing
+        // album, even when the artist came from the filename). Caching
+        // still uses the ORIGINAL artist/title (cacheArtist/cacheTitle
+        // below), so a later fix re-fetches under the same cache key.
+        if (searchArtist == null || searchAlbum == null) {
+            val (folderArtist, folderAlbum) = deriveArtistAlbumFromPath(audioPath)
+            if (searchArtist == null && folderArtist != null) searchArtist = folderArtist
+            if (searchAlbum == null && folderAlbum != null) searchAlbum = folderAlbum
+        }
         val cleanArtist = searchArtist?.let { normalizeArtist(it) }
         val titleVariants = listOf(searchTitle, normalizeTitle(searchTitle)).distinct()
         // Query with the cleaned artist; cache under the ORIGINAL

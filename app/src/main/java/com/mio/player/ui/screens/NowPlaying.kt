@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.navigation.NavHostController
 import com.mio.player.ui.components.AlbumArt
@@ -27,13 +28,24 @@ import kotlinx.coroutines.delay
     val converting by vm.pm.isConvertingDsd.collectAsState()
     val dsdError by vm.pm.dsdError.collectAsState()
     val t = queue.getOrNull(idx)
+    // FIX 2 (v1.1.1): DSD tracks have durationMs == 0 in the library
+    // (MediaStore cannot read DSF duration; SAF tracks get 0), so using
+    // t.durationMs as the total clamped the position to 0 forever and
+    // showed 0:00 / 0:00. The player's duration is real (extractor
+    // SeekMap for native DSD, WAV header for the transcode fallback);
+    // fall back to the library value while the player has none yet.
+    // Recomputed on every position poll, so it picks up the real
+    // duration as soon as the player has loaded the track.
+    val playerDuration = vm.pm.player.duration
+    val totalMs = if (playerDuration != C.TIME_UNSET && playerDuration > 0) playerDuration else (t?.durationMs ?: 0L)
+    val totalF = if (totalMs > 0) totalMs.toFloat() else 1f
     var pos by remember { mutableStateOf(0L) }
     // Reset on track change, and sync to the player's real position instead
     // of counting up blindly: the old loop kept counting after a track
     // change, so pos could exceed a shorter track's duration and the
     // slider/progress went out of range.
     LaunchedEffect(t?.id) { pos = 0L }
-    LaunchedEffect(playing, t?.id) { while (playing) { pos = vm.pm.player.currentPosition.coerceIn(0L, (t?.durationMs ?: Long.MAX_VALUE)); delay(250) } }
+    LaunchedEffect(playing, t?.id) { while (playing) { val pd = vm.pm.player.duration; val total = if (pd != C.TIME_UNSET && pd > 0) pd else (t?.durationMs ?: Long.MAX_VALUE); pos = vm.pm.player.currentPosition.coerceIn(0L, total); delay(250) } }
     Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
@@ -58,11 +70,11 @@ import kotlinx.coroutines.delay
             Text(err, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 12.sp)
         }
         Spacer(Modifier.height(16.dp))
-        LiveWaveform(levels, playing, (if ((t?.durationMs ?: 1L) > 0) pos.toFloat()/(t?.durationMs ?: 1L) else 0f).coerceIn(0f, 1f), Modifier.fillMaxWidth())
-        Slider(value = pos.toFloat().coerceIn(0f, (t?.durationMs?.toFloat() ?: 1f)), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..(t?.durationMs?.toFloat() ?: 1f), modifier = Modifier.fillMaxWidth())
+        LiveWaveform(levels, playing, (if (totalMs > 0) pos.toFloat()/totalMs else 0f).coerceIn(0f, 1f), Modifier.fillMaxWidth())
+        Slider(value = pos.toFloat().coerceIn(0f, totalF), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..totalF, modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(formatDuration(pos), color = MioTextSecondary, fontSize = 12.sp)
-            Text(formatDuration(t?.durationMs ?: 0L), color = MioTextSecondary, fontSize = 12.sp)
+            Text(formatDuration(totalMs), color = MioTextSecondary, fontSize = 12.sp)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.pm.setShuffle(!shuffleOn) }) { Icon(Icons.Default.Shuffle, null, tint = if (shuffleOn) MioCyan else MioTextSecondary) }
