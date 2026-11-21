@@ -6,7 +6,7 @@ data class Track(
     val albumId: Long = 0, val artistId: Long = 0,
     val uri: Uri, val path: String, val durationMs: Long,
     val format: AudioFormat, val sampleRateHz: Int = 0, val bitDepth: Int = 0,
-    val bitrateKbps: Int = 0, val dsdRate: String? = null, // "DSD64" / "DSD128"
+    val bitrateKbps: Int = 0, val dsdRate: String? = null, // "DSD64" / "DSD128" / "DSD256"; null = unknown, shown as "DSD"
     val replayGainTrack: Float? = null, val replayGainAlbum: Float? = null,
     val isFavorite: Boolean = false, val playCount: Int = 0,
     val lastPlayedAt: Long = 0, val dateAdded: Long = 0
@@ -26,8 +26,13 @@ object DsdDisplay {
     fun pcmRateFor(dsdRate: String?): String = when (dsdRate) {
         "DSD128" -> "352.8kHz"; "DSD256" -> "705.6kHz"; else -> "176.4kHz" // DSD64
     }
+    /** DSD rate label from the true DSD sample rate read out of the file
+     *  header (MusicScanner, v1.1.3): 2822400 -> DSD64, 5644800 -> DSD128,
+     *  11289600 -> DSD256. A rate of 0 or below a real DSD rate means the
+     *  rate is genuinely unknown -> "DSD", never a guessed "DSD64". */
     fun dsdRateFor(sampleRateHz: Int): String = when {
-        sampleRateHz >= 11289600 -> "DSD256"; sampleRateHz >= 5644800 -> "DSD128"; else -> "DSD64"
+        sampleRateHz >= 11289600 -> "DSD256"; sampleRateHz >= 5644800 -> "DSD128"
+        sampleRateHz >= 2822400 -> "DSD64"; else -> "DSD"
     }
 }
 data class Album(val id: Long, val title: String, val artist: String, val trackCount: Int, val year: Int = 0, val artUri: Uri? = null)

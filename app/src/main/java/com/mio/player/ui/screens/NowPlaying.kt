@@ -2,6 +2,8 @@
 package com.mio.player.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -46,7 +48,10 @@ import kotlinx.coroutines.delay
     // slider/progress went out of range.
     LaunchedEffect(t?.id) { pos = 0L }
     LaunchedEffect(playing, t?.id) { while (playing) { val pd = vm.pm.player.duration; val total = if (pd != C.TIME_UNSET && pd > 0) pd else (t?.durationMs ?: Long.MAX_VALUE); pos = vm.pm.player.currentPosition.coerceIn(0L, total); delay(250) } }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    // v1.1.3: the screen scrolls so the taller LiveWaveform row (112 dp)
+    // cannot push the transport buttons off-screen on short phones.
+    // No visual change when everything fits.
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).background(MioBg).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
             IconButton(onClick = { nav.navigate(Routes.EQ) }) { Icon(Icons.Default.Tune, null, tint = MioText) }

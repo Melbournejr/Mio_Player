@@ -15,13 +15,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.sqrt
 import coil.compose.AsyncImage
 import com.mio.player.data.model.Track
 import com.mio.player.ui.theme.*
@@ -109,25 +112,55 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
  *  compiling; it is intentionally ignored here and never drives bar
  *  height or colour. When no live FFT data is available (silence /
  *  paused) the bars sit low and still: fixed per-bar heights determined
- *  by the bar index only. */
+ *  by the bar index only.
+ *
+ *  SCALING (v1.1.3, Fix 1): the FFT tap emits small magnitudes — the
+ *  user's v1.1.2 log shows maxLevel ≈ 0.042 on loud playback — so the
+ *  raw values are boosted in the UI layer only (WaveformTap's levels
+ *  are untouched) before mapping to height:
+ *      norm   = sqrt(min(level * WAVEFORM_GAIN, 1f))   // GAIN = 12
+ *      height = WAVEFORM_MIN_HEIGHT_DP + norm * (ROW_HEIGHT_DP - MIN)
+ *  The sqrt curve lifts quiet passages (a 0.01 level stays clearly
+ *  visible) while loud passages saturate gently instead of clipping
+ *  flat, so neighbouring bars differ by tens of dp and the wave
+ *  visibly dances. Computed heights on the 112 dp row (min stub 10 dp):
+ *      level 0.00  -> norm 0.000 ->  10.0 dp (short stub, never invisible)
+ *      level 0.01  -> norm 0.346 ->  45.3 dp (~40% of the row)
+ *      level 0.042 -> norm 0.710 ->  82.4 dp (~74% of the row)
+ *      level 1.00  -> norm 1.000 -> 112.0 dp (full height)
+ *  (Old rendering was 8 + level*48, so 0.042 rendered a ~10 dp bar —
+ *  flat and tiny.) Bars are painted with the theme gradient (Deep Wave:
+ *  teal #14B8A6 -> cyan #22D3EE, vertical, bottom -> top), rounded,
+ *  5 dp wide. */
+// Waveform scaling constants (v1.1.3, Fix 1) — see the LiveWaveform KDoc
+// for the math and the computed heights.
+private const val WAVEFORM_ROW_HEIGHT_DP = 112f
+private const val WAVEFORM_MIN_HEIGHT_DP = 10f
+private const val WAVEFORM_GAIN = 12f
+private const val WAVEFORM_LIVE_THRESHOLD = 0.005f
 @Suppress("UNUSED_PARAMETER")
 @Composable fun LiveWaveform(levels: FloatArray, playing: Boolean, progress: Float, modifier: Modifier = Modifier) {
-    val live = levels.any { it > 0.02f }
-    Row(modifier.height(56.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+    val live = levels.any { it > WAVEFORM_LIVE_THRESHOLD }
+    // Theme gradient as a vertical brush, so each bar runs teal at the
+    // bottom to cyan at the top (Deep Wave). Uses the token list, not
+    // hardcoded colours, so the Sunset theme gets its own gradient.
+    val barBrush: Brush = Brush.verticalGradient(LocalMioColors.current.gradientColors)
+    Row(modifier.height(WAVEFORM_ROW_HEIGHT_DP.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         val n = levels.size
         for (i in 0 until n) {
             val h = if (live) {
-                8f + levels[i].coerceIn(0f, 1f) * 48f
+                val norm = sqrt((levels[i] * WAVEFORM_GAIN).coerceIn(0f, 1f))
+                WAVEFORM_MIN_HEIGHT_DP + norm * (WAVEFORM_ROW_HEIGHT_DP - WAVEFORM_MIN_HEIGHT_DP)
             } else {
-                // Low fixed height per bar (9..14 dp, deterministic from
+                // Low fixed height per bar (18..30 dp, deterministic from
                 // the bar index only). Nothing here depends on time,
                 // position, duration or progress.
-                9f + 5f * (0.5f + 0.5f * STATIC_IDLE[i % STATIC_IDLE.size])
+                18f + 12f * (0.5f + 0.5f * STATIC_IDLE[i % STATIC_IDLE.size])
             }
-            // Uniform colour: live bars teal, idle bars the same teal at
-            // low alpha. No bar is ever coloured by playback progress.
-            Box(Modifier.width(4.dp).height(h.dp).clip(CircleShape)
-                .background(if (live) MioCyan else MioCyan.copy(alpha = 0.4f)))
+            // Live bars use the theme gradient; idle bars the same cyan
+            // at low alpha. No bar is ever coloured by playback progress.
+            val brush: Brush = if (live) barBrush else SolidColor(MioCyan.copy(alpha = 0.4f))
+            Box(Modifier.width(5.dp).height(h.dp).background(brush, CircleShape))
         }
     }
 }

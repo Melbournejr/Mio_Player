@@ -8,6 +8,7 @@ import androidx.media3.common.*
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.decoder.ffmpeg.FfmpegLibrary
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
@@ -67,6 +68,46 @@ class PlayerManager(private val ctx: Context) {
          * again. Re-test the EQ on a DSD track after any change here.
          */
         const val ENABLE_AUDIO_FLOAT_OUTPUT = true
+
+        /**
+         * v1.1.3 (OOM fix) — hard cap on the loader's sample queue.
+         *
+         * Root cause (user log 2026-11-21, DFF DSD128 ~398 MB): 35 s after
+         * playQueue the loader thread died allocating a fresh 64 KB
+         * DefaultAllocator segment
+         * (`Loader$UnexpectedLoaderException ... OutOfMemoryError: Failed to
+         * allocate a 65552 byte allocation`, heap growth limit 256 MB).
+         * DefaultAllocator.allocate() only news a byte[] when its free pool
+         * is empty, so every segment ever allocated was still checked out
+         * by the SampleQueue — the queue had grown to ~150-200 MB of raw
+         * DSD bytes, far past DefaultLoadControl's 13,107,200-byte audio
+         * target. The byte cap is only consulted by
+         * shouldContinueLoading() once bufferedDurationUs >= minBufferUs,
+         * and for local playback Media3 1.9 defaults to
+         * minBufferForLocalPlaybackMs=1000 with
+         * prioritizeTimeOverSizeThresholdsForLocalPlayback=true — while
+         * bufferedDurationUs stays below that 1 s, the byte cap is ignored
+         * entirely and loading runs to end-of-file. The extractor's
+         * timestamps, the decimator and the FFT tap were all re-verified
+         * bounded, and no other playback-path accumulator exists, so the
+         * fix is to make the byte cap absolute: prioritize=false on BOTH
+         * the streaming and the local path, plus an explicit 8 MiB target
+         * and 5 s / 10 s time buffers. Trace through
+         * shouldContinueLoading() with these values: below minBuffer,
+         * isLoading = !targetReached; between min and max, isLoading
+         * clears as soon as the target is reached; at maxBuffer it
+         * clears regardless. So in-use sample-queue bytes can never
+         * exceed 8 MiB + one 1 MiB load-check interval, no matter what
+         * bufferedDurationUs reports. 8 MiB is ~5.7 s of DSD128
+         * (1.41 MB/s), ~11 s of DSD64, ~2.8 s of DSD256, and 45 s+ of
+         * FLAC/MP3 — far more than local disk reads (tens of MB/s) need
+         * to refill, so normal playback, gapless transitions and seeks
+         * are unaffected. The decimator still passes everything below
+         * 352800 Hz through untouched; only the load control changed.
+         */
+        const val LOAD_CONTROL_MIN_BUFFER_MS = 5_000
+        const val LOAD_CONTROL_MAX_BUFFER_MS = 10_000
+        const val LOAD_CONTROL_TARGET_BUFFER_BYTES = 8 * 1024 * 1024
     }
     val fx = AudioEffectsManager()
     val waveform = WaveformTap(context = ctx)
@@ -94,6 +135,32 @@ class PlayerManager(private val ctx: Context) {
                 setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
                 setEnableAudioFloatOutput(ENABLE_AUDIO_FLOAT_OUTPUT)
             }
+        )
+        // v1.1.3 (OOM fix): hard-capped LoadControl — see the companion
+        // constants. The default 1.9 local-playback settings let the
+        // loader run past the byte target while bufferedDurationUs stays
+        // under 1 s; these values make the 8 MiB target absolute.
+        .setLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    LOAD_CONTROL_MIN_BUFFER_MS, LOAD_CONTROL_MAX_BUFFER_MS,
+                    /* bufferForPlaybackMs= */ 1_000,
+                    /* bufferForPlaybackAfterRebufferMs= */ 2_000
+                )
+                .setBufferDurationsMsForLocalPlayback(
+                    LOAD_CONTROL_MIN_BUFFER_MS, LOAD_CONTROL_MAX_BUFFER_MS,
+                    /* bufferForPlaybackMs= */ 1_000,
+                    /* bufferForPlaybackAfterRebufferMs= */ 2_000
+                )
+                .setBufferDurationsMsForStreaming(
+                    LOAD_CONTROL_MIN_BUFFER_MS, LOAD_CONTROL_MAX_BUFFER_MS,
+                    /* bufferForPlaybackMs= */ 1_000,
+                    /* bufferForPlaybackAfterRebufferMs= */ 2_000
+                )
+                .setTargetBufferBytes(LOAD_CONTROL_TARGET_BUFFER_BYTES)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                .setPrioritizeTimeOverSizeThresholdsForLocalPlayback(false)
+                .build()
         )
         // There is no setExtractorsFactory on ExoPlayer.Builder (nor a
         // setter on DefaultMediaSourceFactory): the ExtractorsFactory
@@ -137,6 +204,9 @@ class PlayerManager(private val ctx: Context) {
     // pruned after a proven native play this session — so STATE_READY
     // firing again (seek / repeat / pause-resume) does not re-log.
     private val nativeDsdCacheCleaned = mutableSetOf<String>()
+    // v1.1.3: DSD tracks whose STATE_READY heap line has already been
+    // logged this session (see logDsdHeap) — one line per track.
+    private val dsdHeapLogged = mutableSetOf<String>()
     private val settings by lazy { SettingsStore(ctx.applicationContext) }
     private val _shuffleEnabled = MutableStateFlow(false); val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF); val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
@@ -163,6 +233,7 @@ class PlayerManager(private val ctx: Context) {
                 if (state == Player.STATE_READY) {
                     consecutiveErrors = 0
                     maybePruneStaleDsdCache()
+                    maybeLogDsdHeapOnReady()
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
@@ -255,6 +326,7 @@ class PlayerManager(private val ctx: Context) {
         failedDsd.clear()
         recoveredDsd.clear()
         nativeDsdCacheCleaned.clear()
+        dsdHeapLogged.clear()
         _queue.value = tracks; _index.value = startIndex
         _dsdError.value = null
         MioLog.event(ctx, "playQueue: ${tracks.size} tracks from #$startIndex, first='${tracks[startIndex].title}' dsd=${DsdSupport.isDsd(tracks[startIndex].path)}")
@@ -274,6 +346,11 @@ class PlayerManager(private val ctx: Context) {
         ensureServiceStarted()
         player.play()
         MioLog.event(ctx, "Playback started: '${tracks[startIndex].title}'")
+        // v1.1.3: heap baseline for a native DSD start, so the next OOM
+        // (if any) can be told apart from a queue that outgrew its cap.
+        if (DsdSupport.isDsd(tracks[startIndex].path)) {
+            logDsdHeap("start '${tracks[startIndex].title}'")
+        }
         applyReplayGain()
     }
     fun play() { ensureServiceStarted(); player.play() }
@@ -342,6 +419,44 @@ class PlayerManager(private val ctx: Context) {
         runCatching { DsdDecoder.deleteCachedWav(ctx, t) }
             .onFailure { MioLog.event(ctx, "DSD cache prune FAILED '${t.title}': ${it::class.java.simpleName} ${it.message}") }
     }
+    /**
+     * v1.1.3: one heap line per native DSD track when it reaches
+     * STATE_READY (same guards as maybePruneStaleDsdCache: DSD, raw URI
+     * still playing, not recovered to / failed to the transcode WAV).
+     * Together with the "start" line in playQueue this bounds the next
+     * OOM diagnosis: if usedMB stays flat while a track plays, the
+     * sample queue is capped; if it climbs ~1.4 MB/s (DSD128) the loader
+     * is outrunning the cap again.
+     */
+    private fun maybeLogDsdHeapOnReady() {
+        val t = currentTrack ?: return
+        if (!DsdSupport.isDsd(t.path)) return
+        if (recoveredDsd.contains(t.path) || failedDsd.contains(t.path)) return
+        if (dsdHeapLogged.contains(t.path)) return
+        if (recoveringDsd || _isConvertingDsd.value) return
+        val playingUri = player.currentMediaItem?.localConfiguration?.uri
+        if (playingUri != null && playingUri != t.uri) return
+        dsdHeapLogged.add(t.path)
+        logDsdHeap("ready '${t.title}'")
+    }
+
+    /** v1.1.3: heap max/used/free + the effective load-control caps. */
+    private fun logDsdHeap(tag: String) {
+        runCatching {
+            val rt = Runtime.getRuntime()
+            val maxMb = rt.maxMemory() / 1_048_576L
+            val usedMb = (rt.totalMemory() - rt.freeMemory()) / 1_048_576L
+            val freeMb = rt.freeMemory() / 1_048_576L
+            MioLog.event(
+                ctx,
+                "DSD mem [$tag]: heap max=${maxMb}MB used=${usedMb}MB free=${freeMb}MB " +
+                    "loadControl min=${LOAD_CONTROL_MIN_BUFFER_MS}ms " +
+                    "max=${LOAD_CONTROL_MAX_BUFFER_MS}ms " +
+                    "target=${LOAD_CONTROL_TARGET_BUFFER_BYTES / 1_048_576}MB"
+            )
+        }
+    }
+
     fun isDsdCurrent(): Boolean = currentTrack?.let { DsdSupport.isDsd(it.path) } ?: false
     fun release() { scope.cancel(); fx.release(); waveform.release(); player.release() }
 
