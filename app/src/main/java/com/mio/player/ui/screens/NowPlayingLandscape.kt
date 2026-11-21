@@ -153,7 +153,7 @@ import kotlinx.coroutines.delay
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     BoxWithConstraints(Modifier.fillMaxSize()) {
                         val coverSize = minOf(maxWidth, maxHeight)
-                        if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize), CardLarge)
+                        if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize), CardLarge, coverPath = t.coverPath)
                         else Box(Modifier.size(coverSize).background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(64.dp)) }
                     }
                 }

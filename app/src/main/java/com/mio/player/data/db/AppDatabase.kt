@@ -1,5 +1,6 @@
 package com.mio.player.data.db
 import androidx.room.*
+import androidx.sqlite.db.SupportSQLiteDatabase
 @Entity(tableName = "tracks")
 data class TrackEntity(@PrimaryKey val id: Long, val title: String, val artist: String, val album: String,
     val uri: String, val path: String, val durationMs: Long, val format: String,
@@ -35,7 +36,27 @@ data class PlaylistTrack(val playlistId: Long, val trackId: Long, val position: 
     @Query("SELECT trackId FROM playlist_tracks WHERE playlistId=:id ORDER BY position") suspend fun trackIds(id: Long): List<Long>
     @Query("DELETE FROM playlists WHERE id=:id") suspend fun delete(id: Long)
 }
-@Database(entities = [TrackEntity::class, LyricsEntity::class, PlaylistEntity::class, PlaylistTrack::class], version = 1, exportSchema = false)
+@Entity(tableName = "track_metadata")
+data class TrackMetadataEntity(@PrimaryKey val trackId: Long, val artist: String?, val album: String?,
+    val coverPath: String?, val source: String, val attemptedAt: Long = System.currentTimeMillis())
+@Dao interface MetadataDao {
+    @Query("SELECT * FROM track_metadata") suspend fun all(): List<TrackMetadataEntity>
+    @Query("SELECT * FROM track_metadata WHERE trackId=:id LIMIT 1") suspend fun get(id: Long): TrackMetadataEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun put(e: TrackMetadataEntity)
+}
+@Database(entities = [TrackEntity::class, LyricsEntity::class, PlaylistEntity::class, PlaylistTrack::class, TrackMetadataEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao; abstract fun lyricsDao(): LyricsDao; abstract fun playlistDao(): PlaylistDao
+    abstract fun metadataDao(): MetadataDao
+    companion object {
+        /** v1.1.10: the metadata table is new — a plain CREATE TABLE, so
+         *  upgrading keeps every track, lyric and playlist. (The builder
+         *  also sets fallbackToDestructiveMigration, which only fires
+         *  when NO migration covers the jump — this one does.) */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `track_metadata` (`trackId` INTEGER NOT NULL, `artist` TEXT, `album` TEXT, `coverPath` TEXT, `source` TEXT NOT NULL, `attemptedAt` INTEGER NOT NULL, PRIMARY KEY(`trackId`))")
+            }
+        }
+    }
 }

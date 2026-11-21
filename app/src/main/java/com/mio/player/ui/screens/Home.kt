@@ -50,7 +50,7 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
                 SectionTitle("Featured")
                 Box(Modifier.fillMaxWidth().mioGradientBackground(CardLarge).padding(16.dp)) {
                     Row {
-                        AlbumArt(featured.value.first().albumId, Modifier.size(96.dp), CardSmall)
+                        AlbumArt(featured.value.first().albumId, Modifier.size(96.dp), CardSmall, coverPath = featured.value.first().coverPath)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text(featured.key, color = androidx.compose.ui.graphics.Color.White, fontSize = 20.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, maxLines = 2)
                             Text("${featured.value.first().artist} • ${featured.value.size} songs", color = androidx.compose.ui.graphics.Color.White, fontSize = 13.sp)
@@ -70,7 +70,7 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
                     items(albums.drop(1).take(8)) { (name, list) ->
                         androidx.compose.material3.Card(Modifier.size(140.dp).clickable { playerVm.playQueue(list, 0); nav.navigate(Routes.NOW_PLAYING) }, colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MioSurface), shape = CardLarge) {
                             Column(Modifier.padding(12.dp)) {
-                                AlbumArt(list.first().albumId, Modifier.size(64.dp))
+                                AlbumArt(list.first().albumId, Modifier.size(64.dp), coverPath = list.first().coverPath)
                                 Spacer(Modifier.height(8.dp))
                                 Text(name, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 2); Text("${list.size} songs", color = MioTextSecondary, fontSize = 13.sp)
                             }
@@ -79,7 +79,7 @@ import com.mio.player.ui.viewmodel.PlayerViewModel
                 }
             }
         }
-        item { SectionTitle("Recently played"); LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) { items(tracks.take(6)) { t -> androidx.compose.material3.Card(Modifier.size(140.dp).clickable { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MioSurface), shape = CardLarge) { Column(Modifier.padding(12.dp)) { AlbumArt(t.albumId, Modifier.size(64.dp)); Spacer(Modifier.height(8.dp)); Text(t.title, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 2); Text(t.artist, color = MioTextSecondary, fontSize = 13.sp) } } } } }
+        item { SectionTitle("Recently played"); LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) { items(tracks.take(6)) { t -> androidx.compose.material3.Card(Modifier.size(140.dp).clickable { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MioSurface), shape = CardLarge) { Column(Modifier.padding(12.dp)) { AlbumArt(t.albumId, Modifier.size(64.dp), coverPath = t.coverPath); Spacer(Modifier.height(8.dp)); Text(t.title, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 2); Text(t.artist, color = MioTextSecondary, fontSize = 13.sp) } } } } }
         item { SectionTitle("All songs") }
         items(tracks) { t -> TrackRow(t, onClick = { playerVm.playQueue(tracks, tracks.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, onFav = { libVm.toggleFavorite(t) }, isPlaying = t.id == currentId) }
         item { Spacer(Modifier.height(24.dp)) }

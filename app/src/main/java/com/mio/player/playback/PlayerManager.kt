@@ -552,6 +552,18 @@ class PlayerManager(private val ctx: Context) {
         }
         applyReplayGain()
     }
+    /** v1.1.10: replace one queue item (by id) with a newer copy — used
+     *  when the background metadata fetch fills in a track that is
+     *  already playing, so Now Playing / MiniPlayer show the fetched
+     *  artist and cover without restarting playback. Emits a new list
+     *  so StateFlow observers recompose; the ExoPlayer playlist itself
+     *  is untouched (same media id, same URI). */
+    fun updateQueueTrack(track: Track) {
+        val cur = _queue.value
+        val i = cur.indexOfFirst { it.id == track.id }
+        if (i < 0) return
+        _queue.value = cur.toMutableList().also { it[i] = track }
+    }
     fun play() { ensureServiceStarted(); player.play() }
     fun pause() {
         player.pause()

@@ -42,7 +42,7 @@ import kotlinx.coroutines.launch
     Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         if (first != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AlbumArt(first.albumId, Modifier.size(120.dp), CardLarge)
+                AlbumArt(first.albumId, Modifier.size(120.dp), CardLarge, coverPath = first.coverPath)
                 Column(Modifier.padding(start = 16.dp)) {
                     Text(first.album, color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                     Text(first.artist, color = MioTextSecondary, fontSize = 14.sp)
@@ -70,7 +70,7 @@ import kotlinx.coroutines.launch
         SectionTitle("Artists")
         LazyColumn { items(artists.entries.toList()) { (name, list) ->
             Row(Modifier.fillMaxWidth().clickable { nav.navigate("artist_detail/${android.net.Uri.encode(name)}") }.padding(vertical = 10.dp)) {
-                AlbumArt(list.first().albumId, Modifier.size(52.dp))
+                AlbumArt(list.first().albumId, Modifier.size(52.dp), coverPath = list.first().coverPath)
                 Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(name, color = MioText, fontSize = 18.sp); Text("${list.size} songs", color = MioTextSecondary) }
                 androidx.compose.material3.TextButton(onClick = { playerVm.playQueue(list, 0); nav.navigate(Routes.NOW_PLAYING) }) { Text("Play", color = MioCyan) }
             }
@@ -92,7 +92,7 @@ import kotlinx.coroutines.launch
             Text("Artist", color = MioTextSecondary, fontSize = 14.sp)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            AlbumArt(list.firstOrNull()?.albumId ?: 0, Modifier.size(120.dp), CardLarge)
+            AlbumArt(list.firstOrNull()?.albumId ?: 0, Modifier.size(120.dp), CardLarge, coverPath = list.firstOrNull()?.coverPath)
             Column(Modifier.padding(start = 16.dp)) {
                 Text(name, color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                 Text("${list.size} songs", color = MioTextSecondary, fontSize = 13.sp)
@@ -239,6 +239,19 @@ import kotlinx.coroutines.launch
                     Icon(if (themeMode == value) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked, null, tint = MioCyan)
                     Text(label, color = MioText, modifier = Modifier.padding(start = 12.dp))
                 }
+            }
+            Spacer(Modifier.height(16.dp))
+            // v1.1.10: auto metadata — fetch missing artist/album/cover
+            // in the background (iTunes / MusicBrainz, free, no key)
+            // and save it on the device. Off = no network lookup at all.
+            SectionTitle("Metadata bài hát")
+            val autoMetadata by settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_AUTO_METADATA, true).collectAsState(initial = true)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Tự tải metadata", color = MioText, fontSize = 16.sp)
+                    Text("Tự tìm nghệ sĩ, album và bìa cho bài thiếu thông tin, lưu vào máy để nghe offline.", color = MioTextSecondary, fontSize = 13.sp)
+                }
+                androidx.compose.material3.Switch(checked = autoMetadata, onCheckedChange = { scope.launch { settings.set(com.mio.player.data.prefs.SettingsStore.KEY_AUTO_METADATA, it) } })
             }
             Spacer(Modifier.height(16.dp))
             GradientButton("Equalizer & sound") { nav.navigate(Routes.EQ) }

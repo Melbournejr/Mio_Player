@@ -203,7 +203,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
             }
             Column(Modifier.weight(1f)) {
                 Box(Modifier.weight(1f)) { content() }
-                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId) }
+                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId, coverPath = t.coverPath) }
             }
         }
         return
@@ -216,7 +216,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
         containerColor = com.mio.player.ui.theme.MioBg,
         bottomBar = {
             Column {
-                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId) }
+                queue.getOrNull(idx)?.let { t -> MiniPlayer(t.title, t.artist, playing, { playerVm.toggle() }, { playerVm.next() }, { nav.navigate(Routes.NOW_PLAYING) }, albumId = t.albumId, coverPath = t.coverPath) }
                 NavigationBar(containerColor = com.mio.player.ui.theme.MioSurface) {
                     tabs.forEach { (r, label, icon) ->
                         NavigationBarItem(selected = current == r, onClick = { goTab(r) },

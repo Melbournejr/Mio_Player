@@ -6,6 +6,7 @@ import com.mio.player.data.db.AppDatabase
 import com.mio.player.data.log.MioLog
 import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.data.repo.LyricsRepository
+import com.mio.player.data.repo.MetadataRepository
 import com.mio.player.data.repo.MusicScanner
 import com.mio.player.playback.PlayerManager
 import kotlinx.coroutines.CoroutineScope
@@ -15,10 +16,12 @@ import kotlinx.coroutines.launch
 /** Manual DI container — deliberately no Hilt: fewer annotation processors,
  *  faster CI builds, and one less failure mode on GitHub Actions. */
 class AppContainer(ctx: Context) {
-    val db: AppDatabase = Room.databaseBuilder(ctx, AppDatabase::class.java, "mio.db").fallbackToDestructiveMigration().build()
+    val db: AppDatabase = Room.databaseBuilder(ctx, AppDatabase::class.java, "mio.db")
+        .addMigrations(AppDatabase.MIGRATION_1_2).fallbackToDestructiveMigration().build()
     val settings = SettingsStore(ctx)
     val scanner = MusicScanner(ctx)
     val lyricsRepo = LyricsRepository(ctx, db)
+    val metadataRepo = MetadataRepository(ctx, db, settings, lyricsRepo)
     val playerManager = PlayerManager(ctx)
 }
 class MioApp : Application() {

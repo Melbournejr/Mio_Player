@@ -9,7 +9,11 @@ data class Track(
     val bitrateKbps: Int = 0, val dsdRate: String? = null, // "DSD64" / "DSD128" / "DSD256"; null = unknown, shown as "DSD"
     val replayGainTrack: Float? = null, val replayGainAlbum: Float? = null,
     val isFavorite: Boolean = false, val playCount: Int = 0,
-    val lastPlayedAt: Long = 0, val dateAdded: Long = 0
+    val lastPlayedAt: Long = 0, val dateAdded: Long = 0,
+    /** Local path of the cover art downloaded by the auto-metadata
+     *  fetch (v1.1.10), or null — then AlbumArt falls back to the
+     *  MediaStore album art / the MusicNote placeholder as before. */
+    val coverPath: String? = null
 ) {
     val displayFormat: String get() = when {
         // Native DSD (v1.1.0): DSD plays directly, not via a PCM WAV.

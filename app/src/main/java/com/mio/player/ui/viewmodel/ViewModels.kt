@@ -18,8 +18,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     // the full library (load()/scan() only); search results go here.
     private val _searchResults = MutableStateFlow<List<Track>>(emptyList()); val searchResults: StateFlow<List<Track>> = _searchResults.asStateFlow()
     private val _query = MutableStateFlow(""); val query: StateFlow<String> = _query.asStateFlow()
-    fun load() = viewModelScope.launch {
-        _tracks.value = c.db.trackDao().all().map { it.toTrack() }
+    fun load() = viewModelScope.launch { _tracks.value = loadTracks() }
+    /** Awaitable load — scan() needs the fresh list before the
+     *  metadata fetch below; load() itself is fire-and-forget. */
+    private suspend fun loadTracks(): List<Track> {
+        // v1.1.10: merge the fetched metadata (artist/album/cover) at
+        // read time — the scanner never touches the metadata table, so
+        // a rescan cannot wipe what was fetched.
+        val meta = c.metadataRepo.allMetadata()
+        return c.db.trackDao().all().map { it.toTrack(meta[it.id]) }
     }
     fun scan() = viewModelScope.launch {
         val ctx = getApplication<Application>()
@@ -41,7 +48,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         val total = scanned.size + safCounts.values.sum()
         MioLog.event(ctx, "Library scan: mediaStore=${scanned.size} saf={${safCounts.entries.joinToString { "${it.key}->${it.value}" }}} total=$total lostPermissions=$lostPermissions")
-        load()
+        _tracks.value = loadTracks()
+        // v1.1.10: auto metadata — fill in missing artist/album/cover
+        // in the background (never blocks the scan result); capped per
+        // scan, failures are not retried for 7 days (see
+        // MetadataRepository). Refresh the list when anything lands.
+        runCatching {
+            val updated = c.metadataRepo.fetchMissing(_tracks.value)
+            if (updated.isNotEmpty()) load()
+        }
     }
     fun addFolder(uriString: String) = viewModelScope.launch {
         val cur = c.settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_FOLDERS, emptySet<String>()).first()
@@ -55,18 +70,36 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun search(q: String) {
         _query.value = q
         if (q.isBlank()) { _searchResults.value = emptyList(); load(); return }
-        viewModelScope.launch { _searchResults.value = c.db.trackDao().search(q).map { it.toTrack() } }
+        viewModelScope.launch {
+            val meta = c.metadataRepo.allMetadata()
+            _searchResults.value = c.db.trackDao().search(q).map { it.toTrack(meta[it.id]) }
+        }
     }
     fun toggleFavorite(t: Track) = viewModelScope.launch { c.db.trackDao().setFavorite(t.id, !t.isFavorite); load() }
-    private fun TrackEntity.toTrack() = Track(id, title, artist, album, uri = android.net.Uri.parse(uri), path = path,
-        durationMs = durationMs, format = runCatching { AudioFormat.valueOf(format) }.getOrDefault(AudioFormat.UNKNOWN),
-        sampleRateHz = sampleRateHz, bitDepth = bitDepth, bitrateKbps = bitrateKbps, dsdRate = dsdRate,
-        isFavorite = isFavorite, playCount = playCount, lastPlayedAt = lastPlayedAt, dateAdded = dateAdded)
+    private fun TrackEntity.toTrack(meta: com.mio.player.data.db.TrackMetadataEntity? = null) =
+        c.metadataRepo.applyMetadata(Track(id, title, artist, album, uri = android.net.Uri.parse(uri), path = path,
+            durationMs = durationMs, format = runCatching { AudioFormat.valueOf(format) }.getOrDefault(AudioFormat.UNKNOWN),
+            sampleRateHz = sampleRateHz, bitDepth = bitDepth, bitrateKbps = bitrateKbps, dsdRate = dsdRate,
+            isFavorite = isFavorite, playCount = playCount, lastPlayedAt = lastPlayedAt, dateAdded = dateAdded), meta)
 }
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val pm = (app as com.mio.player.MioApp).container.playerManager
     val queue get() = pm.queue; val index get() = pm.index; val isPlaying get() = pm.isPlaying
-    fun playQueue(tracks: List<Track>, i: Int = 0) = pm.playQueue(tracks, i)
+    fun playQueue(tracks: List<Track>, i: Int = 0) {
+        pm.playQueue(tracks, i)
+        // v1.1.10: auto metadata for the track that just started
+        // playing — looked up in the background, never blocking
+        // playback. When it lands, the queue item is swapped so Now
+        // Playing / MiniPlayer show the fetched artist and cover live
+        // (the library lists pick it up on the next load()).
+        viewModelScope.launch {
+            val t = tracks.getOrNull(i) ?: return@launch
+            val c = (getApplication() as com.mio.player.MioApp).container
+            if (c.metadataRepo.fetchFor(t)) {
+                pm.updateQueueTrack(c.metadataRepo.mergedTrack(t))
+            }
+        }
+    }
     fun toggle() { if (pm.player.isPlaying) pm.pause() else pm.play() }
     fun next() = pm.next()
 }

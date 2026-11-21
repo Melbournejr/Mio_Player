@@ -208,7 +208,7 @@ import kotlinx.coroutines.delay
             }
         }
         Spacer(Modifier.height(12.dp))
-        if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize).animateContentSize(), CardLarge) else Box(Modifier.size(coverSize).animateContentSize().background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
+        if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize).animateContentSize(), CardLarge, coverPath = t.coverPath) else Box(Modifier.size(coverSize).animateContentSize().background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
         Spacer(Modifier.height(16.dp))
         Text(t?.title ?: "No song", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
