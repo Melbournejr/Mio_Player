@@ -2,6 +2,7 @@ package com.mio.player.ui.visualizer
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,9 +43,14 @@ import kotlinx.coroutines.launch
  * coordinator only passes the live audio data.
  */
 
-/** Row of four style chips. Selected chip: theme gradient, white text.
+/** Row of five style chips. Selected chip: theme gradient, white text.
  *  Unselected: raised surface, secondary text. No icons — the labels
- *  ("Cột / Sóng / Tròn / Gương") are the style names. */
+ *  ("Cột / Sóng / Tròn / Gương / Giọt nước") are the style names.
+ *  v1.1.7: the row is horizontally scrollable — five chips at 13 sp
+ *  with 14 dp padding are ~337 dp wide, wider than the ~320 dp left
+ *  on a 360 dp screen after Now Playing's 20 dp side margins, so the
+ *  last chip ("Giọt nước") would otherwise be cut off. When the row
+ *  fits (wider screens) it stays centred and does not scroll. */
 @Composable
 fun VisualizerStylePicker(
     selected: VisualizerStyle,
@@ -51,7 +58,7 @@ fun VisualizerStylePicker(
     modifier: Modifier = Modifier
 ) {
     Row(
-        modifier,
+        modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

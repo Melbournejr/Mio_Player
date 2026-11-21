@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -24,9 +25,9 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * v1.1.5 — the four visualizer styles, each a self-contained
+ * v1.1.5 — the five visualizer styles, each a self-contained
  * @Composable driven ONLY by real audio data:
- *  - Bars / Circular / Mirror read `levels` (the 32 log-spaced FFT band
+ *  - Bars / Circular / Mirror / Droplet read `levels` (the 32 log-spaced FFT band
  *    magnitudes, 20 Hz–12 kHz, from WaveformTap).
  *  - Wave reads `pcmFrame` (the newest 1024 mono PCM samples, also from
  *    WaveformTap, published with each FFT frame at ~30 Hz, v1.1.6).
@@ -93,6 +94,7 @@ fun MioVisualizer(
         VisualizerStyle.WAVE -> VisualizerWave(pcmFrame, playing, modifier)
         VisualizerStyle.CIRCULAR -> VisualizerCircular(levels, playing, modifier)
         VisualizerStyle.MIRROR -> VisualizerMirror(levels, playing, modifier)
+        VisualizerStyle.DROPLET -> VisualizerDroplet(levels, pcmFrame, playing, modifier)
     }
 }
 
@@ -183,6 +185,13 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
  * high = last). With no signal every band is a short fixed stub.
  * The circle is sized by the row height (112 dp), so it fits the same
  * slot as the other styles.
+ *
+ * v1.1.7 redesign (user asked for a smaller ring, bigger bars): the
+ * inner circle shrank from 0.30 to 0.18 × minDim, the bars grew from
+ * 0.19 to 0.30 × minDim and thickened from 60% to 80% of the arc
+ * pitch — the ring now reads as a small hub with long, chunky rays.
+ * At full scale the bar tip just touches the slot edge (the same
+ * class of edge-touch the old geometry already had at max level).
  */
 @Composable
 fun VisualizerCircular(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
@@ -195,11 +204,13 @@ fun VisualizerCircular(levels: FloatArray, playing: Boolean, modifier: Modifier 
         val cx = size.width / 2f
         val cy = size.height / 2f
         val minDim = minOf(size.width, size.height)
-        val innerR = minDim * 0.30f
-        val maxLen = minDim * 0.19f
+        // v1.1.7: small hub (was 0.30), long bars (was 0.19).
+        val innerR = minDim * 0.18f
+        val maxLen = minDim * 0.30f
         val midR = innerR + maxLen / 2f
-        // Bar thickness: ~60% of the arc pitch at the middle radius.
-        val barWidth = (2f * PI.toFloat() * midR / n * 0.6f).coerceAtLeast(2.dp.toPx())
+        // Bar thickness: ~80% of the arc pitch at the middle radius
+        // (was 60%) — the bars are now nearly contiguous.
+        val barWidth = (2f * PI.toFloat() * midR / n * 0.8f).coerceAtLeast(2.dp.toPx())
         // Inner ring (the circle the bars radiate from).
         drawCircle(divider, radius = innerR - 2.dp.toPx(), center = Offset(cx, cy), style = Stroke(width = 1.dp.toPx()))
         for (i in 0 until n) {
@@ -282,6 +293,96 @@ fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = 
                 topLeft = Offset(x, cy + gap),
                 size = Size(barW, (half - gap).coerceAtLeast(1f)),
                 cornerRadius = radius
+            )
+        }
+    }
+}
+
+/** Teardrop path: a circle of radius [r] centred at ([cx], [cy]) with
+ *  a pointed tip 2r above the centre. The tip is drawn with two
+ *  cubic curves from the circle's equator; the round bottom is the
+ *  lower half of the circle (arc from 0° to 180°, which passes
+ *  through the bottom in Android's y-down coordinates). */
+private fun dropletPath(cx: Float, cy: Float, r: Float): Path = Path().apply {
+    moveTo(cx, cy - 2.0f * r) // pointed tip
+    // Right flank: tip -> equator (3 o'clock).
+    cubicTo(cx + 1.15f * r, cy - 1.05f * r, cx + r, cy - 0.35f * r, cx + r, cy)
+    // Round bottom: equator -> 6 o'clock -> equator (9 o'clock).
+    arcTo(Rect(cx - r, cy - r, cx + r, cy + r), 0f, 180f, false)
+    // Left flank: equator -> tip.
+    cubicTo(cx - r, cy - 0.35f * r, cx - 1.15f * r, cy - 1.05f * r, cx, cy - 2.0f * r)
+    close()
+}
+
+/**
+ * Style 5 — Droplet / water drops (v1.1.7, new at the user's request:
+ * "làm dạng giọt nước chuyển động cho đẹp"). Sixteen teardrops in a
+ * row above a faint baseline; each drop averages one adjacent pair
+ * of the 32 FFT bands, so neighbouring drops stay distinct instead of
+ * overlapping. A drop's SIZE (radius 3.5–8.5 dp) and POSITION (it
+ * rises up to 30 dp off the baseline) are both driven by its band's
+ * live level through the same scaledNorm() as the other styles, so
+ * the drops visibly swell and bob with the music — bass drops jump
+ * high, quiet ones sit low and small. Colour blends along the theme
+ * gradient by drop index, with a small white gloss dot for a wet
+ * look. `pcmFrame` is accepted for dispatcher symmetry with the
+ * other styles but not used — the drops are FFT-driven.
+ * No time-based animation: when paused / silent every drop sits
+ * still at a low fixed size and lift from the shared idle array,
+ * exactly like the other styles. Same 112 dp slot.
+ */
+@Suppress("UNUSED_PARAMETER")
+@Composable
+fun VisualizerDroplet(
+    levels: FloatArray,
+    pcmFrame: FloatArray,
+    playing: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalMioColors.current.gradientColors
+    val accent = LocalMioColors.current.accent
+    val divider = LocalMioColors.current.divider
+    val live = isLive(levels)
+    val n = levels.size
+    val drops = 16
+    Canvas(modifier.height(VIS_ROW_HEIGHT_DP.dp).fillMaxWidth()) {
+        val w = size.width
+        val h = size.height
+        val baseY = h - 12.dp.toPx()
+        val minR = 3.5f.dp.toPx()
+        val maxR = 8.5f.dp.toPx()
+        val maxLift = 30.dp.toPx()
+        // Faint baseline the droplets rise from.
+        drawLine(divider, Offset(0f, baseY), Offset(w, baseY), strokeWidth = 1.dp.toPx())
+        val step = w / drops
+        for (d in 0 until drops) {
+            // Live level: average of this drop's two FFT bands.
+            // Idle level: fixed from the shared idle array (0.05..0.45).
+            val norm = if (live) {
+                val a = levels[(2 * d).coerceAtMost(n - 1)]
+                val b = levels[(2 * d + 1).coerceAtMost(n - 1)]
+                scaledNorm((a + b) / 2f)
+            } else {
+                0.25f + 0.20f * STATIC_IDLE[d % STATIC_IDLE.size]
+            }
+            val r = minR + norm * (maxR - minR)
+            // The drop rises with its level; idle drops hover just
+            // above the baseline (half lift) so the row never looks dead.
+            val lift = if (live) norm * maxLift else norm * maxLift * 0.5f
+            val cx = step * (d + 0.5f)
+            val cy = baseY - r - lift
+            val color: Color = if (live) {
+                lerp(colors.first(), colors.last(), d.toFloat() / (drops - 1).coerceAtLeast(1))
+            } else {
+                accent.copy(alpha = 0.4f)
+            }
+            drawPath(dropletPath(cx, cy, r), SolidColor(color))
+            // Gloss dot — a small white highlight near the upper-left
+            // of the drop, so it reads as water, not a flat blob.
+            drawCircle(
+                Color.White.copy(alpha = 0.22f),
+                radius = r * 0.28f,
+                center = Offset(cx - r * 0.35f, cy - r * 0.45f)
             )
         }
     }

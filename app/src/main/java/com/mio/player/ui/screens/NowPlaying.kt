@@ -213,8 +213,14 @@ import kotlinx.coroutines.delay
         Text(t?.title ?: "No song", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(8.dp))
-        Text(t?.displayFormat ?: "", color = MioCyan, fontSize = 12.sp)
-        Text(stateText, color = MioTextSecondary, fontSize = 12.sp)
+        // v1.1.7: the DSD native state line is identical to displayFormat
+        // ("DSD128 · Native decode"), so show the format once — the
+        // state line is only rendered when it says something different.
+        val formatText = t?.displayFormat ?: ""
+        Text(formatText, color = MioCyan, fontSize = 12.sp)
+        if (stateText.isNotEmpty() && stateText != formatText) {
+            Text(stateText, color = MioTextSecondary, fontSize = 12.sp)
+        }
         if (converting) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {

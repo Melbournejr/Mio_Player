@@ -166,8 +166,15 @@ import kotlinx.coroutines.delay
             Column(Modifier.weight(0.58f).fillMaxHeight()) {
                 Text(t?.title ?: "No song", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(t?.displayFormat ?: "", color = MioCyan, fontSize = 12.sp)
-                Text(stateText, color = MioTextSecondary, fontSize = 12.sp)
+                // v1.1.7: same dedupe as portrait NowPlaying — the DSD
+                // native state line is identical to displayFormat, so
+                // show the format once; the state line only renders
+                // when it says something different.
+                val formatText = t?.displayFormat ?: ""
+                Text(formatText, color = MioCyan, fontSize = 12.sp)
+                if (stateText.isNotEmpty() && stateText != formatText) {
+                    Text(stateText, color = MioTextSecondary, fontSize = 12.sp)
+                }
                 if (converting) {
                     Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
