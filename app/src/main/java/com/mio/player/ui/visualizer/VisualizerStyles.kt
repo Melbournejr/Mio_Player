@@ -26,10 +26,10 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * v1.1.5 — the four visualizer styles, each a self-contained
+ * v1.1.5 — the five visualizer styles, each a self-contained
  * @Composable driven ONLY by real audio data:
- *  - Bars / Circular / Mirror read `levels` (the 32 log-spaced FFT band
- *    magnitudes, 20 Hz–12 kHz, from WaveformTap).
+ *  - Bars / Circular / Mirror / Ferrofluid read `levels` (the 32
+ *    log-spaced FFT band magnitudes, 20 Hz–12 kHz, from WaveformTap).
  *  - Wave reads `pcmFrame` (the newest 1024 mono PCM samples, also from
  *    WaveformTap, published with each FFT frame at ~30 Hz, v1.1.6).
  * Nothing here depends on time, playback position, duration or
@@ -44,16 +44,30 @@ import kotlin.math.sqrt
  * flat line, so it now gets a signed perceptual lift (gain 2.5 +
  * sqrt) and a thicker 3 dp stroke — see its KDoc for the math.
  *
+ * v1.1.12 — Ferrofluid added as the fifth style (see
+ * [VisualizerFerrofluid]); the chip picker is gone — styles are now
+ * switched by tapping / swiping the visualizer itself (see
+ * VisualizerStylePicker.kt / [VisualizerPanel]). Row height reduced
+ * 112 dp -> 88 dp so the lyrics area on Now Playing gains 24 dp.
+ *
  * Sizing / colours match LiveWaveform (ui/components/Common.kt) so all
- * styles are interchangeable in the same 112 dp slot on Now Playing:
+ * styles are interchangeable in the same 88 dp slot on Now Playing:
  * same row height, same gain (4) for the FFT styles, same theme
  * gradient (Deep Wave teal #14B8A6 -> cyan #22D3EE; Sunset coral ->
- * orange -> amber via the theme tokens — no hardcoded colours).
+ * orange -> amber via the theme tokens — no hardcoded colours), except
+ * Ferrofluid whose liquid body is deliberately near-black in both
+ * themes (that is what ferrofluid looks like) with the theme gradient
+ * used only for its spike highlights / rims.
  */
 
 // Scaling — identical to LiveWaveform's v1.1.4 calibration (see its
 // KDoc for the math): only a level >= 0.25 reaches full height.
-private const val VIS_ROW_HEIGHT_DP = 112f
+// v1.1.12: row height 112 dp -> 88 dp so the lyrics area on Now
+// Playing gains 24 dp. NOTE: Bars delegates to LiveWaveform, which
+// keeps its own WAVEFORM_ROW_HEIGHT_DP (112 dp) in Common.kt —
+// outside this file's ownership — so Bars still renders at 112 dp
+// until that constant is reduced too.
+private const val VIS_ROW_HEIGHT_DP = 88f
 private const val VIS_MIN_HEIGHT_DP = 10f
 private const val VIS_GAIN = 4f
 private const val VIS_LIVE_THRESHOLD = 0.005f
@@ -119,6 +133,7 @@ fun MioVisualizer(
         VisualizerStyle.WAVE -> VisualizerWave(pcmFrame, playing, modifier)
         VisualizerStyle.CIRCULAR -> VisualizerCircular(levels, playing, modifier)
         VisualizerStyle.MIRROR -> VisualizerMirror(levels, playing, modifier)
+        VisualizerStyle.FERROFLUID -> VisualizerFerrofluid(levels, playing, modifier)
     }
 }
 
@@ -126,8 +141,11 @@ fun MioVisualizer(
  * Style 1 — Bars (the current Now Playing wave, kept as the default).
  * Delegates to LiveWaveform so the default style is byte-for-byte the
  * one the user already approved: 32 gradient bars, 5 dp wide, 3 dp
- * apart, on the 112 dp row. `progress` is passed as 0f — LiveWaveform
- * ignores it by design and never colours by progress.
+ * apart. `progress` is passed as 0f — LiveWaveform
+ * ignores it by design and never colours by progress. v1.1.12: the
+ * other styles shrank to the 88 dp row, but LiveWaveform keeps its
+ * own 112 dp constant in Common.kt (not owned by this change), so
+ * Bars still renders at 112 dp until that constant is reduced too.
  */
 @Composable
 fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
@@ -216,8 +234,8 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
  * reads as a bigger radial move; bar colour blends along the theme
  * gradient by band index (low = first gradient stop, high = last).
  * With no signal every band is a short fixed stub.
- * The circle is sized by the row height (112 dp), so it fits the same
- * slot as the other styles.
+ * The circle is sized by the row height (88 dp, v1.1.12 — was 112 dp),
+ * so it fits the same slot as the other styles.
  *
  * v1.1.7 redesign (user asked for a smaller ring, bigger bars): the
  * inner circle shrank from 0.30 to 0.18 × minDim, the bars grew from
@@ -229,7 +247,7 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
  * v1.1.11 — responsiveness rework (user: "visualizer tròn chậm quá").
  * Why it read as slow, measured from the code:
  *  - Circular reads the same smoothed `levels` as Bars, but its bars
- *    only travel maxLen = 0.30 × 112 dp = ~34 dp, while a Bars bar
+ *    only travel maxLen = 0.30 × 88 dp = ~26 dp, while a Bars bar
  *    travels up to ~102 dp on the same row — the same fractional level
  *    change moves ~3x fewer dp here, so motion is harder to see.
  *  - The shared lift sqrt(level * 4) saturates at level 0.25, so loud
@@ -378,5 +396,112 @@ fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = 
                 cornerRadius = radius
             )
         }
+    }
+}
+
+/**
+ * Style 5 — Ferrofluid / magnetic liquid (v1.1.12). Inspired by a
+ * ferrofluid speaker (Sovenomund type): black magnetic liquid that
+ * dances to the music. One liquid column per FFT band (32): a dark,
+ * glossy near-black body whose height follows the band level via the
+ * shared lift scaledNorm(), topped by a sharp spike — tall and
+ * narrow when loud, short and blunt when quiet — with a glossy
+ * highlight: a theme-gradient rim stroked along one spike edge plus
+ * a wet dot at the tip. A thin dark liquid pool line at the bottom
+ * joins the columns, with a 1 dp theme-gradient sheen on its top
+ * edge. The liquid body stays near-black in BOTH themes (that is
+ * what ferrofluid looks like); only the spike rims / pool sheen use
+ * the theme gradient, so it reads on the Deep Wave dark background
+ * and on the Sunset light background alike. With no signal the
+ * columns sit low and still at the index-determined idle bumps
+ * (idleHeightDp) with tiny blunt spikes — the same idle rule as the
+ * other styles. Driven ONLY by the real FFT levels: no clock, no
+ * time-based animation, no progress colouring. Cheap by design: one
+ * shared body brush, one reused spike Path (rewound per band), plain
+ * rects / lines — no per-frame allocations beyond what Wave already
+ * does. The tallest spike is budgeted inside the row (max body
+ * height leaves max spike height + 2 dp headroom), so nothing clips
+ * at the top edge.
+ */
+@Composable
+fun VisualizerFerrofluid(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
+    val colors = LocalMioColors.current.gradientColors
+    val live = isLive(levels)
+    val n = levels.size
+    Canvas(modifier.height(VIS_ROW_HEIGHT_DP.dp).fillMaxWidth()) {
+        val spacing = 3.dp.toPx()
+        val barW = ((size.width - (n - 1) * spacing) / n).coerceAtLeast(1.dp.toPx())
+        val poolH = 4.dp.toPx()
+        val baseline = size.height - poolH
+        val maxSpikeH = 23.dp.toPx() // 3 dp + 20 dp at full level
+        val maxBody = baseline - maxSpikeH - 2.dp.toPx()
+        val minBody = VIS_MIN_HEIGHT_DP.dp.toPx()
+        // One vertical brush for every body: glossy near-black, light
+        // at the top fading to black at the pool.
+        val bodyBrush = Brush.verticalGradient(
+            listOf(Color(0xFF26262B), Color(0xFF0B0B0D), Color(0xFF050506))
+        )
+        val spikeFill = SolidColor(Color(0xFF17171A))
+        val spikePath = Path()
+        for (i in 0 until n) {
+            val norm = if (live) scaledNorm(levels[i]) else 0f
+            val bodyH = if (live) {
+                minBody + norm * (maxBody - minBody)
+            } else {
+                // Idle bump: same 18..30 dp index-determined shape as
+                // the other styles, capped to the budgeted max body.
+                idleHeightDp(i).dp.toPx().coerceAtMost(maxBody)
+            }
+            val x = i * (barW + spacing)
+            val cx = x + barW / 2f
+            val top = baseline - bodyH
+            drawRoundRect(
+                bodyBrush,
+                topLeft = Offset(x, top),
+                size = Size(barW, bodyH),
+                cornerRadius = CornerRadius(barW / 2f, barW / 2f)
+            )
+            // Spike: tall + narrow (sharp) when loud, short + wide
+            // (blunt) when quiet. Base sinks 2 dp into the body so
+            // there is never a visible seam between spike and body.
+            val spikeH = if (live) 3.dp.toPx() + norm * 20.dp.toPx() else 2.dp.toPx()
+            val baseHalfW = barW / 2f * (1f - 0.5f * norm)
+            val apex = Offset(cx, top - spikeH)
+            val baseY = top + 2.dp.toPx()
+            spikePath.rewind()
+            spikePath.moveTo(apex.x, apex.y)
+            spikePath.lineTo(cx + baseHalfW, baseY)
+            spikePath.lineTo(cx - baseHalfW, baseY)
+            spikePath.close()
+            drawPath(spikePath, spikeFill)
+            // Glossy highlight: theme-gradient rim down one spike
+            // edge, plus a wet dot at the tip on loud bands.
+            val rimColor = lerp(colors.first(), colors.last(), i.toFloat() / (n - 1).coerceAtLeast(1))
+            drawLine(
+                rimColor,
+                apex,
+                Offset(cx + baseHalfW, baseY),
+                strokeWidth = 1.5.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+            if (live && norm > 0.05f) {
+                drawCircle(rimColor, radius = 1.2.dp.toPx(), center = apex)
+            }
+        }
+        // Liquid pool: thin dark line joining the columns, with a
+        // 1 dp theme-gradient sheen along its top edge.
+        drawRoundRect(
+            Brush.verticalGradient(listOf(Color(0xFF1A1A1F), Color(0xFF050506))),
+            topLeft = Offset(0f, baseline),
+            size = Size(size.width, poolH),
+            cornerRadius = CornerRadius(poolH / 2f, poolH / 2f)
+        )
+        drawLine(
+            Brush.linearGradient(colors, start = Offset.Zero, end = Offset(size.width, 0f)),
+            Offset(0f, baseline),
+            Offset(size.width, baseline),
+            strokeWidth = 1.dp.toPx(),
+            cap = StrokeCap.Round
+        )
     }
 }

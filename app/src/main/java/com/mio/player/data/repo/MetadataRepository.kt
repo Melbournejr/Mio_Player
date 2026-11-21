@@ -119,13 +119,23 @@ class MetadataRepository(
 
     /** The track with its fetched fill-ins applied — only where the
      *  track's own fields are missing. A stored artist/album is never
-     *  applied over a real local tag. */
+     *  applied over a real local tag.
+     *
+     *  v1.1.12 — EXCEPTION: a manually-saved entry (source "manual",
+     *  written by saveTypedMetadata() from the metadata edit dialog)
+     *  OVERRIDES the track's own artist/album when non-blank. That is
+     *  the whole point of letting the user type a correction: the
+     *  local tag can be WRONG without being "<unknown>", and the old
+     *  only-fill-missing rule silently discarded exactly that
+     *  correction. Fetched entries (sources "itunes" /
+     *  "musicbrainz" / "none") keep the old rule. */
     fun applyMetadata(t: Track, m: TrackMetadataEntity?): Track {
         if (m == null) return t
         val cover = m.coverPath?.takeIf { File(it).exists() }
+        val manual = m.source == "manual"
         return t.copy(
-            artist = if (isUnknownArtist(t.artist) && !m.artist.isNullOrBlank()) m.artist else t.artist,
-            album = if (isUnknownAlbum(t.album) && !m.album.isNullOrBlank()) m.album else t.album,
+            artist = if (!m.artist.isNullOrBlank() && (manual || isUnknownArtist(t.artist))) m.artist else t.artist,
+            album = if (!m.album.isNullOrBlank() && (manual || isUnknownAlbum(t.album))) m.album else t.album,
             coverPath = cover ?: t.coverPath,
         )
     }
@@ -140,7 +150,7 @@ class MetadataRepository(
      * fire-and-forget this on a background scope.
      */
     suspend fun fetchFor(track: Track): Boolean = withContext(Dispatchers.IO) {
-        runCatching { fetchForInner(track) }.onFailure {
+        runCatching { fetchForInner(track).stored }.onFailure {
             MioLog.event(ctx, "Metadata error: ${track.title}: ${it.message}")
         }.getOrDefault(false)
     }
@@ -156,14 +166,85 @@ class MetadataRepository(
      * the user retries by hand). Never throws.
      */
     suspend fun fetchForManual(track: Track): Boolean = withContext(Dispatchers.IO) {
-        runCatching { fetchForInner(track, manual = true) }.onFailure {
+        runCatching { fetchForInner(track, manual = true).stored }.onFailure {
             MioLog.event(ctx, "Metadata manual error: ${track.title}: ${it.message}")
         }.getOrDefault(false)
     }
 
-    private suspend fun fetchForInner(track: Track, manual: Boolean = false): Boolean {
-        if (!manual && !autoFetchEnabled()) return false
-        if (!needsMetadata(track)) return false
+    /**
+     * v1.1.12 — MANUAL fetch with caller-supplied search terms, from
+     * the metadata edit dialog on Now Playing. Same inner logic and
+     * same storage as fetchForManual (bypasses the auto toggle and
+     * the 7-day retry block; only missing fields are stored; cover
+     * downloaded on a hit), but the iTunes / MusicBrainz query uses
+     * the title/artist the user TYPED instead of the derived ones —
+     * a track the sources return nothing for under its library tags
+     * can still be found once the user corrects the spelling.
+     *
+     * Because the user is explicitly searching — including for a
+     * track whose local tags are present but WRONG — the
+     * needsMetadata() gate is also bypassed here: a wrong-but-known
+     * artist would otherwise block the search outright. The hit is
+     * returned (artist/album as the source reported them) so the
+     * dialog can fill its fields with the found data even when the
+     * stored row keeps the old only-fill-missing rule; the user then
+     * taps "Lưu" to persist the correction as a manual override.
+     * Never throws.
+     */
+    suspend fun fetchForManualWith(track: Track, title: String, artist: String): ManualFetchResult =
+        withContext(Dispatchers.IO) {
+            runCatching { fetchForInner(track, manual = true, titleOverride = title, artistOverride = artist) }.onFailure {
+                MioLog.event(ctx, "Metadata manual error: ${track.title}: ${it.message}")
+            }.getOrDefault(ManualFetchResult(found = false))
+        }
+
+    /**
+     * v1.1.12 — persist the values the user TYPED in the metadata
+     * edit dialog as this song's metadata (source "manual"), so
+     * applyMetadata() overrides the track's own artist/album with
+     * them even when the local tag is present but wrong. The title
+     * is NOT stored — the track_metadata table has no title column
+     * (schema unchanged) and the title still comes from the track
+     * row; the title field only feeds the "Tìm" search. A blank
+     * typed field keeps whatever was stored before instead of
+     * wiping it, and an earlier downloaded cover is kept. Never
+     * throws; returns false only on a storage failure.
+     */
+    suspend fun saveTypedMetadata(track: Track, title: String, artist: String, album: String): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val now = System.currentTimeMillis()
+                val existing = db.metadataDao().get(track.id)
+                val typedArtist = artist.trim().takeIf { it.isNotBlank() }
+                val typedAlbum = album.trim().takeIf { it.isNotBlank() }
+                db.metadataDao().put(
+                    TrackMetadataEntity(
+                        track.id,
+                        typedArtist ?: existing?.artist,
+                        typedAlbum ?: existing?.album,
+                        existing?.coverPath,
+                        "manual",
+                        now,
+                    )
+                )
+                MioLog.event(ctx, "Metadata manual save: \"${track.title}\" -> artist=${typedArtist ?: "-"} album=${typedAlbum ?: "-"}")
+                true
+            }.onFailure {
+                MioLog.event(ctx, "Metadata manual save error: ${track.title}: ${it.message}")
+            }.getOrDefault(false)
+        }
+
+    private suspend fun fetchForInner(
+        track: Track,
+        manual: Boolean = false,
+        titleOverride: String? = null,
+        artistOverride: String? = null,
+    ): ManualFetchResult {
+        if (!manual && !autoFetchEnabled()) return ManualFetchResult(found = false)
+        // A typed manual search bypasses this gate (see
+        // fetchForManualWith): the user may be correcting tags that
+        // are present but wrong, which needsMetadata() cannot see.
+        if (titleOverride == null && !needsMetadata(track)) return ManualFetchResult(found = false)
         val now = System.currentTimeMillis()
         val existing = db.metadataDao().get(track.id)
         // A recent failed attempt (nothing useful stored) is not
@@ -172,16 +253,19 @@ class MetadataRepository(
         // user explicitly asked to try again.
         if (!manual && existing != null && existing.artist == null && existing.album == null &&
             existing.coverPath == null && now - existing.attemptedAt < RETRY_AFTER_MS
-        ) return false
+        ) return ManualFetchResult(found = false)
 
-        val title = lyricsRepo.normalizeTitle(track.title).ifBlank { track.title.trim() }
-        if (title.isBlank()) return false
+        val title = (titleOverride?.trim()?.takeIf { it.isNotBlank() }
+            ?: lyricsRepo.normalizeTitle(track.title).ifBlank { track.title.trim() })
+        if (title.isBlank()) return ManualFetchResult(found = false)
         // A real metadata artist wins; a junk one (site name, "Unknown
         // Artist") is derived from the path instead — the same rules
         // the lyrics lookup uses, so "NhacCuaTui.Com" is never queried.
+        // A TYPED artist wins over both when the user supplied one.
         val knownArtist = track.artist.takeIf { it.isNotBlank() && !isUnknownArtist(it) }
         val (pathArtist, _) = lyricsRepo.deriveArtistAlbumFromPath(track.path)
-        val queryArtist = knownArtist ?: pathArtist
+        val typedArtist = artistOverride?.trim()?.takeIf { it.isNotBlank() && !isUnknownArtist(it) }
+        val queryArtist = typedArtist ?: knownArtist ?: pathArtist
         val wantArtistForFill = isUnknownArtist(track.artist)
         val wantAlbumForFill = isUnknownAlbum(track.album)
         val wantCover = !coverFile(track.id).exists()
@@ -189,28 +273,53 @@ class MetadataRepository(
         val hit = tryItunes(title, queryArtist, track.durationMs)
             ?: tryMusicBrainz(title, queryArtist, track.durationMs)
         if (hit == null) {
-            db.metadataDao().put(
-                TrackMetadataEntity(track.id, null, null, null, "none", now)
-            )
+            // Record the miss like the existing path — but never wipe
+            // a manual entry: the user's typed correction outlives a
+            // failed search (only its timestamp is refreshed).
+            if (existing?.source == "manual" && (!existing.artist.isNullOrBlank() || !existing.album.isNullOrBlank())) {
+                db.metadataDao().put(existing.copy(attemptedAt = now))
+            } else {
+                db.metadataDao().put(
+                    TrackMetadataEntity(track.id, null, null, null, "none", now)
+                )
+            }
             MioLog.event(ctx, "Metadata miss: \"$title\" artist=${queryArtist ?: "?"}")
-            return false
+            return ManualFetchResult(found = false)
         }
         // Only the fields the track actually lacks are stored — a
         // fetched artist is never kept next to a real local artist.
+        // A previous MANUAL entry wins over a new hit for the fields
+        // it already sets (and keeps its source, so applyMetadata()
+        // keeps overriding with it); the hit only fills the gaps,
+        // and an earlier downloaded cover is never dropped by a hit
+        // that brings no new cover.
         val artist = if (wantArtistForFill) hit.artist else null
         val album = if (wantAlbumForFill) hit.album else null
         var coverPath: String? = null
         if (wantCover && hit.artworkUrl != null) {
             coverPath = downloadCover(track.id, hit.artworkUrl)
         }
+        val manualPrev = existing?.source == "manual" &&
+            (!existing.artist.isNullOrBlank() || !existing.album.isNullOrBlank())
+        val storedArtist = if (manualPrev && !existing.artist.isNullOrBlank()) existing.artist else artist
+        val storedAlbum = if (manualPrev && !existing.album.isNullOrBlank()) existing.album else album
+        val storedCover = coverPath ?: existing?.coverPath
+        val storedSource = if (manualPrev) "manual" else hit.source
         db.metadataDao().put(
-            TrackMetadataEntity(track.id, artist, album, coverPath, hit.source, now)
+            TrackMetadataEntity(track.id, storedArtist, storedAlbum, storedCover, storedSource, now)
         )
         MioLog.event(
             ctx,
-            "Metadata HIT (${hit.source}): \"$title\" -> artist=${artist ?: "-"} album=${album ?: "-"} cover=${coverPath != null}"
+            "Metadata HIT (${hit.source}): \"$title\" -> artist=${storedArtist ?: "-"} album=${storedAlbum ?: "-"} cover=${storedCover != null}"
         )
-        return artist != null || album != null || coverPath != null
+        return ManualFetchResult(
+            found = true,
+            artist = hit.artist,
+            album = hit.album,
+            // Same "anything new stored" meaning as before: a
+            // preserved earlier cover / manual value does not count.
+            stored = artist != null || album != null || coverPath != null,
+        )
     }
 
     /**
@@ -382,3 +491,19 @@ class MetadataRepository(
         }.getOrNull()
     }
 }
+
+/**
+ * v1.1.12 — result of a manual metadata search (fetchForManualWith).
+ * [found] is true when a source returned a matching track, even when
+ * nothing new was stored (e.g. the track already had a real artist,
+ * so the hit's artist was not kept — the dialog still fills its
+ * fields with [artist]/[album] as the source reported them, and the
+ * user persists them with "Lưu"). [stored] keeps the old fetchFor()
+ * meaning: true only when this call stored something new.
+ */
+data class ManualFetchResult(
+    val found: Boolean,
+    val artist: String? = null,
+    val album: String? = null,
+    val stored: Boolean = false,
+)

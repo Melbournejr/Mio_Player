@@ -24,6 +24,7 @@ import androidx.navigation.NavHostController
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.LyricLine
 import com.mio.player.ui.components.AlbumArt
+import com.mio.player.ui.components.MetadataEditDialog
 import com.mio.player.ui.visualizer.VisualizerPanel
 import com.mio.player.ui.components.TrackRow
 import com.mio.player.ui.components.formatDuration
@@ -31,7 +32,6 @@ import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
 import com.mio.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 /**
  * v1.1.4 (Fixes 4/5/6/7) — Now Playing vs the design spec (PDF p.4:
  * "Bìa lớn, sóng, tiến trình, Play / Next"):
@@ -63,7 +63,8 @@ import kotlinx.coroutines.launch
  *    once the raw URI is playing AND the player reached STATE_READY.
  *  v1.1.6 (lyrics): the inline lyrics finally get room — the cover
  *  shrinks to 160 dp once lyrics load (was 240 dp always, leaving
- *  ~2 lines visible); the current line scrolls to the CENTRE of the
+ *  ~2 lines visible); v1.1.12 shrinks it further to 120 dp, aiming
+ *  for ~5–6 visible lines; the current line scrolls to the CENTRE of the
  *  viewport and only when it leaves the middle third, so it settles
  *  instead of re-animating per line; the highlight no longer needs
  *  `playing`; and a loading state shows while fetching, with the
@@ -99,12 +100,11 @@ import kotlinx.coroutines.launch
     // swap instead of freezing on the value from track start.
     var currentUri by remember { mutableStateOf<Uri?>(null) }
     var showQueue by remember { mutableStateOf(false) }
-    // v1.1.11: manual metadata fetch ("Tìm metadata" below). State
-    // for the button + the inline result line; reset on track change
-    // with the lyrics state above.
-    var metadataBusy by remember { mutableStateOf(false) }
-    var metadataStatus by remember { mutableStateOf<String?>(null) }
-    val metadataScope = rememberCoroutineScope()
+    // v1.1.12: the manual metadata action now opens the edit dialog
+    // (MetadataEditDialog) instead of fetching immediately — the user
+    // types the search info first. Reset on track change with the
+    // lyrics state below.
+    var showMetadataDialog by remember { mutableStateOf(false) }
     // Inline synced lyrics — same source and call as LyricsScreen
     // (Detail.kt): LyricsRepository via the app container, LRCLIB /
     // sidecar .lrc / embedded, cached in Room.
@@ -126,7 +126,7 @@ import kotlinx.coroutines.launch
         pos = 0L
         currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri
         lines = emptyList(); plain = null; source = "Đang tìm lời…"; loadingLyrics = true
-        metadataStatus = null; metadataBusy = false
+        showMetadataDialog = false
         t?.let {
             val repo = (ctx.applicationContext as com.mio.player.MioApp).container.lyricsRepo
             // v1.1.6: pass the track's content Uri so EmbeddedLyrics
@@ -139,34 +139,6 @@ import kotlinx.coroutines.launch
         } ?: run { loadingLyrics = false }
     }
     LaunchedEffect(playing, t?.id) { while (playing) { val pd = vm.pm.player.duration; val total = if (pd != C.TIME_UNSET && pd > 0) pd else (t?.durationMs ?: Long.MAX_VALUE); pos = vm.pm.player.currentPosition.coerceIn(0L, total); currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri; delay(250) } }
-    // v1.1.11: MANUAL metadata fetch for the currently playing
-    // track — the explicit retry path for tracks the auto pass
-    // missed (e.g. "<unknown>" artists the auto-fetch recorded as a
-    // miss and will not retry for 7 days). fetchForManual() bypasses
-    // BOTH the Profile auto toggle and that 7-day block, but stores
-    // the result exactly like auto-fetch (Room + cover file, only
-    // missing fields). A hit swaps the queue item live via
-    // updateQueueTrack — the same mechanism playQueue() uses for the
-    // auto on-play fetch — so the artist/cover appear immediately
-    // without restarting playback. Never blocks playback: the fetch
-    // runs on metadataScope, the UI only shows busy / result text.
-    fun fetchMetadataManually() {
-        val track = t ?: return
-        if (metadataBusy) return
-        val repo = (ctx.applicationContext as com.mio.player.MioApp).container.metadataRepo
-        if (!repo.needsMetadata(track)) { metadataStatus = "Bài này đã có đủ metadata"; return }
-        metadataScope.launch {
-            metadataBusy = true
-            val ok = runCatching { repo.fetchForManual(track) }.getOrDefault(false)
-            if (ok) {
-                vm.pm.updateQueueTrack(repo.mergedTrack(track))
-                metadataStatus = "Đã tìm thấy metadata"
-            } else {
-                metadataStatus = "Không tìm thấy metadata"
-            }
-            metadataBusy = false
-        }
-    }
     // Actual per-track playback state (see the file KDoc): never claim
     // native decode from the file type alone. The fallback WAV is
     // always 176.4 kHz 16-bit stereo (DsdSupport.CACHED_PCM_SAMPLE_RATE_HZ).
@@ -230,10 +202,14 @@ import kotlinx.coroutines.launch
     // v1.1.6: the lyrics need real room. The old 240 dp cover +
     // 112 dp visualizer + slider + transport left the lyrics
     // weight(1f) area about two lines tall. Once lyrics are loaded
-    // the cover shrinks to 160 dp (animated, so the track change
-    // does not jump); without lyrics it stays large at 220 dp.
+    // the cover shrinks to 120 dp (v1.1.12, was 160 dp in v1.1.6;
+    // animated, so the track change does not jump); without lyrics
+    // it stays large at 220 dp.
+    // v1.1.12 (lyrics room): the cover shrinks further once lyrics
+    // are loaded — 160 dp left ~2–3 visible lines, 120 dp leaves
+    // ~5–6. Without lyrics it stays large at 220 dp.
     val hasLyrics = lines.isNotEmpty() || plain != null
-    val coverSize = if (hasLyrics) 160.dp else 220.dp
+    val coverSize = if (hasLyrics) 120.dp else 220.dp
     Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
@@ -245,7 +221,7 @@ import kotlinx.coroutines.launch
         }
         Spacer(Modifier.height(12.dp))
         if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize).animateContentSize(), CardLarge, coverPath = t.coverPath) else Box(Modifier.size(coverSize).animateContentSize().background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
         Text(t?.title ?: "No song", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(8.dp))
@@ -269,23 +245,20 @@ import kotlinx.coroutines.launch
             Text(err, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 12.sp)
         }
         // v1.1.11: manual metadata action — a visible Vietnamese
-        // label ("Tìm metadata"), not an icon-only affordance, plus
-        // an inline result line. Works even when the Profile auto
-        // toggle is off and even for tracks the auto pass already
-        // failed on (see fetchMetadataManually above).
+        // label ("Tìm metadata"), not an icon-only affordance.
+        // v1.1.12: the button now OPENS the metadata edit dialog
+        // (MetadataEditDialog, rendered at the bottom of this file)
+        // instead of fetching immediately — the user types the
+        // search info first, and the dialog shows the result line.
+        // Works even when the Profile auto toggle is off and even
+        // for tracks the auto pass already failed on.
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { fetchMetadataManually() }, enabled = !metadataBusy) {
+            TextButton(onClick = { showMetadataDialog = true }) {
                 Icon(Icons.Default.Download, null, tint = MioCyan, modifier = Modifier.size(16.dp))
                 Text("Tìm metadata", color = MioCyan, fontSize = 13.sp)
             }
-            if (metadataBusy) {
-                CircularProgressIndicator(color = MioCyan, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text("  Đang tìm…", color = MioTextSecondary, fontSize = 12.sp)
-            } else {
-                metadataStatus?.let { Text(it, color = MioCyan, fontSize = 12.sp) }
-            }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
         VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth())
         Slider(value = pos.toFloat().coerceIn(0f, totalF), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..totalF, modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -322,7 +295,7 @@ import kotlinx.coroutines.launch
                 Text(plain ?: source, color = MioTextSecondary, fontSize = 14.sp)
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.pm.setShuffle(!shuffleOn) }) { Icon(Icons.Default.Shuffle, null, tint = if (shuffleOn) MioCyan else MioTextSecondary) }
             IconButton(onClick = { vm.pm.previous() }) { Icon(Icons.Default.SkipPrevious, null, tint = MioText, modifier = Modifier.size(40.dp)) }
@@ -334,6 +307,21 @@ import kotlinx.coroutines.launch
             IconButton(onClick = { vm.pm.next() }) { Icon(Icons.Default.SkipNext, null, tint = MioText, modifier = Modifier.size(40.dp)) }
             IconButton(onClick = { vm.pm.cycleRepeat() }) { Icon(if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat, null, tint = if (repeatMode == Player.REPEAT_MODE_OFF) MioTextSecondary else MioCyan) }
         }
+    }
+    // v1.1.12: metadata edit dialog — opened by the "Tìm metadata"
+    // button above; Tìm / Lưu inside it swap the queue item live via
+    // onTrackUpdated so Now Playing / MiniPlayer show the new
+    // artist/album/cover immediately.
+    val trackNow = t
+    if (showMetadataDialog && trackNow != null) {
+        val container = (ctx.applicationContext as com.mio.player.MioApp).container
+        MetadataEditDialog(
+            track = trackNow,
+            repo = container.metadataRepo,
+            lyricsRepo = container.lyricsRepo,
+            onDismissRequest = { showMetadataDialog = false },
+            onTrackUpdated = { vm.pm.updateQueueTrack(it) },
+        )
     }
     // Play queue (Fix 4): bottom sheet listing the current queue with
     // the playing track highlighted; tapping a row plays it from there.

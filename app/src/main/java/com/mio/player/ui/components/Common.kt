@@ -154,19 +154,24 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
  *  the UI layer only (WaveformTap's levels are untouched):
  *      norm   = sqrt(min(level * WAVEFORM_GAIN, 1f))   // GAIN = 4
  *      height = WAVEFORM_MIN_HEIGHT_DP + norm * (ROW_HEIGHT_DP - MIN)
- *  Computed heights on the 112 dp row (min stub 10 dp):
+ *  Computed heights on the 88 dp row (min stub 10 dp, v1.1.12 —
+ *  was the 112 dp row):
  *      level 0.00  -> norm 0.000 ->  10.0 dp (short stub, never invisible)
- *      level 0.01  -> norm 0.200 ->  30.4 dp
- *      level 0.042 -> norm 0.410 ->  51.8 dp
- *      level 0.10  -> norm 0.632 ->  74.5 dp
- *      level 0.20  -> norm 0.894 -> 101.2 dp
- *      level 0.25  -> norm 1.000 -> 112.0 dp (full height)
+ *      level 0.01  -> norm 0.200 ->  25.6 dp
+ *      level 0.042 -> norm 0.410 ->  42.0 dp
+ *      level 0.10  -> norm 0.632 ->  59.3 dp
+ *      level 0.20  -> norm 0.894 ->  79.7 dp
+ *      level 0.25  -> norm 1.000 ->  88.0 dp (full height)
  *  Bars are painted with the theme gradient (Deep Wave:
  *  teal #14B8A6 -> cyan #22D3EE, vertical, bottom -> top), rounded,
  *  5 dp wide. */
 // Waveform scaling constants (v1.1.4, Fix 3 — was v1.1.3 GAIN = 12) —
 // see the LiveWaveform KDoc for the math and the computed heights.
-private const val WAVEFORM_ROW_HEIGHT_DP = 112f
+// v1.1.12: row height 112 -> 88 dp, matching VIS_ROW_HEIGHT_DP in
+// VisualizerStyles.kt — all five visualizer styles now share the
+// same 88 dp slot, so switching styles no longer jumps the layout
+// and the lyrics area gains 24 dp.
+private const val WAVEFORM_ROW_HEIGHT_DP = 88f
 private const val WAVEFORM_MIN_HEIGHT_DP = 10f
 private const val WAVEFORM_GAIN = 4f
 private const val WAVEFORM_LIVE_THRESHOLD = 0.005f
