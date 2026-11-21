@@ -48,6 +48,20 @@ import kotlin.math.roundToInt
  *    have opened an AudioTrack anyway. See the renderers-factory KDoc
  *    below. DSD tracks go into the playlist as raw URIs, so playback
  *    starts immediately with no pre-decode wait.
+ *  - v1.1.6 — THE root cause of "decoder never called" (read from Media3
+ *    1.9.0 SampleQueue.java, tag 1.9.0): DsdExtractor passed flags=0 to
+ *    sampleMetadata(), and SampleQueue drops every non-key-frame sample
+ *    while upstreamKeyframeRequired is true — silently, with no log. The
+ *    queue stayed empty while the extractor logged "delivered 8MB", so
+ *    the renderer read the format (decoder created) and then got
+ *    RESULT_NOTHING_READ forever. DsdExtractor now flags every packet
+ *    BUFFER_FLAG_KEY_FRAME (every stock Media3 audio extractor does the
+ *    same). The .so hash check now reads the .so from inside the APK
+ *    (v1.1.5 looked in nativeLibraryDir, where it never exists with
+ *    extractNativeLibs=false — false alarm), and a "DSD stall watch"
+ *    logs the live stall state every second while BUFFERING, because the
+ *    old post-error buffer-state line was read after the player had
+ *    already gone IDLE and could never describe the stall.
  *  - Fallback: if native decode fails for a track (DST-compressed .dff,
  *    an unsupported DSF variant, a malformed header), onPlayerError
  *    decodes it once to a cached PCM WAV with DsdDecoder (FFmpegKit)
@@ -339,6 +353,20 @@ class PlayerManager(private val ctx: Context) {
                         "DSD decode: codec=$codecName in=${inputSize}B result=$result out=${outputBytes}B"
                     )
                 }
+
+                override fun onRendererSupport(
+                    mimeType: String, formatSupport: Int, sink16Bit: Boolean, sinkFloat: Boolean
+                ) {
+                    // v1.1.6: proves the track-selection gate — the
+                    // FfmpegAudioRenderer was (or was not) picked for
+                    // this DSD format, and why. support: 4=HANDLED,
+                    // 3=EXCEEDS_CAPABILITIES, 2=UNSUPPORTED_DRM,
+                    // 1=UNSUPPORTED_SUBTYPE, 0=UNSUPPORTED_TYPE.
+                    MioLog.event(
+                        ctx,
+                        "DSD renderer support: $mimeType support=$formatSupport sink16=$sink16Bit sinkFloat=$sinkFloat"
+                    )
+                }
             }
         )
         runDsdDecodeProbe()
@@ -361,27 +389,47 @@ class PlayerManager(private val ctx: Context) {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) {
                     consecutiveErrors = 0
+                    stopDsdStallWatch()
                     maybePruneStaleDsdCache()
                     maybeLogDsdHeapOnReady()
+                } else if (state == Player.STATE_BUFFERING) {
+                    // v1.1.6: start the stall watchdog for DSD — see
+                    // startDsdStallWatch(). It logs the live stall state
+                    // every second while BUFFERING, so the next log shows
+                    // the stall AS IT HAPPENS instead of only the
+                    // post-error snapshot below.
+                    if (currentTrack?.let { DsdSupport.isDsd(it.path) } == true) {
+                        startDsdStallWatch()
+                    }
+                } else if (state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
+                    stopDsdStallWatch()
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
                 MioLog.event(ctx, "Player error: ${error.errorCodeName} ${error.message}")
-                // v1.1.5: buffer state at the error — the numbers that say
-                // whether the player was starved (loading, nothing
-                // buffered) or stalled WITH data queued (decoder/sink
-                // produced nothing while the loader had already delivered).
-                // The v1.1.2–v1.1.4 StuckPlayerException was the second
-                // case: totalBuffered stayed at the 8 MiB cap while
-                // isLoading=false, i.e. the loader was done and the
-                // decoder had not consumed/emitted. Do NOT "fix" a stall
-                // by raising the load-control targets or disabling the
-                // stuck detector — the detector is the thing reporting
-                // correctly here.
+                stopDsdStallWatch()
+                // v1.1.6: the numbers below are read AFTER the fatal
+                // error, when the player has ALREADY gone to STATE_IDLE
+                // (state=1) and released its buffers — they describe the
+                // post-error state, NOT the stall. The v1.1.2–v1.1.4
+                // comment that used to sit here ("totalBuffered stayed
+                // at the 8 MiB cap while isLoading=false") was wrong on
+                // its face: the log itself said buffered=0us, because
+                // the SampleQueue was EMPTY — the extractor's samples
+                // were being dropped at the queue's key-frame gate
+                // (DsdExtractor KDoc, v1.1.6), not starved by the
+                // loader. Do NOT diagnose a stall from this line; use
+                // the "DSD stall watch" lines logged while BUFFERING
+                // (startDsdStallWatch): buffered=0us there with the
+                // loader finished means the queue is empty, buffered>0us
+                // means the stall is downstream of the queue. And do NOT
+                // "fix" a stall by raising the load-control targets or
+                // disabling the stuck detector — the detector is the
+                // thing reporting correctly here.
                 runCatching {
                     MioLog.event(
                         ctx,
-                        "Player error buffer state: state=${player.playbackState} " +
+                        "Player error buffer state (POST-ERROR, player already IDLE/reset — not the stall state): state=${player.playbackState} " +
                             "isLoading=${player.isLoading} " +
                             "buffered=${player.totalBufferedDuration}us " +
                             "bufferedPos=${player.bufferedPosition}ms " +
@@ -608,8 +656,64 @@ class PlayerManager(private val ctx: Context) {
         }
     }
 
+    // v1.1.6: the DSD stall watchdog. The old "Player error buffer
+    // state" line was read after the fatal error (player already IDLE,
+    // buffers released), so it could never describe the stall — and its
+    // comment even claimed the opposite of what the numbers said. This
+    // logs the LIVE state once a second while a DSD track sits in
+    // STATE_BUFFERING, so the next user log captures the stall as it
+    // happens. How to read it:
+    //  - buffered=0us + isLoading=true: the loader is still filling the
+    //    queue (extractor/loader side — check the "DSD first sample" /
+    //    "delivered 8MB" lines).
+    //  - buffered=0us + isLoading=false: the loader is DONE and the
+    //    queue is EMPTY — samples are being dropped before the renderer
+    //    (the v1.1.5 failure mode: the extractor's key-frame gate).
+    //  - buffered>0us + pos stuck at 0: the queue HAS data but the
+    //    decoder/sink produces nothing — the stall is downstream of the
+    //    queue (check the "DSD decode:" lines).
+    // Started from onPlaybackStateChanged (BUFFERING on a DSD track),
+    // stopped on READY / IDLE / ENDED / error / release. Main-thread
+    // Handler, same pattern as the sleep timer below.
+    private val stallWatchHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var stallWatchRunnable: Runnable? = null
+
+    private fun startDsdStallWatch() {
+        if (stallWatchRunnable != null) return
+        val r = object : Runnable {
+            override fun run() {
+                val t = currentTrack
+                if (t == null || !DsdSupport.isDsd(t.path)
+                    || player.playbackState != Player.STATE_BUFFERING
+                ) {
+                    stopDsdStallWatch()
+                    return
+                }
+                runCatching {
+                    MioLog.event(
+                        ctx,
+                        "DSD stall watch: state=${player.playbackState} " +
+                            "isLoading=${player.isLoading} " +
+                            "buffered=${player.totalBufferedDuration}us " +
+                            "bufferedPos=${player.bufferedPosition}ms " +
+                            "pos=${player.currentPosition}ms " +
+                            "duration=${player.duration}ms"
+                    )
+                }
+                stallWatchHandler.postDelayed(this, 1_000)
+            }
+        }
+        stallWatchRunnable = r
+        stallWatchHandler.postDelayed(r, 1_000)
+    }
+
+    private fun stopDsdStallWatch() {
+        stallWatchRunnable?.let { stallWatchHandler.removeCallbacks(it) }
+        stallWatchRunnable = null
+    }
+
     fun isDsdCurrent(): Boolean = currentTrack?.let { DsdSupport.isDsd(it.path) } ?: false
-    fun release() { scope.cancel(); fx.release(); waveform.release(); player.release() }
+    fun release() { stopDsdStallWatch(); scope.cancel(); fx.release(); waveform.release(); player.release() }
 
     /** v1.1.5 native-DSD wiring probe (see the init call). Logs at app start
      *  so the next user log proves or kills the wiring hypothesis without
@@ -620,10 +724,15 @@ class PlayerManager(private val ctx: Context) {
      *  `dsd=false` with available=true means the .so loaded but has no
      *  DSD decoder (e.g. it was built without the DSD codec or without
      *  the JNI channel-layout patch — see DsdExtractor's KDoc).
-     *  `soShaMatch=false` means the loaded .so is NOT the build the app
+     *  `soShaMatch=false` means the hashed .so is NOT the build the app
      *  was verified against (stale/unpatched .so — the v1.1.2 failure
-     *  mode); playback continues, but native DSD is suspect until the
-     *  .so is rebuilt and this line reads true. */
+     *  mode); `soShaMatch=unknown` means the .so could not be located to
+     *  hash at all (NOT a mismatch — v1.1.5 printed false here because it
+     *  looked in nativeLibraryDir, where the file never exists with
+     *  extractNativeLibs=false; v1.1.6 hashes the APK entry instead, and
+     *  the probe's decodeResult>0 is the authoritative proof when the
+     *  hash is unavailable). Playback continues in all cases, but native
+     *  DSD is suspect until this line reads true or the probe passes. */
     private fun logNativeDsdProbe() {
         runCatching {
             val available = FfmpegLibrary.isAvailable()
@@ -645,7 +754,7 @@ class PlayerManager(private val ctx: Context) {
                 ctx,
                 "Native DSD probe: ffmpegAvailable=$available version=$version dsd=$dsd dff=$dff rendererClass=$renderer " +
                     "hasDsdLsbfPlanar=$hasLsbfPlanar hasDsdMsbfPlanar=$hasMsbfPlanar " +
-                    "hasDsdLsbf=$hasLsbf hasDsdMsbf=$hasMsbf float=$ENABLE_AUDIO_FLOAT_OUTPUT soShaMatch=$soShaMatch"
+                    "hasDsdLsbf=$hasLsbf hasDsdMsbf=$hasMsbf float=$ENABLE_AUDIO_FLOAT_OUTPUT soShaMatch=${soShaMatch?.toString() ?: "unknown"}"
             )
         }.onFailure {
             MioLog.event(ctx, "Native DSD probe FAILED: ${it::class.java.simpleName}: ${it.message}")
@@ -653,21 +762,81 @@ class PlayerManager(private val ctx: Context) {
     }
 
     /**
-     * v1.1.5: hashes the loaded libffmpegJNI.so and compares it with the
-     * expected build (EXPECTED_FFMPEG_SO_SHA256). Logs the hash and the
-     * match, returns the match (false when the file cannot be read — the
-     * probe line then says soShaMatch=false and native DSD is suspect).
-     * Log-only: a mismatch never blocks playback; the FFmpegKit transcode
-     * fallback still works.
+     * v1.1.6: hashes the shipped libffmpegJNI.so and compares it with the
+     * expected build (EXPECTED_FFMPEG_SO_SHA256). The .so is read from
+     * INSIDE the APK (lib/<abi>/libffmpegJNI.so in the base APK or a
+     * split APK), NOT from nativeLibraryDir — with extractNativeLibs=false
+     * (the AGP default) the .so is loaded straight from the APK and never
+     * extracted to nativeLibraryDir, so the v1.1.5 check looked for a
+     * file that could never exist and cried "NOT FOUND /
+     * soShaMatch=false" on a correct build. The nativeLibraryDir file is
+     * still tried as a fallback (devices/builds that do extract it).
+     * Returns true (match), false (mismatch — stale/unpatched .so, the
+     * v1.1.2 failure mode) or null (the .so could not be located anywhere
+     * to hash — NOT a mismatch; the startup probe's decodeResult>0 is
+     * then the authoritative proof the .so works). Log-only: a mismatch
+     * never blocks playback; the FFmpegKit transcode fallback still works.
      */
-    private fun logLoadedFfmpegSoSha(): Boolean {
+    private fun logLoadedFfmpegSoSha(): Boolean? {
         return runCatching {
-            val dir = ctx.applicationInfo.nativeLibraryDir
-            val so = File(dir, "libffmpegJNI.so")
-            if (!so.exists()) {
-                MioLog.event(ctx, "DSD .so check: libffmpegJNI.so NOT FOUND in $dir")
-                return false
+            val found = hashFfmpegSoFromApk() ?: hashFfmpegSoFromNativeLibDir()
+            if (found == null) {
+                MioLog.event(
+                    ctx,
+                    "DSD .so check: libffmpegJNI.so not found in APK lib entries or nativeLibraryDir — cannot hash; the startup probe (decodeResult>0) is the authoritative .so proof"
+                )
+                return null
             }
+            val (sha, sizeBytes, source) = found
+            val match = sha.equals(EXPECTED_FFMPEG_SO_SHA256, ignoreCase = true)
+            MioLog.event(
+                ctx,
+                "DSD .so check: sha256=${sha.take(16)}… expected=${EXPECTED_FFMPEG_SO_SHA256.take(16)}… match=$match size=${sizeBytes}B source=$source"
+            )
+            match
+        }.onFailure {
+            MioLog.event(ctx, "DSD .so check FAILED: ${it::class.java.simpleName}: ${it.message}")
+            null
+        }.getOrDefault(null)
+    }
+
+    /** Hashes lib/<abi>/libffmpegJNI.so from the base APK or any split APK.
+     *  Returns (sha256, uncompressed size, "apk:<abi>"), or null when no APK
+     *  contains the entry. */
+    private fun hashFfmpegSoFromApk(): Triple<String, Long, String>? {
+        val apkPaths = listOfNotNull(ctx.applicationInfo?.sourceDir) +
+            (ctx.applicationInfo?.splitSourceDirs?.toList().orEmpty())
+        // The build only ships arm64-v8a, but try every ABI so a future
+        // multi-ABI build still hashes the .so that actually loads.
+        val abis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        for (apk in apkPaths) {
+            runCatching {
+                java.util.zip.ZipFile(File(apk)).use { zip ->
+                    for (abi in abis) {
+                        val entry = zip.getEntry("lib/$abi/libffmpegJNI.so") ?: continue
+                        val digest = MessageDigest.getInstance("SHA-256")
+                        zip.getInputStream(entry).use { input ->
+                            val buf = ByteArray(8192)
+                            var n: Int
+                            while (input.read(buf).also { n = it } > 0) digest.update(buf, 0, n)
+                        }
+                        val sha = digest.digest().joinToString("") { "%02x".format(it) }
+                        return Triple(sha, entry.size, "apk:$abi")
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /** Fallback for builds/devices that extract native libs: hash the file
+     *  in nativeLibraryDir. Returns (sha256, size, "nativeLibraryDir") or
+     *  null when the file is absent. */
+    private fun hashFfmpegSoFromNativeLibDir(): Triple<String, Long, String>? {
+        return runCatching {
+            val dir = ctx.applicationInfo?.nativeLibraryDir ?: return null
+            val so = File(dir, "libffmpegJNI.so")
+            if (!so.exists()) return null
             val digest = MessageDigest.getInstance("SHA-256")
             so.inputStream().use { input ->
                 val buf = ByteArray(8192)
@@ -675,16 +844,8 @@ class PlayerManager(private val ctx: Context) {
                 while (input.read(buf).also { n = it } > 0) digest.update(buf, 0, n)
             }
             val sha = digest.digest().joinToString("") { "%02x".format(it) }
-            val match = sha.equals(EXPECTED_FFMPEG_SO_SHA256, ignoreCase = true)
-            MioLog.event(
-                ctx,
-                "DSD .so check: sha256=${sha.take(16)}… expected=${EXPECTED_FFMPEG_SO_SHA256.take(16)}… match=$match size=${so.length()}B"
-            )
-            match
-        }.onFailure {
-            MioLog.event(ctx, "DSD .so check FAILED: ${it::class.java.simpleName}: ${it.message}")
-            false
-        }.getOrDefault(false)
+            Triple(sha, so.length(), "nativeLibraryDir")
+        }.getOrNull()
     }
 
     /**

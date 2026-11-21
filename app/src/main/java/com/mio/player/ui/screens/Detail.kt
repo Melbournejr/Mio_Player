@@ -117,13 +117,23 @@ import kotlinx.coroutines.launch
     var lines by remember { mutableStateOf(listOf<com.mio.player.data.model.LyricLine>()) }
     var plain by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf("Searching…") }
+    // v1.1.6: true while the fetch runs, so the screen shows a
+    // loading state instead of "No synced lyrics found" before the
+    // lookup has even finished.
+    var loadingLyrics by remember { mutableStateOf(true) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(t?.id) {
+        loadingLyrics = true
         t?.let {
             val repo = (ctx.applicationContext as com.mio.player.MioApp).container.lyricsRepo
-            val r = repo.getLyrics(it.artist, it.title, it.album, it.durationMs, it.path, vm.pm.player.duration.takeIf { d -> d > 0 } ?: 0)
-            lines = r?.synced ?: emptyList(); plain = r?.plain; source = r?.source ?: "No lyrics found"
-        }
+            // v1.1.6: pass the track's content Uri so EmbeddedLyrics
+            // can open SAF tracks (their path is folder-relative).
+            runCatching {
+                val r = repo.getLyrics(it.artist, it.title, it.album, it.durationMs, it.path, vm.pm.player.duration.takeIf { d -> d > 0 } ?: 0, it.uri.toString())
+                lines = r?.synced ?: emptyList(); plain = r?.plain; source = r?.source ?: "No lyrics found"
+            }
+            loadingLyrics = false
+        } ?: run { loadingLyrics = false }
     }
     // Live sync: follow the player's real position, highlight the line
     // being sung in teal, and auto-scroll to it (the PDF requires this;
@@ -133,8 +143,37 @@ import kotlinx.coroutines.launch
     LaunchedEffect(playing, t?.id) { while (playing) { pos = vm.pm.player.currentPosition; kotlinx.coroutines.delay(250) } }
     val currentIndex = lines.indexOfLast { it.timeMs <= pos }.coerceAtLeast(0)
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(currentIndex) {
-        if (lines.isNotEmpty()) runCatching { listState.animateScrollToItem((currentIndex - 2).coerceAtLeast(0)) }
+    // v1.1.6: same centre-scroll as NowPlaying — the old
+    // animateScrollToItem(currentIndex - 2) parked the current line
+    // near the top edge and re-animated on every line change. The
+    // current line is now scrolled to the CENTRE, only when it leaves
+    // the middle third of the viewport; a small move animates, a big
+    // jump snaps. And the highlight no longer requires `playing`.
+    LaunchedEffect(currentIndex, lines.size) {
+        if (lines.isEmpty()) return@LaunchedEffect
+        runCatching {
+            val info = listState.layoutInfo
+            val viewportH = info.viewportSize.height
+            val visible = info.visibleItemsInfo
+            if (viewportH <= 0 || visible.isEmpty()) {
+                listState.scrollToItem(currentIndex)
+                return@runCatching
+            }
+            val current = visible.firstOrNull { it.index == currentIndex }
+            val inCentre = current != null &&
+                current.offset >= viewportH / 3 && current.offset <= 2 * viewportH / 3
+            if (inCentre) return@runCatching
+            val avgItem = visible.map { it.size }.average().takeIf { it > 0 }?.toInt() ?: 0
+            val halfLines = if (avgItem > 0) (viewportH / 2) / avgItem else 2
+            val targetFirst = (currentIndex - halfLines).coerceAtLeast(0)
+            val firstVisible = visible.firstOrNull()?.index ?: currentIndex
+            if (targetFirst == firstVisible) return@runCatching
+            if (kotlin.math.abs(targetFirst - firstVisible) <= 3) {
+                listState.animateScrollToItem(targetFirst)
+            } else {
+                listState.scrollToItem(targetFirst)
+            }
+        }
     }
     Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         Text(t?.title ?: "Lyrics", color = MioText, fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
@@ -143,10 +182,10 @@ import kotlinx.coroutines.launch
         LazyColumn(Modifier.weight(1f), state = listState) {
             if (lines.isNotEmpty()) items(lines.size) { i ->
                 val l = lines[i]
-                val isCurrent = i == currentIndex && playing
+                val isCurrent = i == currentIndex
                 Text(l.text, color = if (isCurrent) MioCyan else MioText, fontSize = if (isCurrent) 20.sp else 18.sp, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.padding(vertical = 8.dp))
             }
-            else item { Text(plain ?: "No synced lyrics found. LRCLIB, embedded lyrics and sidecar .lrc files are checked automatically.", color = MioTextSecondary) }
+            else item { Text(if (loadingLyrics) "Đang tìm lời…" else (plain ?: "No synced lyrics found. LRCLIB, embedded lyrics and sidecar .lrc files are checked automatically."), color = MioTextSecondary) }
         }
     }
 }

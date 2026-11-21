@@ -13,22 +13,40 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URLEncoder
-/** Lyrics: sidecar .lrc -> LRCLIB (free, no key) -> lyrics.ovh (free,
- *  plain lyrics only) -> cache in Room.
+/** Lyrics: sidecar .lrc -> embedded tags (USLT/SYLT, FLAC/OGG LYRICS)
+ *  -> LRCLIB (free, no key) -> Netease -> lyrics.ovh (free, plain
+ *  lyrics only) -> cache in Room.
  *  API: GET https://lrclib.net/api/get?artist_name=&track_name=&album_name=&duration=
  *       GET https://lrclib.net/api/search?track_name=&artist_name=
  *       GET https://api.lyrics.ovh/v1/{artist}/{title}
  *  Synced lyrics are parsed from LRC [mm:ss.xx] lines.
- *  NOTE: embedded lyrics are NOT read (no reliable MediaMetadataRetriever
- *  key for them); the sidecar .lrc file next to the song is the local
- *  source that always works.
+ *  1.1.6: embedded lyrics ARE now read (EmbeddedLyrics.kt — ID3v2
+ *  USLT/SYLT, FLAC/OGG Vorbis comment). Android's
+ *  MediaMetadataRetriever has no public USLT/SYLT key, so the old
+ *  "NOT read" note meant "not readable that way", not "impossible".
+ *  1.1.6: NO dedicated Vietnamese lyrics site is wired in. Verified
+ *  2026-11-21 with live requests: LRCLIB already returns SYNCED
+ *  lyrics for Vietnamese songs (Quân A.P "Bông Hoa Đẹp Nhất",
+ *  Sơn Tùng M-TP "Chạy Ngay Đi", Đen "Đưa Nhau Đi Trốn", Mỹ Tâm
+ *  "Người Hãy Quên Em Đi" — all synced=yes), and lyrics.ovh has some
+ *  too. The gap for Vietnamese tracks was never the source: it was
+ *  the QUERY — site-name folders ("NhacCuaTui.Com") taken for the
+ *  artist, and "Title - Artist" filenames read backwards, so LRCLIB
+ *  was asked for the wrong artist/title. Zing MP3's API returns
+ *  403 without its signed session, NhacCuaTui redirects bot traffic
+ *  (302), so neither could be verified and neither is wired in.
+ *  What fixes Vietnamese coverage here is the derivation below
+ *  (both filename orders tried, site folders ignored, junk metadata
+ *  artist dropped) plus embedded + sidecar, not a new source.
  *  1.0.12: two more reasons lyrics came out wrong or missing.
  *  (a) CACHE POISONING: a wrong lyric fetched once (e.g. a cover, or a
  *  same-name song by another artist) was cached forever and served on
- *  every later play, even after the lookup logic improved. The cache is
- *  now cleared once when the lyrics engine version bumps (see
- *  clearStaleCacheIfNeeded, called from MioApp.onCreate), so every song
- *  is re-fetched with the current logic.
+ *  every later play, even after the lookup logic improved. The old fix
+ *  cleared the cache once when the lyrics engine version bumped (see
+ *  clearStaleCacheIfNeeded) — 1.1.6 replaces that with a schema-only
+ *  clear, because the bump also wiped every GOOD lyric on upgrade /
+ *  reinstall. A wrong cached lyric is now the rare exception, not the
+ *  rule, and clearCache() is the explicit way to drop it.
  *  1.1.2: the artist itself was wrong — deriveArtistAlbumFromPath
  *  mistook Android path junk ("0" in /storage/emulated/0/...) for the
  *  artist, and "Adele 25-2015" for an artist name, so every source
@@ -39,16 +57,49 @@ import java.net.URLEncoder
 class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
     private val client = OkHttpClient()
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
-    /** One-time cache clear when the lyrics engine changes, so stale
-     *  wrong lyrics fetched by an older, dumber lookup are re-fetched
-     *  instead of being served forever. */
+    /** Cache policy, v1.1.6 — replaces the engine-version wipe.
+     *  The old code cleared the WHOLE lyrics cache whenever the
+     *  lookup engine version bumped, and on a fresh install (stored
+     *  version 0 < 3) it logged "Lyrics cache cleared (engine v3)"
+     *  even though the wipe was just the bump, not a real problem.
+     *  A lyric fetched by an older lookup is still a valid lyric when
+     *  only the lookup LOGIC changed — the schema did not — so now
+     *  the cache is cleared ONLY when its stored SCHEMA version is
+     *  older than [LYRICS_CACHE_SCHEMA] (i.e. LyricsEntity changed
+     *  shape and old rows are unreadable). A first run of this code
+     *  stamps the current schema WITHOUT clearing: a fresh install
+     *  has an empty DB anyway, and an upgrade keeps every lyric the
+     *  user already fetched. (Reinstall note: Room + SharedPrefs are
+     *  both in app data, so a reinstall without an Auto Backup restore
+     *  still loses the cache — nothing in this repo can preserve that;
+     *  the manifest already has allowBackup=true, so a restore keeps
+     *  both the DB and this stamp together and no wipe fires.)
+     *  Failures are still never cached, so a later retry can succeed.
+     *  Name and call site (MioApp.onCreate) are unchanged on purpose. */
+    companion object { const val LYRICS_CACHE_SCHEMA = 1 }
     suspend fun clearStaleCacheIfNeeded() {
         val prefs = ctx.getSharedPreferences("mio_lyrics", Context.MODE_PRIVATE)
-        if (prefs.getInt("engine_version", 0) < 3) {
-            withContext(Dispatchers.IO) { db.lyricsDao().clearAll() }
-            prefs.edit().putInt("engine_version", 3).apply()
-            MioLog.event(ctx, "Lyrics cache cleared (engine v3)")
+        val stored = prefs.getInt("lyrics_cache_schema", -1)
+        if (stored == -1) {
+            prefs.edit().putInt("lyrics_cache_schema", LYRICS_CACHE_SCHEMA).apply()
+            MioLog.event(ctx, "Lyrics cache kept (first run, schema v$LYRICS_CACHE_SCHEMA)")
+            return
         }
+        if (stored < LYRICS_CACHE_SCHEMA) {
+            withContext(Dispatchers.IO) { db.lyricsDao().clearAll() }
+            prefs.edit().putInt("lyrics_cache_schema", LYRICS_CACHE_SCHEMA).apply()
+            MioLog.event(ctx, "Lyrics cache cleared (schema v$stored -> v$LYRICS_CACHE_SCHEMA)")
+        }
+        // stored == current: keep everything. No log line here — the
+        // old "cache cleared" line on every fresh install was noise
+        // that looked like a bug in the user's log.
+    }
+    /** Explicit, user-triggered cache clear (e.g. a "Clear lyrics
+     *  cache" button). The only way the cache is wiped now, besides
+     *  a real schema change above. No UI wires this yet. */
+    suspend fun clearCache() {
+        withContext(Dispatchers.IO) { db.lyricsDao().clearAll() }
+        MioLog.event(ctx, "Lyrics cache cleared (user)")
     }
     /** "A1.Hello" -> "Hello", "B2.River Lea" -> "River Lea",
      *  "01 - Hello" -> "Hello", "Hello (2015 Remaster)" -> "Hello".
@@ -83,10 +134,40 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         // An all-digit segment ("0" in /storage/emulated/0, a year, a
         // disc number) never names an artist or album.
         if (n in genericFolderNames || (n.isNotEmpty() && n.all { it.isDigit() })) return true
+        // 1.1.6: a download-site / collection folder ("NhacCuaTui.Com",
+        // "Zing MP3", "Music Viet-Au My") names the SITE, never the
+        // artist — the old code took it for the artist and every
+        // source missed. See isSiteName.
+        if (isSiteName(name)) return true
         // A reverse-domain package segment (com.foo, com.mio.player)
         // under Android/data/... is path junk, not an artist. Each
         // dot-part must be 2+ chars so "R.E.M." is not caught.
         return n.matches(Regex("""[a-z0-9_]{2,}(\.[a-z0-9_]{2,})+"""))
+    }
+    /** 1.1.6: download-site / collection names. Compared on a key of
+     *  lowercase letters+digits only, so "NhacCuaTui.Com", "Zing MP3"
+     *  and "zingmp3.vn" all match their key. These appear as FOLDERS
+     *  (".../NhacCuaTui.Com/Artist - Title.flac") and as bogus
+     *  METADATA artists when a ripper wrote the site name into the
+     *  artist tag — both are junk for a lyrics query. */
+    private val siteNameKeys = setOf(
+        "nhaccuatui", "nhaccuatuicom", "zing", "zingmp3", "zingmp3vn",
+        "nhacviet", "nhactre", "nhaccuatoi", "musicvietaumy", "vietaumy"
+    )
+    private fun siteKey(s: String): String = s.lowercase().filter { it.isLetterOrDigit() }
+    private fun isSiteName(s: String): Boolean = siteKey(s) in siteNameKeys
+    /** 1.1.6: a metadata artist that must NOT be queried with — an
+     *  unknown placeholder, a site name, "Various Artists", or
+     *  something with no letters at all. Such an artist is treated as
+     *  unknown, so the filename split / path derivation runs instead
+     *  of sending "NhacCuaTui.Com" to LRCLIB. The REAL metadata
+     *  artist (Adele, Quân A.P, …) is untouched and still wins. */
+    private fun isJunkArtist(s: String): Boolean {
+        val t = s.trim()
+        if (t.isEmpty() || isUnknownArtist(t)) return true
+        if (isSiteName(t)) return true
+        if (!t.any { it.isLetter() }) return true
+        return t.lowercase() in setOf("various artists", "various", "unknown")
     }
     /** "Adele 25-2015" -> "Adele": library folders are often named
      *  "Artist Album-Year" or "Artist Year", and the year / album
@@ -163,7 +244,11 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
      *  player's real length is used instead — it is what lets the
      *  duration check tell Adele's Hello (296 s) from Lionel Richie's
      *  (251 s). Defaults to 0, so existing 5-arg callers are unaffected. */
-    suspend fun getLyrics(artist: String, title: String, album: String?, durationMs: Long, audioPath: String?, playerDurationMs: Long = 0): Lyrics? {
+    /** 1.1.6: [audioUri] is the track's content Uri (Track.uri). SAF
+     *  tracks have only a RELATIVE path, so File(path) never resolves
+     *  for them — the Uri is what lets EmbeddedLyrics open the file.
+     *  Defaults to null, so existing 6-arg callers are unaffected. */
+    suspend fun getLyrics(artist: String, title: String, album: String?, durationMs: Long, audioPath: String?, playerDurationMs: Long = 0, audioUri: String? = null): Lyrics? {
         db.lyricsDao().get(artist, title)?.let { e ->
             return Lyrics(0, parseLrc(e.syncedLrc), e.plainText, e.source)
         }
@@ -175,109 +260,144 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
             val lrc = File(p.substringBeforeLast('.') + ".lrc")
             if (lrc.exists()) { val lines = parseLrc(lrc.readText()); if (lines.isNotEmpty()) return cache(artist, title, album, effDurationMs, lines, null, "sidecar .lrc") }
         }
-        // Work out what to search for. MediaStore often has no real artist
-        // ("Unknown Artist") and no real album ("Unknown Album") — sending
-        // those to LRCLIB makes the exact lookup fail, so they are dropped.
-        // Many local files are named "Artist - Title.ext": use that.
-        var searchArtist = artist.takeIf { it.isNotBlank() && !isUnknownArtist(it) }
-        var searchTitle = title
-        if (searchArtist == null) {
-            val base = audioPath?.substringAfterLast('/')?.substringBeforeLast('.') ?: title
-            val parts = base.split(" - ", limit = 2)
-            if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
-                // 1.1.2: a filename artist with no letters ("0 - Hello")
-                // is junk, not an artist — leave it unknown so the path
-                // derivation / artist-less search can run instead.
-                searchArtist = parts[0].trim().takeIf { it.any { c -> c.isLetter() } }
-                searchTitle = parts[1].trim()
+        // 1b) 1.1.6: embedded lyrics in the file's own tags (ID3v2
+        // USLT/SYLT, FLAC/OGG Vorbis LYRICS) — before any remote
+        // source, because the tag names THIS recording, no guessing.
+        // Runs only when there is a file to open (absolute path or
+        // content Uri); a miss just falls through to the remotes.
+        runCatching { EmbeddedLyrics.read(ctx, audioPath, audioUri) }.getOrNull()?.let { emb ->
+            val lines = parseLrc(emb.syncedLrc)
+            if (lines.isNotEmpty()) {
+                MioLog.event(ctx, "Lyrics embedded HIT (synced): $artist - $title")
+                return cache(artist, title, album, effDurationMs, lines, null, "embedded")
+            }
+            emb.plainText?.takeIf { it.isNotBlank() }?.let { plain ->
+                MioLog.event(ctx, "Lyrics embedded HIT (plain): $artist - $title")
+                return cache(artist, title, album, effDurationMs, emptyList(), plain, "embedded")
             }
         }
+        // Work out what to search for, as (artist, title) candidate
+        // PAIRS in priority order — 1.1.6.
+        // - A real metadata artist wins outright (Adele stays Adele).
+        // - A junk metadata artist (site name, "Unknown Artist",
+        //   "Various Artists") counts as unknown, so the filename /
+        //   path derivation below runs instead of querying LRCLIB
+        //   with "NhacCuaTui.Com".
+        // - With no usable artist, the filename "A - B" is tried in
+        //   BOTH orders: Vietnamese download sites name files
+        //   "Title - Artist" ("Anh Đã Quen Với Cô Đơn - Kaisoul")
+        //   as often as "Artist - Title", and the old code only tried
+        //   one order — the reversed file asked LRCLIB for artist
+        //   "Anh Đã Quen Với Cô Đơn" and title "Kaisoul", which can
+        //   never match anything. trySearch verifies artist AND title,
+        //   so the wrong order just misses and the right one hits.
+        // - The path-derived artist is the last pair, and the album
+        //   is filled from the path when the metadata album is unknown.
+        val metaArtist = artist.takeIf { it.isNotBlank() && !isJunkArtist(it) }
+        val metaTitle = title.trim()
+        val pairs = linkedSetOf<Pair<String?, String>>()
         var searchAlbum = album?.takeIf { it.isNotBlank() && !isUnknownAlbum(it) }
-        // 1.1.1 FIX 4: artist still unknown — derive it from the file
-        // path. The screenshot proved the track artist is "<unknown>":
-        // with a null query artist, matchesArtist() returns true for
-        // ANY artist, so trySearch accepted the first same-title hit —
-        // Adele's "Hello" got (very likely) Lionel Richie's "Hello".
-        // Local libraries are usually laid out Artist/Album/file or
-        // "Artist - Album"/file, so the folders name the artist/album
-        // even when MediaStore and the filename do not. This runs only
-        // when the filename "Artist - Title" split above did not yield
-        // an artist (the derived album is also used to fill a missing
-        // album, even when the artist came from the filename). Caching
-        // still uses the ORIGINAL artist/title (cacheArtist/cacheTitle
-        // below), so a later fix re-fetches under the same cache key.
         var folderArtist: String? = null
         var folderAlbum: String? = null
-        if (searchArtist == null || searchAlbum == null) {
+        if (metaArtist == null || searchAlbum == null) {
             val derived = deriveArtistAlbumFromPath(audioPath)
             folderArtist = derived.first; folderAlbum = derived.second
-            if (searchArtist == null && folderArtist != null) searchArtist = folderArtist
-            if (searchAlbum == null && folderAlbum != null) searchAlbum = folderAlbum
+            if (searchAlbum == null) searchAlbum = folderAlbum
+        }
+        if (metaArtist != null) {
+            if (metaTitle.isNotEmpty()) pairs += metaArtist to metaTitle
+        } else {
+            val base = audioPath?.substringAfterLast('/')?.substringBeforeLast('.') ?: metaTitle
+            val parts = base.split(" - ", limit = 2).map { it.trim() }
+                .filter { it.isNotBlank() && it.any { c -> c.isLetter() } }
+            if (parts.size == 2) {
+                pairs += parts[0] to parts[1]
+                pairs += parts[1] to parts[0]
+            } else if (metaTitle.isNotEmpty()) {
+                pairs += null to metaTitle
+            }
+            if (folderArtist != null && metaTitle.isNotEmpty()) pairs += folderArtist to metaTitle
+        }
+        if (pairs.isEmpty()) {
+            MioLog.event(ctx, "Lyrics: no match for title=\"$metaTitle\" artist=${metaArtist ?: "?"} durMs=$effDurationMs (no query pair)")
+            return null
         }
         // 1.1.2: diagnostics — the next user log shows exactly what was
         // derived from the path and what was queried with.
-        MioLog.event(ctx, "Lyrics query: title=\"$searchTitle\" artist=${searchArtist ?: "?"} (path-derived: ${folderArtist ?: "-"} / ${folderAlbum ?: "-"}) album=${searchAlbum ?: "?"} durMs=$effDurationMs path=$audioPath")
-        val cleanArtist = searchArtist?.let { normalizeArtist(it) }
-        val titleVariants = listOf(searchTitle, normalizeTitle(searchTitle)).distinct()
+        MioLog.event(ctx, "Lyrics query: pairs=${pairs.joinToString { (a, t) -> "${a ?: "?"} / $t" }} (path-derived: ${folderArtist ?: "-"} / ${folderAlbum ?: "-"}) album=${searchAlbum ?: "?"} durMs=$effDurationMs path=$audioPath")
         // Query with the cleaned artist; cache under the ORIGINAL
-        // artist/title so the next play of the same track hits the cache.
-        val queryArtist = cleanArtist ?: searchArtist
+        // artist/title (the lookup key at the top of this function),
+        // so a hit found via a normalized or reversed variant is
+        // actually served from cache on the next play. The old code
+        // cached under the title VARIANT, so a normalized hit was
+        // re-fetched on every play.
+        // 1.1.6: every phase below runs per candidate pair, in pair
+        // order, so "Artist - Title" is tried before "Title - Artist"
+        // and the path-derived artist last. With a single pair (the
+        // normal case — a real metadata artist, e.g. Adele) the
+        // sequence is byte-for-byte the old one: LRCLIB /get (no
+        // album, album, no duration), LRCLIB /search, Netease,
+        // lyrics.ovh, artist-less search. That Adele path is proven
+        // by the user's 1.1.5 log and must not change.
+        fun titleVariants(qTitle: String) = listOf(qTitle, normalizeTitle(qTitle)).distinct()
         // 2) LRCLIB exact lookup. Try each title variant (raw, then
         //    normalized), without album first (an album mismatch is the
         //    most common reason the exact lookup fails), then with it,
         //    then without duration — a duration off by a few seconds
         //    (DSD tracks scanned via SAF report duration 0 or a rounded
         //    value) also makes the exact lookup miss.
-        if (queryArtist != null) {
-            for (title in titleVariants) {
-                tryGet(queryArtist, title, null, effDurationMs, artist, title)?.let { return it }
-                if (searchAlbum != null) tryGet(queryArtist, title, searchAlbum, effDurationMs, artist, title)?.let { return it }
-                if (effDurationMs > 0) tryGet(queryArtist, title, null, 0, artist, title)?.let { return it }
+        for ((qArtist, qTitle) in pairs) {
+            val queryArtist = qArtist?.let { normalizeArtist(it) } ?: continue
+            for (tv in titleVariants(qTitle)) {
+                tryGet(queryArtist, tv, null, effDurationMs, artist, title)?.let { return it }
+                if (searchAlbum != null) tryGet(queryArtist, tv, searchAlbum, effDurationMs, artist, title)?.let { return it }
+                if (effDurationMs > 0) tryGet(queryArtist, tv, null, 0, artist, title)?.let { return it }
             }
         }
         // 3) LRCLIB search by title (+ artist when known), each title
         //    variant in turn. Prefer a result that actually has synced
         //    lyrics, and among those the one whose duration is closest
         //    to the track (covers with the same name are common).
-        for (title in titleVariants) {
+        for ((qArtist, qTitle) in pairs) {
+            val queryArtist = qArtist?.let { normalizeArtist(it) }
             // 1.1.2: with no artist to check against, duration is the
             // only thing telling same-title songs apart — refuse a
             // result whose length is >15 s off the track.
             val maxDiff = if (queryArtist == null && effDurationMs > 0) 15L else Long.MAX_VALUE
-            trySearch(queryArtist, title, effDurationMs, artist, title, maxDiffSec = maxDiff)?.let { return it }
+            for (tv in titleVariants(qTitle)) {
+                trySearch(queryArtist, tv, effDurationMs, artist, title, maxDiffSec = maxDiff)?.let { return it }
+            }
         }
         // 4) Netease Cloud Music — free, no key, and it HAS synced LRC
         //    for many songs LRCLIB does not (huge catalogue, incl.
         //    Western pop). Search by "artist title", then fetch the
         //    song's LRC. Only used when LRCLIB found nothing.
-        if (queryArtist != null) {
-            for (title in titleVariants) {
-                tryNetease(queryArtist, title, effDurationMs, artist, title)?.let { return it }
+        for ((qArtist, qTitle) in pairs) {
+            val queryArtist = qArtist?.let { normalizeArtist(it) } ?: continue
+            for (tv in titleVariants(qTitle)) {
+                tryNetease(queryArtist, tv, effDurationMs, artist, title)?.let { return it }
             }
         }
         // 5) Last resort: lyrics.ovh — free, no key, plain lyrics only
         //    (no sync). Better than "No lyrics found" for songs neither
         //    LRCLIB nor Netease has.
-        if (queryArtist != null) {
-            for (title in titleVariants) {
-                tryLyricsOvh(queryArtist, title, artist, title)?.let { return it }
+        for ((qArtist, qTitle) in pairs) {
+            val queryArtist = qArtist?.let { normalizeArtist(it) } ?: continue
+            for (tv in titleVariants(qTitle)) {
+                tryLyricsOvh(queryArtist, tv, artist, title)?.let { return it }
             }
         }
-        // 6) 1.1.2 LAST RESORT: artist-less LRCLIB search. Reached when
-        //    the artist is unknown AND un-derivable, or when every
-        //    artist-based attempt above failed — e.g. the folder was
-        //    "Adele 25-2015" and the old code queried artist "0" or
-        //    "Adele 25-2015" and got nothing. Title must still match,
-        //    only synced lyrics are accepted, and the duration must be
-        //    within 15 s of the track (Adele's Hello 296 s vs Lionel
-        //    Richie's ~251 s). Skipped when the artist was already
-        //    unknown: step 3 already searched without one.
-        if (queryArtist != null) {
-            for (title in titleVariants) {
-                trySearch(null, title, effDurationMs, artist, title, requireSynced = true, maxDiffSec = if (effDurationMs > 0) 15L else Long.MAX_VALUE)?.let { return it }
-            }
+        // 6) 1.1.2 LAST RESORT: artist-less LRCLIB search, for every
+        //    distinct title candidate. This is what saves a track
+        //    whose artist is wrong in the metadata (e.g. the file says
+        //    "Kaisoul" but LRCLIB has the song under SOOBIN): the
+        //    title still matches, only synced lyrics are accepted, and
+        //    the duration must be within 15 s of the track (Adele's
+        //    Hello 296 s vs Lionel Richie's ~251 s).
+        for (tv in pairs.map { it.second }.flatMap { titleVariants(it) }.distinct()) {
+            trySearch(null, tv, effDurationMs, artist, title, requireSynced = true, maxDiffSec = if (effDurationMs > 0) 15L else Long.MAX_VALUE)?.let { return it }
         }
-        MioLog.event(ctx, "Lyrics: no match for title=\"$searchTitle\" artist=${searchArtist ?: "?"} durMs=$effDurationMs")
+        MioLog.event(ctx, "Lyrics: no match for title=\"$metaTitle\" artist=${metaArtist ?: "?"} durMs=$effDurationMs")
         return null
     }
     /** Compare ignoring case, punctuation, spaces and "feat." extras:

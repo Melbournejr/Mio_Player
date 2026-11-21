@@ -93,16 +93,50 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
   @Override
   protected @C.FormatSupport int supportsFormatInternal(Format format) {
     String mimeType = checkNotNull(format.sampleMimeType);
+    // Mio Player v1.1.6: report the selection verdict for DSD formats to the
+    // app's DSD listener (mio-log.txt) — this is the proof of the
+    // "track selection picked the wrong renderer" gate. A DSD track whose
+    // renderer reports anything but FORMAT_HANDLED never gets a decoder, and
+    // without this line the log would show neither a decoder init nor a
+    // decode — only the stall. Non-DSD formats are untouched (no logging).
+    boolean isDsd = "audio/dsd".equals(mimeType) || "audio/x-dsd-dff".equals(mimeType);
     if (!FfmpegLibrary.isAvailable() || !MimeTypes.isAudio(mimeType)) {
+      if (isDsd) {
+        reportRendererSupport(mimeType, C.FORMAT_UNSUPPORTED_TYPE, false, false);
+      }
       return C.FORMAT_UNSUPPORTED_TYPE;
-    } else if (!FfmpegLibrary.supportsFormat(mimeType)
-        || (!sinkSupportsFormat(format, C.ENCODING_PCM_16BIT)
-            && !sinkSupportsFormat(format, C.ENCODING_PCM_FLOAT))) {
+    }
+    boolean codecSupported = FfmpegLibrary.supportsFormat(mimeType);
+    boolean sink16Bit = sinkSupportsFormat(format, C.ENCODING_PCM_16BIT);
+    boolean sinkFloat = sinkSupportsFormat(format, C.ENCODING_PCM_FLOAT);
+    if (!codecSupported || (!sink16Bit && !sinkFloat)) {
+      if (isDsd) {
+        reportRendererSupport(mimeType, C.FORMAT_UNSUPPORTED_SUBTYPE, sink16Bit, sinkFloat);
+      }
       return C.FORMAT_UNSUPPORTED_SUBTYPE;
     } else if (format.cryptoType != C.CRYPTO_TYPE_NONE) {
+      if (isDsd) {
+        reportRendererSupport(mimeType, C.FORMAT_UNSUPPORTED_DRM, sink16Bit, sinkFloat);
+      }
       return C.FORMAT_UNSUPPORTED_DRM;
     } else {
+      if (isDsd) {
+        reportRendererSupport(mimeType, C.FORMAT_HANDLED, sink16Bit, sinkFloat);
+      }
       return C.FORMAT_HANDLED;
+    }
+  }
+
+  /** Best-effort report of a DSD selection verdict (see above). Never throws. */
+  private static void reportRendererSupport(
+      String mimeType, @C.FormatSupport int formatSupport, boolean sink16Bit, boolean sinkFloat) {
+    try {
+      FfmpegLibrary.DsdDecodeListener listener = FfmpegLibrary.getDsdDecodeListener();
+      if (listener != null) {
+        listener.onRendererSupport(mimeType, formatSupport, sink16Bit, sinkFloat);
+      }
+    } catch (RuntimeException e) {
+      // Diagnostics must never break track selection.
     }
   }
 

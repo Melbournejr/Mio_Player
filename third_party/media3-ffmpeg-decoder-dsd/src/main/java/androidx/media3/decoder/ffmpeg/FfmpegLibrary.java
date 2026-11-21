@@ -69,6 +69,21 @@ public final class FfmpegLibrary {
      * sink (0 unless result > 0).
      */
     void onDsdDecode(String codecName, int inputSize, int result, int outputBytes);
+
+    /**
+     * Mio Player v1.1.6 — renderer-selection verdict for a DSD format, fired from
+     * {@link FfmpegAudioRenderer#supportsFormatInternal} (track selection). This is
+     * the proof of the "wrong renderer picked" gate: a DSD track whose renderer
+     * reports anything but FORMAT_HANDLED never gets a decoder at all, and without
+     * this line the log would show neither a decoder init nor a decode — only the
+     * stall. {@code formatSupport} is the {@code C.FormatSupport} value (4 = HANDLED,
+     * 3 = EXCEEDS_CAPABILITIES, 2 = UNSUPPORTED_DRM, 1 = UNSUPPORTED_SUBTYPE,
+     * 0 = UNSUPPORTED_TYPE); {@code sink16Bit} / {@code sinkFloat} say whether the
+     * audio sink accepts 16-bit / float PCM for the format. Default no-op so
+     * existing listeners keep working; only DSD MIME types fire it.
+     */
+    default void onRendererSupport(
+        String mimeType, int formatSupport, boolean sink16Bit, boolean sinkFloat) {}
   }
 
   private static volatile @Nullable DsdDecodeListener dsdDecodeListener;

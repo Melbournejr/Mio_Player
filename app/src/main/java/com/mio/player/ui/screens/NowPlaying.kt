@@ -1,5 +1,6 @@
 package com.mio.player.ui.screens
 import android.net.Uri
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -59,6 +60,15 @@ import kotlinx.coroutines.delay
  *    no longer the track's raw URI (the same check PlayerManager
  *    itself uses in maybePruneStaleDsdCache). Native is only claimed
  *    once the raw URI is playing AND the player reached STATE_READY.
+ *  v1.1.6 (lyrics): the inline lyrics finally get room — the cover
+ *  shrinks to 160 dp once lyrics load (was 240 dp always, leaving
+ *  ~2 lines visible); the current line scrolls to the CENTRE of the
+ *  viewport and only when it leaves the middle third, so it settles
+ *  instead of re-animating per line; the highlight no longer needs
+ *  `playing`; and a loading state shows while fetching, with the
+ *  lines appearing during DSD converting as soon as they are fetched.
+ *  The separate Lyrics screen stays reachable via "Xem đầy đủ", and
+ *  the transport row stays pinned at the bottom.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
@@ -94,6 +104,12 @@ import kotlinx.coroutines.delay
     var lines by remember { mutableStateOf(listOf<LyricLine>()) }
     var plain by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf("Đang tìm lời…") }
+    // v1.1.6: true while the lyrics fetch for this track is running,
+    // so the lyrics area shows a loading state instead of a blank
+    // box — and once fetched, the lines show DURING converting too
+    // (the old code reset the lines on track change and the cramped
+    // area left nothing visible even after the LRCLIB HIT landed).
+    var loadingLyrics by remember { mutableStateOf(true) }
     val ctx = LocalContext.current
     // Reset on track change, and sync to the player's real position instead
     // of counting up blindly: the old loop kept counting after a track
@@ -102,12 +118,17 @@ import kotlinx.coroutines.delay
     LaunchedEffect(t?.id) {
         pos = 0L
         currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri
-        lines = emptyList(); plain = null; source = "Đang tìm lời…"
+        lines = emptyList(); plain = null; source = "Đang tìm lời…"; loadingLyrics = true
         t?.let {
             val repo = (ctx.applicationContext as com.mio.player.MioApp).container.lyricsRepo
-            val r = repo.getLyrics(it.artist, it.title, it.album, it.durationMs, it.path, vm.pm.player.duration.takeIf { d -> d > 0 } ?: 0)
-            lines = r?.synced ?: emptyList(); plain = r?.plain; source = r?.source ?: "Không tìm thấy lời"
-        }
+            // v1.1.6: pass the track's content Uri so EmbeddedLyrics
+            // can open SAF tracks (their path is folder-relative).
+            runCatching {
+                val r = repo.getLyrics(it.artist, it.title, it.album, it.durationMs, it.path, vm.pm.player.duration.takeIf { d -> d > 0 } ?: 0, it.uri.toString())
+                lines = r?.synced ?: emptyList(); plain = r?.plain; source = r?.source ?: "Không tìm thấy lời"
+            }
+            loadingLyrics = false
+        } ?: run { loadingLyrics = false }
     }
     LaunchedEffect(playing, t?.id) { while (playing) { val pd = vm.pm.player.duration; val total = if (pd != C.TIME_UNSET && pd > 0) pd else (t?.durationMs ?: Long.MAX_VALUE); pos = vm.pm.player.currentPosition.coerceIn(0L, total); currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri; delay(250) } }
     // Actual per-track playback state (see the file KDoc): never claim
@@ -126,11 +147,57 @@ import kotlinx.coroutines.delay
     }
     // Live lyric sync: same rule as LyricsScreen — the line whose time
     // has passed, highlighted teal, list auto-scrolled to it.
+    // v1.1.6: the highlight no longer requires `playing` — a paused
+    // track still has a current line, and the old `&& playing` left
+    // the visible line dark whenever playback was paused.
     val currentIndex = lines.indexOfLast { it.timeMs <= pos }.coerceAtLeast(0)
     val lyricListState = rememberLazyListState()
-    LaunchedEffect(currentIndex) {
-        if (lines.isNotEmpty()) runCatching { lyricListState.animateScrollToItem((currentIndex - 1).coerceAtLeast(0)) }
+    // v1.1.6: scroll the current line to the CENTRE of the viewport,
+    // not the top edge. The old animateScrollToItem(currentIndex - 1)
+    // parked the current line at the very top, where it was clipped —
+    // the user's screenshot showed one visible line, un-highlighted,
+    // because the highlighted line was scrolled just off the top.
+    // scrollToItem/animateScrollToItem only take a NON-NEGATIVE
+    // offset, so centring is done by choosing the first visible index
+    // instead: currentIndex minus the number of lines in half a
+    // viewport. And the list only scrolls when the current line would
+    // leave the middle third of the viewport (or is not visible at
+    // all), so it settles instead of re-animating on every line
+    // change; a small move animates, a big jump (seek / track change)
+    // snaps instantly.
+    LaunchedEffect(currentIndex, lines.size) {
+        if (lines.isEmpty()) return@LaunchedEffect
+        runCatching {
+            val info = lyricListState.layoutInfo
+            val viewportH = info.viewportSize.height
+            val visible = info.visibleItemsInfo
+            if (viewportH <= 0 || visible.isEmpty()) {
+                lyricListState.scrollToItem(currentIndex)
+                return@runCatching
+            }
+            val current = visible.firstOrNull { it.index == currentIndex }
+            val inCentre = current != null &&
+                current.offset >= viewportH / 3 && current.offset <= 2 * viewportH / 3
+            if (inCentre) return@runCatching
+            val avgItem = visible.map { it.size }.average().takeIf { it > 0 }?.toInt() ?: 0
+            val halfLines = if (avgItem > 0) (viewportH / 2) / avgItem else 2
+            val targetFirst = (currentIndex - halfLines).coerceAtLeast(0)
+            val firstVisible = visible.firstOrNull()?.index ?: currentIndex
+            if (targetFirst == firstVisible) return@runCatching
+            if (kotlin.math.abs(targetFirst - firstVisible) <= 3) {
+                lyricListState.animateScrollToItem(targetFirst)
+            } else {
+                lyricListState.scrollToItem(targetFirst)
+            }
+        }
     }
+    // v1.1.6: the lyrics need real room. The old 240 dp cover +
+    // 112 dp visualizer + slider + transport left the lyrics
+    // weight(1f) area about two lines tall. Once lyrics are loaded
+    // the cover shrinks to 160 dp (animated, so the track change
+    // does not jump); without lyrics it stays large at 220 dp.
+    val hasLyrics = lines.isNotEmpty() || plain != null
+    val coverSize = if (hasLyrics) 160.dp else 220.dp
     Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
@@ -141,7 +208,7 @@ import kotlinx.coroutines.delay
             }
         }
         Spacer(Modifier.height(12.dp))
-        if (t != null) AlbumArt(t.albumId, Modifier.size(240.dp), CardLarge) else Box(Modifier.size(240.dp).background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
+        if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize).animateContentSize(), CardLarge) else Box(Modifier.size(coverSize).animateContentSize().background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
         Spacer(Modifier.height(16.dp))
         Text(t?.title ?: "No song", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -173,11 +240,21 @@ import kotlinx.coroutines.delay
             Text("Lời bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             TextButton(onClick = { nav.navigate(Routes.LYRICS) }) { Text("Xem đầy đủ", color = MioCyan, fontSize = 13.sp) }
         }
-        if (lines.isNotEmpty()) {
+        if (loadingLyrics) {
+            // Fetching (incl. while DSD is converting — the fetch is
+            // independent of the transcode, and the lines appear here
+            // as soon as they land instead of leaving a blank area).
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(color = MioCyan, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("  Đang tìm lời…", color = MioTextSecondary, fontSize = 14.sp)
+                }
+            }
+        } else if (lines.isNotEmpty()) {
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = lyricListState) {
                 items(lines.size) { i ->
                     val l = lines[i]
-                    val isCurrent = i == currentIndex && playing
+                    val isCurrent = i == currentIndex
                     Text(l.text, color = if (isCurrent) MioCyan else MioText, fontSize = if (isCurrent) 18.sp else 16.sp, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.padding(vertical = 6.dp))
                 }
             }

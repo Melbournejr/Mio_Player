@@ -33,10 +33,32 @@ import kotlin.math.sqrt
  * through byte-identical (configure returns the input format, queueInput
  * returns the input buffer untouched) and only READS the samples: stereo
  * is downmixed to mono, a rolling window feeds an 8192-point FFT
- * throttled to ~10 Hz, and 32 log-spaced band magnitudes (20 Hz–12 kHz,
+ * throttled to ~30 Hz, and 32 log-spaced band magnitudes (20 Hz–12 kHz,
  * same band mapping the Visualizer code used) are published to [levels].
  * Because the tap sits in the sink chain it sees PCM for ALL formats —
  * native DSD (after decimation to 176.4/88.2 kHz) and normal files alike.
+ *
+ * v1.1.6 (FPS): publish rate 10 Hz -> ~30 Hz (FFT_INTERVAL_MS 100 -> 33).
+ * 30 Hz, not 60 Hz: an 8192-point FFT is 13 stages x 4096 butterflies =
+ * 53,248 butterflies plus Hann window + 4096 bin magnitudes, roughly
+ * 0.5-1M float ops, est. ~0.5-2 ms in pure Kotlin on a modern phone ARM
+ * core — 30/s costs ~15-60 ms CPU/s (~2-6% of one core) on the audio
+ * sink thread, acceptable; 60/s would double that plus double the
+ * Compose recompositions for no visible gain (30 fps is already above
+ * the ~24 fps motion-fusion threshold for bars). The FFT size stays
+ * 8192: at 176.4 kHz a 4096-point FFT has 43.1 Hz bins, so log bands
+ * 0-4 (20-54 Hz) would all read the single 43 Hz bin — the exact
+ * v1.1.4 flat-bars regression; at 8192 the bin is 21.5 Hz, only the
+ * three sub-bass bands (20-36 Hz, below any instrument's fundamental)
+ * share one bin. A 2048-point FFT (86 Hz bins at 176.4 kHz) would be
+ * far worse. Windows at 30 Hz share samples with the previous window
+ * (~29% overlap at 176.4 kHz, ~82% at 44.1 kHz — a new 8192-sample
+ * window every 33 ms), so successive frames are correlated and the
+ * spectrum moves smoothly instead of jumping between disjoint windows. Smoothing release is faster
+ * (see [computeBands]); the FFT scratch buffers are now reused across
+ * frames so the 3x publish rate does not triple GC churn on the audio
+ * thread. No fake time-based animation anywhere: every published frame
+ * is real audio.
  *
  * v1.1.4 (Fix 3): the wave was tall but flat/static — the user's v1.1.3
  * video (bars 0-14 pixel-identical at 0:06 and 0:36 of one track, and
@@ -70,12 +92,18 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
     /**
      * v1.1.5 (visualizer styles): the newest mono PCM samples, in time
      * order, for the Wave / oscilloscope style. Published together with
-     * each FFT frame (~10 Hz, same cadence as [levels]) as the tail of
+     * each FFT frame (~30 Hz, same cadence as [levels]) as the tail of
      * that frame's 8192-sample window — real samples from the ring
      * buffer, never synthesised. A Wave composable draws this array
      * directly (linear amplitude, no gain fudge, no time-based motion);
      * when playback is paused [clearLevels] zeroes it so the line goes
      * flat instead of freezing on the last frame.
+     * v1.1.6: the frame is published at the new ~30 Hz cadence (it is
+     * published inside maybeRunFft, so no separate timer was needed).
+     * No interpolation between frames: interpolating would invent
+     * samples that were never played, so the Wave style relies on the
+     * higher refresh rate alone — at 30 Hz the line is redrawn from
+     * fresh real samples every 33 ms.
      */
     private val _pcmFrame = MutableStateFlow(FloatArray(PCM_FRAME_SIZE) { 0f })
     val pcmFrame: StateFlow<FloatArray> = _pcmFrame.asStateFlow()
@@ -115,6 +143,17 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
         private var ringWrite = 0
         private var ringCount = 0
         private var lastFftNs = 0L
+        // v1.1.6: FFT scratch buffers, reused every frame instead of
+        // allocated per frame — at 30 Hz a per-frame allocation would
+        // be ~2 MB/s of short-lived arrays on the audio sink thread.
+        // Safe to reuse: all FFT state is touched only from the sink
+        // callbacks (queueInput / flush / reset / configure), one
+        // thread, no reentrancy. The published `out` array and the
+        // pcmFrame copy are still freshly allocated per frame, because
+        // StateFlow needs a new instance to emit.
+        private val fftFrame = FloatArray(FFT_SIZE)
+        private val fftRe = FloatArray(FFT_SIZE)
+        private val fftIm = FloatArray(FFT_SIZE)
 
         override fun configure(
             inputAudioFormat: AudioProcessor.AudioFormat
@@ -148,7 +187,8 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
                 lastLoggedFormat = inputAudioFormat
                 logEvent(
                     "WaveformTap FFT tap ON: ${inputAudioFormat.sampleRate}Hz " +
-                        "enc=${inputAudioFormat.encoding} ch=${inputAudioFormat.channelCount}"
+                        "enc=${inputAudioFormat.encoding} ch=${inputAudioFormat.channelCount} " +
+                        "fft=$FFT_SIZE intervalMs=$FFT_INTERVAL_MS"
                 )
             }
             return inputAudioFormat
@@ -190,15 +230,20 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
         }
 
         /** Runs the FFT only when a full frame is buffered AND at least
-         *  [FFT_INTERVAL_MS] have passed since the last run (~10 Hz). */
+         *  [FFT_INTERVAL_MS] have passed since the last run (~30 Hz,
+         *  v1.1.6 — was ~10 Hz). The window is the NEWEST FFT_SIZE
+         *  samples, so successive frames overlap (~29% at 176.4 kHz,
+         *  ~82% at 44.1 kHz) and the spectrum moves smoothly instead of
+         *  jumping between disjoint windows. */
         private fun maybeRunFft() {
             if (ringCount < FFT_SIZE) return
             val nowNs = System.nanoTime()
             if (lastFftNs != 0L && nowNs - lastFftNs < FFT_INTERVAL_MS * 1_000_000L) return
             lastFftNs = nowNs
             val sampleRate = format.sampleRate.takeIf { it > 0 } ?: 48000
-            // Copy the NEWEST FFT_SIZE mono samples, in time order.
-            val frame = FloatArray(FFT_SIZE)
+            // Copy the NEWEST FFT_SIZE mono samples, in time order,
+            // into the reused scratch frame (see fftFrame KDoc).
+            val frame = fftFrame
             var readPos = (ringWrite - FFT_SIZE + RING_SIZE * 2) % RING_SIZE
             for (i in 0 until FFT_SIZE) {
                 frame[i] = ring[readPos]
@@ -256,12 +301,26 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
          * a mean over a wide high-frequency band dilutes a single peak to
          * near zero, while the max keeps every bar dancing with the music.
          * Normalised so a full-scale sine reads ~1.0 (Hann coherent gain
-         * is N/4), then sqrt for perceptual lift and the same fast-attack
-         * / slow-release smoothing the Visualizer code used.
+         * is N/4), then sqrt for perceptual lift and fast-attack /
+         * faster-release smoothing (v1.1.6 — release was 0.3/frame at
+         * 10 Hz, a ~280 ms wall-clock fall time constant that lagged
+         * the beat; at 30 Hz the same 0.3/frame would already fall in
+         * ~93 ms, and the new 0.4/frame falls in ~65 ms — about 4x
+         * faster than v1.1.5 in wall-clock time, fast enough to track
+         * a ~500 ms beat, slow enough not to jitter on every frame:
+         * successive windows share ~29% (176.4 kHz) to ~82% (44.1 kHz)
+         * of their samples with the previous window, so neighbouring
+         * frames are correlated. Attack stays 0.7/frame (~27 ms at
+         * 30 Hz) so onsets still jump instantly. The scratch arrays
+         * [fftRe]/[fftIm] are reused across frames (see their KDoc).
          */
         private fun computeBands(frame: FloatArray, sampleRate: Int): FloatArray {
-            val re = FloatArray(FFT_SIZE)
-            val im = FloatArray(FFT_SIZE)
+            val re = fftRe
+            val im = fftIm
+            // fftRadix2 overwrites every slot (Hann fill below writes
+            // all of re; im must be zeroed — it is not written before
+            // the transform).
+            im.fill(0f)
             for (i in 0 until FFT_SIZE) {
                 val w = 0.5f * (1f - cos((2.0 * PI * i / (FFT_SIZE - 1)).toFloat()))
                 re[i] = frame[i] * w
@@ -284,8 +343,10 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
                     if (mag > peak) peak = mag
                 }
                 val norm = sqrt(peak.coerceIn(0f, 1f))
-                out[i] = if (norm > last[i]) last[i] * 0.3f + norm * 0.7f
-                else last[i] * 0.7f + norm * 0.3f
+                // Fast attack, faster release (v1.1.6): ATTACK_NEW_WEIGHT
+                // when the band rises, RELEASE_NEW_WEIGHT when it falls.
+                out[i] = if (norm > last[i]) last[i] * (1f - ATTACK_NEW_WEIGHT) + norm * ATTACK_NEW_WEIGHT
+                else last[i] * (1f - RELEASE_NEW_WEIGHT) + norm * RELEASE_NEW_WEIGHT
             }
             return out
         }
@@ -411,7 +472,14 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
         /** v1.1.5: Wave-style oscilloscope window — the newest 1024 mono
          *  samples (~5.8 ms at 176.4 kHz, ~23 ms at 44.1 kHz). */
         private const val PCM_FRAME_SIZE = 1024
-        private const val FFT_INTERVAL_MS = 100L // ~10 Hz publish rate
+        // v1.1.6: ~30 Hz publish rate (was 100L / ~10 Hz). 60 Hz was
+        // rejected: it would double the FFT cost on the audio sink
+        // thread and double Compose recompositions for no visible gain.
+        private const val FFT_INTERVAL_MS = 33L // ~30 Hz publish rate
+        // v1.1.6 smoothing (see computeBands KDoc for the wall-clock
+        // math): attack unchanged at 0.7, release raised 0.3 -> 0.4.
+        private const val ATTACK_NEW_WEIGHT = 0.7f
+        private const val RELEASE_NEW_WEIGHT = 0.4f
         // Diagnostic logging (v1.1.4): first frames + one per period.
         private const val FFT_LOG_FIRST_FRAMES = 5
         private const val FFT_LOG_PERIOD_NS = 10_000_000_000L // ~10 s

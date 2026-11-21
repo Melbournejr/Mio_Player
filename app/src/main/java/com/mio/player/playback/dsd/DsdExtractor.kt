@@ -57,6 +57,37 @@ import java.io.IOException
  * slow. read() now logs the expected pts alongside the actual pts, so the
  * next user log proves it numerically instead of by arithmetic.
  *
+ * KEY-FRAME FLAG (v1.1.6 — THE native-DSD root cause, found by reading
+ * Media3 1.9.0 SampleQueue.java): every sample MUST be flagged
+ * BUFFER_FLAG_KEY_FRAME, or the SampleQueue silently drops it and the
+ * decoder is never fed. The gate is SampleQueue.sampleMetadata()
+ * (libraries/exoplayer/.../source/SampleQueue.java:1179-1189, tag 1.9.0):
+ * `upstreamKeyframeRequired` starts true (constructor, line 338) and the
+ * ONLY place it is ever cleared is a sample whose flags include
+ * BUFFER_FLAG_KEY_FRAME (line 1187); until then sampleMetadata() returns
+ * early and the sample is never committed — no log, no error, and the
+ * bytes already written via sampleData() are orphaned in the data queue.
+ * This extractor used to pass flags=0, so EVERY DSD packet was dropped:
+ * the extractor's own counters still logged "delivered 8MB" (bytes it
+ * wrote), the renderer read the format (so the decoder WAS created —
+ * "DSD decoder init" in the log), but peekSampleMetadata() then returned
+ * RESULT_NOTHING_READ forever (SampleQueue.java:1334-1354: empty queue,
+ * format already delivered downstream), DecoderAudioRenderer.feedInputBuffer()
+ * (libraries/exoplayer/.../audio/DecoderAudioRenderer.java:1076-1133)
+ * returned false on every render, SimpleDecoder's decode thread never had
+ * a queued input buffer, FfmpegAudioDecoder.decode() was never called —
+ * zero "DSD decode:" lines — and the player sat in BUFFERING with an
+ * empty queue until StuckPlayerDetector fired (ERROR_CODE_FAILED_RUNTIME_CHECK).
+ * Every stock Media3 audio extractor flags its samples as key frames
+ * (e.g. Mp3Extractor / FlacExtractor / WavExtractor all pass
+ * C.BUFFER_FLAG_KEY_FRAME — audio frames are independently decodable),
+ * and DSD packets are too, so this extractor now does the same. If native
+ * DSD still stalls after this, the "DSD stall watch" lines in
+ * PlayerManager (buffered duration while BUFFERING) are the proof of
+ * whether the queue holds data — buffered=0us with the loader done means
+ * the queue is empty again, buffered>0us means the stall is downstream
+ * of the queue.
+ *
  * Deliberately NOT handled here — the extractor rejects them, so
  * PlayerManager's onPlayerError falls back to the FFmpegKit transcode
  * (DsdDecoder) instead of playing garbage or crashing:
@@ -294,15 +325,20 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
             deliveredBytes = bytesRead
             fileBytesRead = bytesRead
         }
-        trackOutput?.sampleMetadata(sampleTimeUs, 0, deliveredBytes, 0, null)
+        trackOutput?.sampleMetadata(sampleTimeUs, C.BUFFER_FLAG_KEY_FRAME, deliveredBytes, 0, null)
         dataBytesRead += fileBytesRead
         packetsDelivered++
         // v1.1.4: prove samples actually flow extractor -> decoder.
         // First packet: delivery starts. 8 MB: delivery passed the
         // load-control target, so the loader/extractor are not the
-        // bottleneck — if playback still stalls past this line, the
-        // blockage is downstream (decoder / sink), and the decimator's
-        // "first output" line says which side of the decoder it is on.
+        // bottleneck. NOTE (v1.1.6): this line proves the LOADER wrote
+        // bytes, NOT that the SampleQueue committed them — before v1.1.6
+        // the queue dropped every sample at its key-frame gate (see the
+        // class KDoc) while this line still printed. The "DSD stall
+        // watch" lines in PlayerManager (buffered duration while
+        // BUFFERING) are what prove the queue holds data; the decimator's
+        // "first output" line says which side of the decoder a later
+        // stall is on.
         if (!firstSampleLogged) {
             firstSampleLogged = true
             log("DSD first sample: ${deliveredBytes}B pts=${sampleTimeUs}us packet=${current.packetSize} packetUs=${current.packetDurationUs} dataSize=${current.dataSize}")

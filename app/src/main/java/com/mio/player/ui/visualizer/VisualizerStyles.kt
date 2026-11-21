@@ -29,7 +29,7 @@ import kotlin.math.sqrt
  *  - Bars / Circular / Mirror read `levels` (the 32 log-spaced FFT band
  *    magnitudes, 20 Hz–12 kHz, from WaveformTap).
  *  - Wave reads `pcmFrame` (the newest 1024 mono PCM samples, also from
- *    WaveformTap, published with each FFT frame at ~10 Hz).
+ *    WaveformTap, published with each FFT frame at ~30 Hz, v1.1.6).
  * Nothing here depends on time, playback position, duration or
  * progress. When there is no live signal (paused / silence) every
  * style sits still at a low, fixed, index-determined shape — the same
@@ -48,6 +48,16 @@ private const val VIS_ROW_HEIGHT_DP = 112f
 private const val VIS_MIN_HEIGHT_DP = 10f
 private const val VIS_GAIN = 4f
 private const val VIS_LIVE_THRESHOLD = 0.005f
+// v1.1.6 — Mirror-only lift: the mirrored halves are each half the row,
+// so the same level reads half as tall as in Bars, and at levels
+// ~0.04-0.05 the halves were short rounded pills that read as two rows
+// of static dots. Mirror therefore uses a higher gain (6 vs 4) and a
+// taller minimum half (10 dp vs 5 dp) so quiet bars still read as bars.
+// At level 0.04: sqrt(0.04*6) = 0.49 (was 0.40); at 0.01: 0.245 (was
+// 0.20); the minimum visible half is 10 - 2 (gap) = 8 dp per side,
+// 16 dp total, instead of 3 dp per side / 6 dp total.
+private const val VIS_MIRROR_GAIN = 6f
+private const val VIS_MIRROR_MIN_HALF_DP = 10f
 
 /** Perceptual lift of one raw FFT band level, 0..1. */
 private fun scaledNorm(level: Float): Float =
@@ -104,9 +114,12 @@ fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Mo
  * (sample -1..1 maps to the full row height, no gain fudge — a quiet
  * passage honestly looks small), stroked with the theme gradient and
  * a faint fill underneath. The frame refreshes at the FFT cadence
- * (~10 Hz); between frames the line is simply redrawn from the same
- * real samples — nothing is interpolated or animated. With no signal
- * the line is a flat, still centre line.
+ * (~30 Hz, v1.1.6 — was ~10 Hz); between frames the line is simply
+ * redrawn from the same real samples — nothing is interpolated or
+ * animated, deliberately: interpolation would invent samples that
+ * were never played, and at 30 Hz fresh real samples arrive every
+ * 33 ms, so the higher rate alone makes the line move smoothly.
+ * With no signal the line is a flat, still centre line.
  */
 @Composable
 fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
@@ -216,8 +229,12 @@ fun VisualizerCircular(levels: FloatArray, playing: Boolean, modifier: Modifier 
  * once above and once below a centre line, at the same height — the
  * spectrum mirrored around the horizontal centre axis. Bar widths,
  * spacing and the vertical theme gradient match the Bars style; only
- * the layout is mirrored. With no signal both halves are short fixed
- * stubs, symmetric by construction.
+ * the layout is mirrored. v1.1.6: Mirror uses its own higher gain
+ * (VIS_MIRROR_GAIN = 6) and taller minimum half (10 dp), and the
+ * corner radius is rounded only horizontally (2 dp vertically) — the
+ * old fully-rounded pills at low levels read as two rows of static
+ * dots; short Mirror bars now read as flat-topped bars. With no
+ * signal both halves are short fixed stubs, symmetric by construction.
  */
 @Composable
 fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
@@ -231,16 +248,21 @@ fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = 
         val barW = ((size.width - (n - 1) * spacing) / n).coerceAtLeast(1.dp.toPx())
         val cy = size.height / 2f
         val maxHalf = size.height / 2f - gap
-        val minHalf = 5.dp.toPx()
+        val minHalf = VIS_MIRROR_MIN_HALF_DP.dp.toPx()
         val brush: Brush = if (live) {
             Brush.verticalGradient(colors)
         } else {
             SolidColor(accent.copy(alpha = 0.4f))
         }
-        val radius = CornerRadius(barW / 2f, barW / 2f)
+        // v1.1.6: rounded horizontally (barW/2) but almost square
+        // vertically (2 dp) — a fully-rounded short bar is a pill/dot.
+        val radius = CornerRadius(barW / 2f, 2.dp.toPx())
         for (i in 0 until n) {
             val half = if (live) {
-                minHalf + scaledNorm(levels[i]) * (maxHalf - minHalf)
+                // Mirror-only gain (6, not the shared 4): each half is
+                // half the row, so quiet levels need the extra lift to
+                // read as bars rather than dots.
+                minHalf + sqrt((levels[i] * VIS_MIRROR_GAIN).coerceIn(0f, 1f)) * (maxHalf - minHalf)
             } else {
                 // Idle stub: half the Bars idle height (the bar is split
                 // across the centre line), still index-determined only.

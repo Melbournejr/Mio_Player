@@ -102,10 +102,38 @@ import kotlinx.coroutines.delay
         isDsd -> "DSD · Đang tải…"
         else -> "Thiết bị phát tối đa ${vm.pm.deviceSampleRateHz / 1000} kHz"
     }
+    // v1.1.6 (coordinator, mirroring portrait): scroll the current
+    // line to the CENTRE of the viewport, not the top edge, and only
+    // scroll when it would leave the middle third — the old
+    // animateScrollToItem(currentIndex - 1) parked the highlighted
+    // line at the top edge where it was clipped.
     val currentIndex = lines.indexOfLast { it.timeMs <= pos }.coerceAtLeast(0)
     val lyricListState = rememberLazyListState()
-    LaunchedEffect(currentIndex) {
-        if (lines.isNotEmpty()) runCatching { lyricListState.animateScrollToItem((currentIndex - 1).coerceAtLeast(0)) }
+    LaunchedEffect(currentIndex, lines.size) {
+        if (lines.isEmpty()) return@LaunchedEffect
+        runCatching {
+            val info = lyricListState.layoutInfo
+            val viewportH = info.viewportSize.height
+            val visible = info.visibleItemsInfo
+            if (viewportH <= 0 || visible.isEmpty()) {
+                lyricListState.scrollToItem(currentIndex)
+                return@runCatching
+            }
+            val current = visible.firstOrNull { it.index == currentIndex }
+            val inCentre = current != null &&
+                current.offset >= viewportH / 3 && current.offset <= 2 * viewportH / 3
+            if (inCentre) return@runCatching
+            val avgItem = visible.map { it.size }.average().takeIf { it > 0 }?.toInt() ?: 0
+            val halfLines = if (avgItem > 0) (viewportH / 2) / avgItem else 2
+            val targetFirst = (currentIndex - halfLines).coerceAtLeast(0)
+            val firstVisible = visible.firstOrNull()?.index ?: currentIndex
+            if (targetFirst == firstVisible) return@runCatching
+            if (kotlin.math.abs(targetFirst - firstVisible) <= 3) {
+                lyricListState.animateScrollToItem(targetFirst)
+            } else {
+                lyricListState.scrollToItem(targetFirst)
+            }
+        }
     }
     Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = 20.dp, vertical = 12.dp)) {
         // Header — same actions as portrait: back, queue sheet, the ONLY
@@ -160,7 +188,9 @@ import kotlinx.coroutines.delay
                     LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = lyricListState) {
                         items(lines.size) { i ->
                             val l = lines[i]
-                            val isCurrent = i == currentIndex && playing
+                            // v1.1.6: highlight no longer requires
+                            // `playing` — same fix as portrait.
+                            val isCurrent = i == currentIndex
                             Text(l.text, color = if (isCurrent) MioCyan else MioText, fontSize = if (isCurrent) 18.sp else 16.sp, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.padding(vertical = 6.dp))
                         }
                     }
