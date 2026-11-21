@@ -22,7 +22,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
  * visualizer.
  */
 enum class VisualizerStyle(val id: String, val label: String) {
-    /** The current Now Playing wave (LiveWaveform): 32 vertical bars. */
+    /** The current Now Playing wave (native Canvas bars with peak caps): 32 vertical bars. */
     BARS("bars", "Cột"),
 
     /** Oscilloscope line from the tap's raw mono PCM frame. */
@@ -55,7 +55,40 @@ enum class VisualizerStyle(val id: String, val label: String) {
         /** DataStore key (same "mio_settings" store as every other setting). */
         val KEY = stringPreferencesKey("visualizer_style")
 
+        /**
+         * v1.1.13 — DataStore key for the Ferrofluid frequency range
+         * (see [FerrofluidFreq]). New key, so nothing stored before
+         * changes meaning; a missing value falls back to [FerrofluidFreq.ALL].
+         */
+        val KEY_FERROFLUID_FREQ = stringPreferencesKey("ferrofluid_freq")
+
         fun fromId(id: String?): VisualizerStyle =
             values().firstOrNull { it.id == id } ?: BARS
+    }
+}
+
+/**
+ * v1.1.13 — which frequency range the Ferrofluid spikes follow
+ * (Dakd Jung's dial, as a segmented control — shown only while
+ * Ferrofluid is the active style, see VisualizerPanel). Bass =
+ * low bands only (0..11, ~20–220 Hz), Tất cả = the full spectrum,
+ * Treble = high bands only (23..31, ~2–12 kHz). The centre tower
+ * always follows bass energy, whatever the range. Persisted under
+ * [VisualizerStyle.KEY_FERROFLUID_FREQ] ("ferrofluid_freq"); an
+ * unknown or missing value falls back to [ALL].
+ */
+enum class FerrofluidFreq(val id: String, val label: String) {
+    /** Low bands only (0..11, ~20–220 Hz). */
+    BASS("bass", "Bass"),
+
+    /** The full spectrum (0..31). The default. */
+    ALL("all", "Tất cả"),
+
+    /** High bands only (23..31, ~2–12 kHz). */
+    TREBLE("treble", "Treble");
+
+    companion object {
+        fun fromId(id: String?): FerrofluidFreq =
+            values().firstOrNull { it.id == id } ?: ALL
     }
 }

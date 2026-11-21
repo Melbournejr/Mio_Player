@@ -165,7 +165,10 @@ import kotlinx.coroutines.delay
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth())
+                // v1.1.13: the panel gets the current track's cover so the
+                // Circular style can ring the album art (other styles
+                // ignore it); `t` is the playing track in scope here.
+                VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath)
             }
             // RIGHT — track info, inline synced lyrics, seek, transport.
             // Compact transport (56 dp play button vs 72 dp portrait)

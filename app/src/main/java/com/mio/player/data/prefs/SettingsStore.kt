@@ -15,6 +15,8 @@ class SettingsStore(private val ctx: Context) {
         val KEY_EQ_PRESET = stringPreferencesKey("eq_preset")
         val KEY_EQ_BANDS = stringPreferencesKey("eq_bands") // csv dB -15..15
         val KEY_PREAMP = floatPreferencesKey("preamp_db")
+        val KEY_HEADPHONE_MODEL = stringPreferencesKey("headphone_model") // v1.1.13: active headphone-correction model, "" = none
+        val KEY_CUSTOM_PRESETS = stringPreferencesKey("eq_custom_presets") // v1.1.13: JSON {"name": [10 band dB]} — bands only, no preamp
         val KEY_BASS = intPreferencesKey("bass_boost") // 0..1000
         val KEY_VIRTUALIZER = intPreferencesKey("virtualizer") // 0..1000
         val KEY_LOUDNESS = intPreferencesKey("loudness_db") // 0..? target mB

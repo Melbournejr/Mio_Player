@@ -16,18 +16,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.toRect
 import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.sqrt
 import coil.compose.AsyncImage
 import com.mio.player.data.model.Track
 import com.mio.player.ui.theme.*
@@ -129,82 +126,11 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
         }
     }
 }
-/** Live audio wave for Now Playing. Bars follow ONLY the real FFT levels
- *  from the in-process tap in WaveformTap (v1.1.2, Fix 2) while playing.
- *  The Visualizer source is retired (it cannot initialise on this phone,
- *  error -3) and there is NO time-based animation of any kind here any
- *  more: the old idle "breathing" swell is gone too, because any motion
- *  not driven by the audio reads as fake movement. `progress` is kept in
- *  the signature only so the existing call site in NowPlaying keeps
- *  compiling; it is intentionally ignored here and never drives bar
- *  height or colour. When no live FFT data is available (silence /
- *  paused) the bars sit low and still: fixed per-bar heights determined
- *  by the bar index only.
- *
- *  SCALING (v1.1.4, Fix 3 — was v1.1.3, GAIN = 12): the v1.1.3 gain was
- *  calibrated on the tap's first-frame log (maxLevel ≈ 0.042), but that
- *  frame is the first 5.8 ms of a track — decoder settling / near
- *  silence — not loud playback. Steady-state low-band levels are
- *  >= 0.083 (measured from the user's v1.1.3 video: bars 0-14 pinned
- *  at the full 112 dp for 30 s straight), so GAIN = 12 pinned every
- *  loud bar at full height and hid all variation between bars. GAIN
- *  is now 4: only a level >= 0.25 (bin peak >= 0.0625, about -12 dB)
- *  reaches full height, so loud bars stay tall but differ from each
- *  other, and quiet bars stay visible. The raw values are boosted in
- *  the UI layer only (WaveformTap's levels are untouched):
- *      norm   = sqrt(min(level * WAVEFORM_GAIN, 1f))   // GAIN = 4
- *      height = WAVEFORM_MIN_HEIGHT_DP + norm * (ROW_HEIGHT_DP - MIN)
- *  Computed heights on the 88 dp row (min stub 10 dp, v1.1.12 —
- *  was the 112 dp row):
- *      level 0.00  -> norm 0.000 ->  10.0 dp (short stub, never invisible)
- *      level 0.01  -> norm 0.200 ->  25.6 dp
- *      level 0.042 -> norm 0.410 ->  42.0 dp
- *      level 0.10  -> norm 0.632 ->  59.3 dp
- *      level 0.20  -> norm 0.894 ->  79.7 dp
- *      level 0.25  -> norm 1.000 ->  88.0 dp (full height)
- *  Bars are painted with the theme gradient (Deep Wave:
- *  teal #14B8A6 -> cyan #22D3EE, vertical, bottom -> top), rounded,
- *  5 dp wide. */
-// Waveform scaling constants (v1.1.4, Fix 3 — was v1.1.3 GAIN = 12) —
-// see the LiveWaveform KDoc for the math and the computed heights.
-// v1.1.12: row height 112 -> 88 dp, matching VIS_ROW_HEIGHT_DP in
-// VisualizerStyles.kt — all five visualizer styles now share the
-// same 88 dp slot, so switching styles no longer jumps the layout
-// and the lyrics area gains 24 dp.
-private const val WAVEFORM_ROW_HEIGHT_DP = 88f
-private const val WAVEFORM_MIN_HEIGHT_DP = 10f
-private const val WAVEFORM_GAIN = 4f
-private const val WAVEFORM_LIVE_THRESHOLD = 0.005f
-@Suppress("UNUSED_PARAMETER")
-@Composable fun LiveWaveform(levels: FloatArray, playing: Boolean, progress: Float, modifier: Modifier = Modifier) {
-    val live = levels.any { it > WAVEFORM_LIVE_THRESHOLD }
-    // Theme gradient as a vertical brush, so each bar runs teal at the
-    // bottom to cyan at the top (Deep Wave). Uses the token list, not
-    // hardcoded colours, so the Sunset theme gets its own gradient.
-    val barBrush: Brush = Brush.verticalGradient(LocalMioColors.current.gradientColors)
-    Row(modifier.height(WAVEFORM_ROW_HEIGHT_DP.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        val n = levels.size
-        for (i in 0 until n) {
-            val h = if (live) {
-                val norm = sqrt((levels[i] * WAVEFORM_GAIN).coerceIn(0f, 1f))
-                WAVEFORM_MIN_HEIGHT_DP + norm * (WAVEFORM_ROW_HEIGHT_DP - WAVEFORM_MIN_HEIGHT_DP)
-            } else {
-                // Low fixed height per bar (18..30 dp, deterministic from
-                // the bar index only). Nothing here depends on time,
-                // position, duration or progress.
-                18f + 12f * (0.5f + 0.5f * STATIC_IDLE[i % STATIC_IDLE.size])
-            }
-            // Live bars use the theme gradient; idle bars the same cyan
-            // at low alpha. No bar is ever coloured by playback progress.
-            val brush: Brush = if (live) barBrush else SolidColor(MioCyan.copy(alpha = 0.4f))
-            Box(Modifier.width(5.dp).height(h.dp).background(brush, CircleShape))
-        }
-    }
-}
-
-/** Fixed per-bar idle shape (values in -1..1, symmetric) so the idle
- *  bars are not all the same flat height, without any animation. */
-private val STATIC_IDLE = floatArrayOf(
-    0.0f, 0.6f, 1.0f, 0.4f, -0.3f, -0.8f, -0.2f, 0.7f,
-    0.9f, 0.1f, -0.6f, -1.0f, -0.4f, 0.5f, 0.8f, 0.0f
-)
+/** v1.1.13 — LiveWaveform is GONE (deleted, not moved): the Bars
+ *  visualizer is now native in ui/visualizer/VisualizerStyles.kt
+ *  (Monstercat-style peak caps, fast attack / slow release, same gain
+ *  calibration and idle shape as this function had). It was the only
+ *  caller — verified by grep — so nothing else in this file changes,
+ *  and the WAVEFORM_* constants and STATIC_IDLE below go with it.
+ *  The KDoc math it carried (gain 4, level 0.25 = full height on the
+ *  88 dp row) now lives on VisualizerBars. */

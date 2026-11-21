@@ -259,7 +259,10 @@ import kotlinx.coroutines.delay
             }
         }
         Spacer(Modifier.height(8.dp))
-        VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth())
+        // v1.1.13: the panel gets the current track's cover so the
+        // Circular style can ring the album art (other styles ignore
+        // it); `t` is the playing track in scope here.
+        VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath)
         Slider(value = pos.toFloat().coerceIn(0f, totalF), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..totalF, modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(formatDuration(pos), color = MioTextSecondary, fontSize = 12.sp)

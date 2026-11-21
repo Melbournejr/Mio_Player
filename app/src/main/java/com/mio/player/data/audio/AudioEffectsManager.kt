@@ -17,16 +17,12 @@ class AudioEffectsManager {
     var bassStrength: Int = 0; private set
     var virtStrength: Int = 0; private set
     var loudnessMb: Int = 0; private set
-    val presets: Map<String, FloatArray> = mapOf(
-        "Flat" to floatArrayOf(0f,0f,0f,0f,0f,0f,0f,0f,0f,0f),
-        "Bass" to floatArrayOf(6f,5f,4f,2f,0f,0f,0f,0f,0f,0f),
-        "Treble" to floatArrayOf(-2f,-1f,0f,0f,0f,1f,2f,4f,5f,6f),
-        "Vocal" to floatArrayOf(-2f,-1f,0f,1f,3f,4f,3f,1f,0f,-1f),
-        "Rock" to floatArrayOf(4f,3f,2f,0f,-1f,0f,2f,3f,4f,4f),
-        "Jazz" to floatArrayOf(3f,2f,1f,0f,0f,1f,2f,3f,3f,2f),
-        "Classical" to floatArrayOf(0f,0f,0f,0f,0f,0f,0f,2f,3f,4f),
-        "Lo-Fi" to floatArrayOf(3f,2f,1f,0f,-1f,-2f,-1f,0f,-2f,-4f)
-    )
+    /** v1.1.13 — the preset table now lives in EqPresets (single source of
+     *  truth): the full 22-preset Evermusic table. The old invented 8
+     *  presets (Flat / Bass / Treble / Vocal / Rock / Jazz / Classical /
+     *  Lo-Fi) are gone; saved band values are unaffected (stored separately
+     *  as CSV), only a saved old preset name may stop matching a chip. */
+    val presets: Map<String, FloatArray> = EqPresets.BUILT_IN
     fun attach(audioSessionId: Int) {
         release()
         if (audioSessionId == 0) return
@@ -37,12 +33,15 @@ class AudioEffectsManager {
         // Re-apply the remembered values on the fresh effects.
         applyBands(currentBands); setBassBoost(bassStrength); setVirtualizer(virtStrength); setLoudness(loudnessMb)
     }
+    /** v1.1.13 — preampDb is a uniform level offset: every band is written
+     *  as (band + preampDb), clamped to ±15 dB. currentBands keeps the raw
+     *  band values (without preamp) so a re-attach re-applies correctly. */
     fun applyBands(db: FloatArray) {
         currentBands = db.copyOf()
         val e = eq ?: return
         try {
             val n = minOf(db.size, e.numberOfBands.toInt())
-            for (i in 0 until n) e.setBandLevel(i.toShort(), (db[i].coerceIn(-15f, 15f) * 100).toInt().toShort())
+            for (i in 0 until n) e.setBandLevel(i.toShort(), ((db[i] + preampDb).coerceIn(-15f, 15f) * 100).toInt().toShort())
         } catch (ex: Exception) { Log.w("MioFx", "applyBands failed", ex) }
     }
     fun applyPreset(name: String) { presets[name]?.let { applyBands(it) } }

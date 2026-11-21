@@ -1,9 +1,12 @@
 package com.mio.player.ui.visualizer
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
@@ -25,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mio.player.MioApp
+import com.mio.player.ui.theme.LocalMioColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -41,6 +45,25 @@ import kotlinx.coroutines.launch
  * in DataStore under the same key ([VisualizerStyle.KEY],
  * "visualizer_style") exactly as before.
  *
+ * v1.1.13 — two additions, both additive to the panel contract:
+ *  - The panel now takes the current track's `albumId` / `coverPath`
+ *    and passes them to [MioVisualizer], so the Circular style can
+ *    ring the album art (see VisualizerStyles.kt). Other styles
+ *    ignore them.
+ *  - While Ferrofluid is the active style, a small segmented control
+ *    (Bass / Tất cả / Treble) overlays the top-right of the
+ *    visualizer — the frequency selector for the ferrofluid spikes
+ *    (see [FerrofluidFreq]). The choice is persisted in DataStore
+ *    under [VisualizerStyle.KEY_FERROFLUID_FREQ] ("ferrofluid_freq",
+ *    default "all") via the same generic `settings.set` / `flow` as
+ *    the style itself; no change to SettingsStore was needed. The
+ *    chips use `clickable`, which consumes the tap's down event, so
+ *    tapping a chip changes the frequency WITHOUT also firing the
+ *    panel's tap-to-next-style detector (its `detectTapGestures`
+ *    requires an unconsumed down). The control is hidden for every
+ *    other style, and the tap / swipe / pill behaviour is otherwise
+ *    exactly as in v1.1.12.
+ *
  * [VisualizerPanel] is the one-call version for Now Playing: it reads
  * the saved style from DataStore (same "mio_settings" store as every
  * other setting), renders the visualizer, and saves the choice when
@@ -52,7 +75,7 @@ import kotlinx.coroutines.launch
  * One-call integration for Now Playing (the coordinator's drop-in):
  * visualizer with tap / swipe style switching, with the style loaded
  * from and saved to DataStore automatically. Replaces the bare
- * `LiveWaveform(...)` call.
+ * visualizer call in Now Playing.
  *
  * Gestures (scoped to the visualizer area only, so the slider /
  * transport below are untouched):
@@ -72,13 +95,17 @@ import kotlinx.coroutines.launch
  * @param levels live FFT band magnitudes (`vm.pm.waveform.levels`)
  * @param pcmFrame live mono PCM frame (`vm.pm.waveform.pcmFrame`)
  * @param playing whether audio is actually playing
+ * @param albumId current track's album id, for the Circular art disc (0 = none)
+ * @param coverPath current track's downloaded cover file, for the Circular art disc (null = none)
  */
 @Composable
 fun VisualizerPanel(
     levels: FloatArray,
     pcmFrame: FloatArray,
     playing: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    albumId: Long = 0L,
+    coverPath: String? = null
 ) {
     val ctx = LocalContext.current
     val settings = remember(ctx) { (ctx.applicationContext as MioApp).container.settings }
@@ -86,6 +113,12 @@ fun VisualizerPanel(
     val styleId by settings.flow(VisualizerStyle.KEY, VisualizerStyle.BARS.id)
         .collectAsState(initial = VisualizerStyle.BARS.id)
     val style = VisualizerStyle.fromId(styleId)
+    // v1.1.13 — Ferrofluid frequency range, persisted under
+    // "ferrofluid_freq" (default "all" = full spectrum).
+    val ferroFreqId by settings.flow(VisualizerStyle.KEY_FERROFLUID_FREQ, FerrofluidFreq.ALL.id)
+        .collectAsState(initial = FerrofluidFreq.ALL.id)
+    val ferroFreq = FerrofluidFreq.fromId(ferroFreqId)
+    val accent = LocalMioColors.current.accent
 
     // Style-name pill: shown briefly after a switch. The first
     // composition (initial load) does not flash the pill.
@@ -131,7 +164,7 @@ fun VisualizerPanel(
             },
         contentAlignment = Alignment.Center
     ) {
-        MioVisualizer(style, levels, pcmFrame, playing, Modifier.fillMaxWidth())
+        MioVisualizer(style, levels, pcmFrame, playing, albumId, coverPath, ferroFreq, Modifier.fillMaxWidth())
         if (showLabel) {
             Box(
                 Modifier
@@ -145,6 +178,48 @@ fun VisualizerPanel(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+        }
+        // v1.1.13 — Ferrofluid frequency selector: a small segmented
+        // control overlaid top-right, visible only while Ferrofluid
+        // is active. Each chip is `clickable`, which consumes the
+        // tap's down event, so tapping a chip does NOT also trigger
+        // the panel's tap-to-next-style above.
+        if (style == VisualizerStyle.FERROFLUID) {
+            Row(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                for (option in FerrofluidFreq.values()) {
+                    val selected = option == ferroFreq
+                    Box(
+                        Modifier
+                            .background(
+                                if (selected) accent else Color.Black.copy(alpha = 0.55f),
+                                CircleShape
+                            )
+                            .clickable {
+                                if (option != ferroFreq) {
+                                    scope.launch {
+                                        runCatching {
+                                            settings.set(VisualizerStyle.KEY_FERROFLUID_FREQ, option.id)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            option.label,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
             }
         }
     }

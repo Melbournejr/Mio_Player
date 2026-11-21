@@ -63,10 +63,13 @@ fun hasMusicPermission(ctx: Context): Boolean =
  *  synchronization is needed. */
 private var lastTabNavUptimeMs = 0L
 private const val TAB_NAV_DEBOUNCE_MS = 300L
-/** Restore saved sound settings (EQ bands, bass, virtualizer, loudness,
- *  balance, crossfade, ReplayGain, speed) at startup. AudioEffectsManager
- *  remembers the values, so they are re-applied when the effects are
- *  attached to the player's audio session. */
+/** Restore saved sound settings (EQ bands, preamp, bass, virtualizer,
+ *  loudness, balance, crossfade, ReplayGain, speed) at startup.
+ *  AudioEffectsManager remembers the values, so they are re-applied when
+ *  the effects are attached to the player's audio session.
+ *  v1.1.13 — preampDb is set BEFORE applyBands, because applyBands writes
+ *  (band + preamp) per band; restoring bands first would play one moment
+ *  without the preamp offset. */
 suspend fun restoreSoundSettings(ctx: Context) {
     val container = (ctx.applicationContext as MioApp).container
     val settings = container.settings
@@ -74,6 +77,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
     val bandsCsv = settings.flow(SettingsStore.KEY_EQ_BANDS, "").first()
     val bands = FloatArray(10) { 0f }
     bandsCsv.split(",").mapNotNull { it.toFloatOrNull() }.forEachIndexed { i, v -> if (i < 10) bands[i] = v }
+    pm.fx.preampDb = settings.flow(SettingsStore.KEY_PREAMP, 0f).first()
     pm.fx.applyBands(bands)
     pm.fx.setBassBoost(settings.flow(SettingsStore.KEY_BASS, 0).first())
     pm.fx.setVirtualizer(settings.flow(SettingsStore.KEY_VIRTUALIZER, 0).first())

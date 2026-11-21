@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="updates" path="updates/" />
+    <!-- v1.1.13: exported EQ preset .json files live in cacheDir/eq-presets/ -->
+    <cache-path name="eq-presets" path="eq-presets/" />
 </paths>

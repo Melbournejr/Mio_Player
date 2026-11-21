@@ -12,8 +12,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.mio.player.data.log.MioLog
 import com.mio.player.data.ota.OtaUpdateChecker
+import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.ui.components.*
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
@@ -194,31 +198,57 @@ import kotlinx.coroutines.launch
         }
     }
 }
+/** v1.1.13 — Profile / Settings, reorganized into grouped sections
+ *  (Âm thanh / Hiển thị / Thư viện / Phát lại / Giới thiệu), each with
+ *  a short description under its header. The playback controls
+ *  (Gapless / Crossfade / ReplayGain / speed) moved here from
+ *  EqualizerScreen — same DataStore keys, ranges and labels, same
+ *  player calls. The sleep timer stays in Now Playing. */
 @Composable fun ProfileScreen(libVm: LibraryViewModel, nav: NavHostController) {
     val tracks by libVm.tracks.collectAsState()
     val update = rememberUpdateState()
     val ctx = LocalContext.current
     val settings = (ctx.applicationContext as com.mio.player.MioApp).container.settings
-    val userName by settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_USER_NAME, "").collectAsState(initial = "")
+    val pm = (ctx.applicationContext as com.mio.player.MioApp).container.playerManager
+    val userName by settings.flow(SettingsStore.KEY_USER_NAME, "").collectAsState(initial = "")
     val scope = rememberCoroutineScope()
+    // v1.1.13 — playback settings, moved from EqualizerScreen.
+    // Same keys and defaults as before: gapless = true, crossfade 0 ms,
+    // ReplayGain "track", speed 1x. MainActivity.restoreSoundSettings
+    // reads KEY_CROSSFADE_MS, KEY_REPLAYGAIN and KEY_SPEED at startup;
+    // KEY_GAPLESS is stored but has no player call to restore —
+    // ExoPlayer handles gapless natively, and EqualizerScreen never
+    // applied it either.
+    val gapless by settings.flow(SettingsStore.KEY_GAPLESS, true).collectAsState(initial = true)
+    val crossfadeMs by settings.flow(SettingsStore.KEY_CROSSFADE_MS, 0).collectAsState(initial = 0)
+    val replayGain by settings.flow(SettingsStore.KEY_REPLAYGAIN, "track").collectAsState(initial = "track")
+    val speed by settings.flow(SettingsStore.KEY_SPEED, 1f).collectAsState(initial = 1f)
+    // v1.1.13 — apply the playback values to the player whenever they
+    // change (the same calls EqualizerScreen.apply() used to make).
+    LaunchedEffect(crossfadeMs, replayGain, speed) {
+        pm.crossfadeMs = crossfadeMs.toLong()
+        pm.replayGainMode = replayGain
+        pm.setSpeed(speed)
+    }
     // 1.0.9: the old plain Column cut off the bottom on small phones.
-    // LazyColumn scrolls, and adds the PDF's Account / Music quality /
-    // Downloads rows that were missing.
+    // LazyColumn scrolls — keep it one list, one section per item.
     LazyColumn(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
         item {
             SectionTitle("Profile")
             Text(if (userName.isBlank()) "Local listener" else userName, color = MioText, fontSize = 20.sp)
-            Text("${tracks.size} songs • ${tracks.count { it.isFavorite }} favorites", color = MioTextSecondary)
             Spacer(Modifier.height(16.dp))
         }
         item {
-            SectionTitle("Account")
-            Text("Local profile only — no server, no account. Your library stays on your device.", color = MioTextSecondary, fontSize = 13.sp)
+            SectionTitle("Âm thanh")
+            Text("Chỉnh EQ, hiệu ứng và chất lượng phát nhạc.", color = MioTextSecondary, fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
+            GradientButton("Equalizer & sound") { nav.navigate(Routes.EQ) }
+            Spacer(Modifier.height(12.dp))
+            androidx.compose.material3.TextButton(onClick = { nav.navigate(Routes.EQ) }) { Text("Chỉnh âm tai nghe (Harman target)", color = MioCyan) }
             Spacer(Modifier.height(16.dp))
-            SectionTitle("Music quality")
+            Text("Chất lượng nhạc", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text("Original files play as-is. DSD (.dsf/.dff) plays natively; only files the native decoder can't handle (e.g. DST-compressed .dff) are decoded once to a 176.4 kHz PCM WAV cache as a fallback, then played from cache.", color = MioTextSecondary, fontSize = 13.sp)
             Spacer(Modifier.height(16.dp))
-            SectionTitle("Downloads")
             val cacheSizeMb = remember {
                 val dir = java.io.File(ctx.cacheDir, "dsd-cache")
                 (dir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
@@ -237,7 +267,9 @@ import kotlinx.coroutines.launch
             // Design system: theme switch lives in Profile / Settings >
             // Interface — Deep Wave / Sunset / Follow system. Deep Wave is
             // the first-install default.
-            SectionTitle("Giao diện")
+            SectionTitle("Hiển thị")
+            Text("Giao diện sáng hay tối, theo ý bạn.", color = MioTextSecondary, fontSize = 13.sp)
+            Spacer(Modifier.height(8.dp))
             val themeMode by settings.themeMode.collectAsState(initial = "deep_wave")
             listOf("deep_wave" to "Deep Wave (tối)", "sunset" to "Sunset (sáng)", "system" to "Theo hệ thống").forEach { (value, label) ->
                 Row(Modifier.fillMaxWidth().clickable { scope.launch { settings.setThemeMode(value) } }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -246,38 +278,77 @@ import kotlinx.coroutines.launch
                 }
             }
             Spacer(Modifier.height(16.dp))
+        }
+        item {
+            SectionTitle("Thư viện")
+            Text("Nhạc trên máy và thông tin bài hát.", color = MioTextSecondary, fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
+            Text("${tracks.size} songs • ${tracks.count { it.isFavorite }} favorites", color = MioTextSecondary)
+            Spacer(Modifier.height(12.dp))
             // v1.1.10: auto metadata — fetch missing artist/album/cover
             // in the background (iTunes / MusicBrainz, free, no key)
             // and save it on the device. Off = no network lookup at all.
-            SectionTitle("Metadata bài hát")
-            val autoMetadata by settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_AUTO_METADATA, true).collectAsState(initial = true)
+            Text("Metadata bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            val autoMetadata by settings.flow(SettingsStore.KEY_AUTO_METADATA, true).collectAsState(initial = true)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Tự tải metadata", color = MioText, fontSize = 16.sp)
                     Text("Tự tìm nghệ sĩ, album và bìa cho bài thiếu thông tin, lưu vào máy để nghe offline.", color = MioTextSecondary, fontSize = 13.sp)
                 }
-                androidx.compose.material3.Switch(checked = autoMetadata, onCheckedChange = { scope.launch { settings.set(com.mio.player.data.prefs.SettingsStore.KEY_AUTO_METADATA, it) } })
+                androidx.compose.material3.Switch(checked = autoMetadata, onCheckedChange = { scope.launch { settings.set(SettingsStore.KEY_AUTO_METADATA, it) } })
             }
             Spacer(Modifier.height(16.dp))
-            GradientButton("Equalizer & sound") { nav.navigate(Routes.EQ) }
-            Spacer(Modifier.height(12.dp))
             androidx.compose.material3.TextButton(onClick = { libVm.scan() }) { Text("Rescan library", color = MioCyan) }
+            Spacer(Modifier.height(16.dp))
+        }
+        item {
+            SectionTitle("Phát lại")
+            Text("Cách các bài nối tiếp nhau, chuẩn hoá âm lượng và tốc độ phát.", color = MioTextSecondary, fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
+            Text("ReplayGain: $replayGain", color = MioText)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("off", "track", "album").forEach { m ->
+                    FilterChip(selected = replayGain == m, onClick = { scope.launch { settings.set(SettingsStore.KEY_REPLAYGAIN, m) } }, label = { Text(m) })
+                }
+            }
             Spacer(Modifier.height(8.dp))
-            SectionTitle("Updates (OTA)")
+            val crossfadeSec = crossfadeMs / 1000f
+            Text("Crossfade: ${crossfadeSec.toInt()}s", color = MioText)
+            Slider(value = crossfadeSec, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_CROSSFADE_MS, (it * 1000).toInt()) } }, valueRange = 0f..12f)
+            Spacer(Modifier.height(8.dp))
+            Text("Playback speed: ${speed}x", color = MioText)
+            Slider(value = speed, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_SPEED, it) } }, valueRange = 0.5f..2f)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Gapless playback", color = MioText, modifier = Modifier.weight(1f))
+                Switch(checked = gapless, onCheckedChange = { scope.launch { settings.set(SettingsStore.KEY_GAPLESS, it) } })
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+        item {
+            SectionTitle("Giới thiệu")
+            Text("Phiên bản, cập nhật và nhật ký lỗi.", color = MioTextSecondary, fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
             Text(OtaUpdateChecker.currentVersionLabel(), color = MioTextSecondary, fontSize = 13.sp)
             Text("Updates come from GitHub Releases — no Play Store needed. A new release is published when a tag v* is pushed.", color = MioTextSecondary, fontSize = 13.sp)
             Spacer(Modifier.height(8.dp))
             GradientButton(if (update.checking) "Checking…" else "Check for updates") { update.check(true) }
             update.available?.let { info -> UpdateDialog(info) { update.available = null } }
             Spacer(Modifier.height(16.dp))
-            SectionTitle("Nhật ký lỗi")
+            Text("Nhật ký lỗi", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text("Nếu app tự thoát đột ngột, mở đây xem log rồi chụp màn hình gửi lại — trong này ghi rõ app crash vì sao và đang làm gì lúc chết.", color = MioTextSecondary, fontSize = 13.sp)
             Spacer(Modifier.height(8.dp))
             GradientButton("Xem nhật ký lỗi") { nav.navigate(Routes.LOG) }
-            Text("Settings: gapless, crossfade, ReplayGain, sleep timer and playback speed are in the Equalizer & Sound screen and Now Playing. No account, no cloud — everything is local.", color = MioTextSecondary, fontSize = 13.sp)
+            Spacer(Modifier.height(16.dp))
+            Text("Local profile only — no server, no account. Your library stays on your device.", color = MioTextSecondary, fontSize = 13.sp)
+        }
+        item {
+            Spacer(Modifier.height(16.dp))
+            Text("Hẹn giờ ngủ (sleep timer) nằm ở màn Đang phát. Không tài khoản, không cloud — mọi thứ đều lưu trên máy.", color = MioTextSecondary, fontSize = 13.sp)
         }
     }
 }
+
 /** Crash + event log viewer. The log is the only way to stop guessing
  *  why the app exits: a Java crash lands here with its stack trace,
  *  and the event log shows the last thing the app was doing. */
