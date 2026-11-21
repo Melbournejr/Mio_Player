@@ -216,7 +216,7 @@ class MusicScanner(private val ctx: Context) {
         var dstCompressed = false
         var scannedBytes = 0L
         val chunkHead = ByteArray(12)
-        while (true) {
+        while (scannedBytes <= 1024 * 1024L) {
             if (!readExact(chunkHead)) return@runCatching null
             scannedBytes += 12
             if (scannedBytes > 1024 * 1024L) return@runCatching null
@@ -258,5 +258,6 @@ class MusicScanner(private val ctx: Context) {
                 }
             }
         }
+        null
     }.getOrNull()
 }
