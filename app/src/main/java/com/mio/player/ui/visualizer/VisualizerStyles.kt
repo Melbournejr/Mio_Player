@@ -820,6 +820,7 @@ fun VisualizerFerrofluid(
     modifier: Modifier = Modifier
 ) {
     val colors = LocalMioColors.current.gradientColors
+    val accent = LocalMioColors.current.accent
     val live = isLive(levels)
     val n = levels.size
     // v1.1.14: 16 thick spikes, not 32 thin ones — the selected band
