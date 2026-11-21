@@ -85,7 +85,7 @@ class PlayerManager(private val ctx: Context) {
                     enableAudioOutputPlaybackParameters: Boolean
                 ): AudioSink? {
                     return DefaultAudioSink.Builder(context)
-                        .setAudioProcessors(DsdDecimationAudioProcessor(ctx.applicationContext))
+                        .setAudioProcessors(arrayOf<AudioProcessor>(DsdDecimationAudioProcessor(ctx.applicationContext)))
                         .setEnableFloatOutput(enableFloatOutput)
                         .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParameters)
                         .build()

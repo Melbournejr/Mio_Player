@@ -7,9 +7,15 @@ name: Build FFmpeg DSD native lib (arm64-v8a)
 # (The GitHub token available to this project's automation cannot
 # dispatch workflows — HTTP 403 on workflow_dispatch — so the workflow
 # also runs when its own file is pushed. Touch this file to rebuild.)
-# The .so is uploaded as an artifact; it is NOT committed by this workflow.
-# A later step commits it to:
+# The .so is uploaded as an artifact AND committed back into the repo
+# by the last step below, at:
 #   third_party/media3-ffmpeg-decoder-dsd/src/main/jniLibs/arm64-v8a/libffmpegJNI.so
+# The commit is idempotent: if the rebuilt .so is byte-identical to the
+# committed one, the step logs "No change" and pushes nothing. The
+# commit-back push touches only the .so path, so it does NOT re-trigger
+# this workflow (paths filter above), but it DOES trigger the app build
+# workflow (build-apk.yml runs on any push to main) — which is wanted:
+# the next app build is the one that ships the new .so.
 #
 # Provenance (verified 2026-11-20):
 # - Media3 1.9.0, repo androidx/media, tag 1.9.0
@@ -60,7 +66,10 @@ name: Build FFmpeg DSD native lib (arm64-v8a)
       - '.github/workflows/build-ffmpeg-dsd.yml'
 
 permissions:
-  contents: read
+  # contents: write is needed ONLY for the final "Commit libffmpegJNI.so
+  # to repo" step, which pushes the rebuilt .so back to main with the
+  # workflow's GITHUB_TOKEN. Nothing else in this workflow writes.
+  contents: write
 
 jobs:
   build-ffmpeg-dsd-arm64:
@@ -256,3 +265,34 @@ jobs:
           path: ${{ github.workspace }}/.ffmpeg-dsd-build/ffmpeg-dsd-arm64
           if-no-files-found: error
           retention-days: 30
+
+      # Commit the rebuilt .so back into the repo so the app build picks
+      # it up without any manual download (the previous manual path —
+      # downloading the artifact to a local VM — stalled on a permission
+      # prompt and left the old .so in the repo). Idempotent: no commit
+      # and no push when the .so is byte-identical to the committed one.
+      # The checkout persists the workflow GITHUB_TOKEN credentials, so
+      # `git push` works; the push touches only the .so path, so this
+      # workflow does not re-trigger itself (paths filter), while the app
+      # build workflow (any push to main) does run — as intended.
+      - name: Commit libffmpegJNI.so to repo
+        run: |
+          set -eux
+          SO_PATH="third_party/media3-ffmpeg-decoder-dsd/src/main/jniLibs/arm64-v8a/libffmpegJNI.so"
+          NEW_SO="$WORK_DIR/cmake-arm64-v8a/libffmpegJNI.so"
+          mkdir -p "$(dirname "$SO_PATH")"
+          echo "Old committed .so:"
+          if [ -f "$SO_PATH" ]; then ls -l "$SO_PATH"; sha256sum "$SO_PATH"; else echo "(none in repo)"; fi
+          echo "New built .so:"
+          ls -l "$NEW_SO"; sha256sum "$NEW_SO"
+          cp "$NEW_SO" "$SO_PATH"
+          git config user.name "mio-player-ci"
+          git config user.email "mio-player-ci@users.noreply.github.com"
+          git add "$SO_PATH"
+          if git diff --cached --quiet; then
+            echo "libffmpegJNI.so unchanged — skipping commit and push."
+          else
+            git commit -m "ffmpeg-dsd: rebuild libffmpegJNI.so"
+            git push
+            echo "Committed and pushed rebuilt libffmpegJNI.so."
+          fi
