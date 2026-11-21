@@ -177,7 +177,7 @@ class MusicScanner(private val ctx: Context) {
     //   The scan stops at the data chunk; at most 1 MiB of chunk headers
     //   and skipped payload is walked, so a corrupt file cannot loop
     //   the scan forever.
-    private fun dffInfo(stream: InputStream): Pair<Long, Int>? = runCatching {
+    private fun dffInfo(stream: InputStream): Pair<Long, Int>? = runCatching<Pair<Long, Int>?> {
         fun readExact(buf: ByteArray): Boolean {
             var read = 0
             while (read < buf.size) {
