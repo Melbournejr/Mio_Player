@@ -118,7 +118,7 @@ import kotlinx.coroutines.launch
     LaunchedEffect(t?.id) {
         t?.let {
             val repo = (ctx.applicationContext as com.mio.player.MioApp).container.lyricsRepo
-            val r = repo.getLyrics(it.artist, it.title, it.album, it.durationMs, it.path)
+            val r = repo.getLyrics(it.artist, it.title, it.album, it.durationMs, it.path, vm.pm.player.duration.takeIf { d -> d > 0 } ?: 0)
             lines = r?.synced ?: emptyList(); plain = r?.plain; source = r?.source ?: "No lyrics found"
         }
     }

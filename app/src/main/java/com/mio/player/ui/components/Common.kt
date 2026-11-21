@@ -1,5 +1,4 @@
 package com.mio.player.ui.components
-import androidx.compose.animation.core.*
 import android.content.ContentUris
 import android.provider.MediaStore
 import androidx.compose.foundation.background
@@ -11,7 +10,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,8 +25,6 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.mio.player.data.model.Track
 import com.mio.player.ui.theme.*
-import kotlin.math.PI
-import kotlin.math.sin
 @Composable fun GradientButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Button(onClick = onClick, modifier = modifier.fillMaxWidth().height(52.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
@@ -104,37 +100,29 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
     }
 }
 /** Live audio wave for Now Playing. Bars follow ONLY the real FFT levels
- *  from the player's output while playing.
- *  FIX 3 (v1.1.1): the old fallback drew a sine wave whose bar COLOURS
- *  followed playback progress, so it looked like a second progress bar
- *  next to the real time bar — exactly what the user complained about.
- *  `progress` is kept in the signature only so the existing call site in
- *  NowPlaying keeps compiling; it is intentionally ignored here and never
- *  drives bar height or colour. When no live FFT data is available the
- *  bars sit low and still: fixed per-bar heights with one slow, uniform
- *  breathing swell shared by ALL bars (same factor, no travelling wave,
- *  not tied to position or duration), so nothing about them reads as
- *  playback progress. */
+ *  from the in-process tap in WaveformTap (v1.1.2, Fix 2) while playing.
+ *  The Visualizer source is retired (it cannot initialise on this phone,
+ *  error -3) and there is NO time-based animation of any kind here any
+ *  more: the old idle "breathing" swell is gone too, because any motion
+ *  not driven by the audio reads as fake movement. `progress` is kept in
+ *  the signature only so the existing call site in NowPlaying keeps
+ *  compiling; it is intentionally ignored here and never drives bar
+ *  height or colour. When no live FFT data is available (silence /
+ *  paused) the bars sit low and still: fixed per-bar heights determined
+ *  by the bar index only. */
 @Suppress("UNUSED_PARAMETER")
 @Composable fun LiveWaveform(levels: FloatArray, playing: Boolean, progress: Float, modifier: Modifier = Modifier) {
     val live = levels.any { it > 0.02f }
-    // One slow global swell for the idle state only: every bar shares the
-    // same factor, so the idle wave never ripples across the bars like a
-    // progress animation. ~3.6 s per breath, +/-10%.
-    val transition = rememberInfiniteTransition(label = "waveIdle")
-    val breathe by transition.animateFloat(0f, (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(tween(3600, easing = LinearEasing), RepeatMode.Restart), label = "breathe")
-    val idleScale = 1f + 0.10f * (if (playing) 1f else 0.6f) * sin(breathe.toDouble()).toFloat()
     Row(modifier.height(56.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         val n = levels.size
         for (i in 0 until n) {
             val h = if (live) {
-                8f + levels[i] * 48f
+                8f + levels[i].coerceIn(0f, 1f) * 48f
             } else {
                 // Low fixed height per bar (9..14 dp, deterministic from
-                // the bar index only) times the shared breathing factor.
-                // Nothing here depends on position, duration or progress.
-                (9f + 5f * (0.5f + 0.5f * sin(i * 1.7).toFloat())) * idleScale
+                // the bar index only). Nothing here depends on time,
+                // position, duration or progress.
+                9f + 5f * (0.5f + 0.5f * STATIC_IDLE[i % STATIC_IDLE.size])
             }
             // Uniform colour: live bars teal, idle bars the same teal at
             // low alpha. No bar is ever coloured by playback progress.
@@ -143,3 +131,10 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
         }
     }
 }
+
+/** Fixed per-bar idle shape (values in -1..1, symmetric) so the idle
+ *  bars are not all the same flat height, without any animation. */
+private val STATIC_IDLE = floatArrayOf(
+    0.0f, 0.6f, 1.0f, 0.4f, -0.3f, -0.8f, -0.2f, 0.7f,
+    0.9f, 0.1f, -0.6f, -1.0f, -0.4f, 0.5f, 0.8f, 0.0f
+)

@@ -85,7 +85,7 @@ class PlayerManager(private val ctx: Context) {
                     enableAudioOutputPlaybackParameters: Boolean
                 ): AudioSink? {
                     return DefaultAudioSink.Builder(context)
-                        .setAudioProcessors(arrayOf<AudioProcessor>(DsdDecimationAudioProcessor(ctx.applicationContext)))
+                        .setAudioProcessors(arrayOf<AudioProcessor>(DsdDecimationAudioProcessor(ctx.applicationContext), waveform.fftProcessor))
                         .setEnableFloatOutput(enableFloatOutput)
                         .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParameters)
                         .build()
@@ -133,6 +133,10 @@ class PlayerManager(private val ctx: Context) {
     private var recoveringDsd = false
     private val failedDsd = mutableSetOf<String>()
     private val recoveredDsd = mutableSetOf<String>()
+    // v1.1.2 (Fix 4): DSD tracks whose stale cached WAV has already been
+    // pruned after a proven native play this session — so STATE_READY
+    // firing again (seek / repeat / pause-resume) does not re-log.
+    private val nativeDsdCacheCleaned = mutableSetOf<String>()
     private val settings by lazy { SettingsStore(ctx.applicationContext) }
     private val _shuffleEnabled = MutableStateFlow(false); val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF); val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
@@ -156,7 +160,10 @@ class PlayerManager(private val ctx: Context) {
                 scope.launch { runCatching { settings.set(SettingsStore.KEY_REPEAT, mode) } }
             }
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) consecutiveErrors = 0
+                if (state == Player.STATE_READY) {
+                    consecutiveErrors = 0
+                    maybePruneStaleDsdCache()
+                }
             }
             override fun onPlayerError(error: PlaybackException) {
                 MioLog.event(ctx, "Player error: ${error.errorCodeName} ${error.message}")
@@ -219,10 +226,12 @@ class PlayerManager(private val ctx: Context) {
             }
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 // Effects were never attached before: attach here, when the
-                // session actually exists, and tap the same session for the
-                // live waveform on the Now Playing screen.
+                // session actually exists. The waveform is NO LONGER tapped
+                // from this session: v1.1.2 retired the Visualizer-based
+                // WaveformTap (it cannot initialise on this phone,
+                // error -3) — the live levels now come from the in-process
+                // FFT AudioProcessor in the sink chain (waveform.fftProcessor).
                 attachEffects()
-                waveform.attach(audioSessionId)
             }
         })
     }
@@ -245,6 +254,7 @@ class PlayerManager(private val ctx: Context) {
         ensureServiceStarted()
         failedDsd.clear()
         recoveredDsd.clear()
+        nativeDsdCacheCleaned.clear()
         _queue.value = tracks; _index.value = startIndex
         _dsdError.value = null
         MioLog.event(ctx, "playQueue: ${tracks.size} tracks from #$startIndex, first='${tracks[startIndex].title}' dsd=${DsdSupport.isDsd(tracks[startIndex].path)}")
@@ -267,7 +277,12 @@ class PlayerManager(private val ctx: Context) {
         applyReplayGain()
     }
     fun play() { ensureServiceStarted(); player.play() }
-    fun pause() = player.pause()
+    fun pause() {
+        player.pause()
+        // No more PCM reaches the FFT tap while paused: drop to idle
+        // bars instead of freezing the last live frame on screen.
+        waveform.clearLevels()
+    }
     fun next() = player.seekToNextMediaItem()
     fun previous() = player.seekToPreviousMediaItem()
     fun seekTo(ms: Long) = player.seekTo(ms)
@@ -296,6 +311,37 @@ class PlayerManager(private val ctx: Context) {
         player.volume = Math.pow(10.0, (gainDb / 20.0).toDouble()).toFloat().coerceIn(0f, 1.5f)
     }
     fun attachEffects() { fx.attach(player.audioSessionId) }
+
+    /**
+     * v1.1.2 (Fix 4): when a DSD track reaches STATE_READY, its native
+     * playback has proved itself for this session — delete its stale
+     * cached transcode WAV (~200 MB each) so the cache shrinks on its
+     * own. Guards, in order:
+     *  - current track is DSD and not already pruned this session;
+     *  - NOT in [recoveredDsd] (the fallback swapped this track to its
+     *    WAV — the WAV is still needed) and NOT in [failedDsd];
+     *  - no fallback decode is running right now ([recoveringDsd] /
+     *    [_isConvertingDsd]) — DsdDecoder also refuses while its own
+     *    decode job for the track is in flight;
+     *  - the media item actually playing is still the track's RAW uri,
+     *    not a swapped-in WAV (a replaceMediaItem to the fallback races
+     *    STATE_READY, and this check kills that race even before
+     *    recoveredDsd is updated).
+     * Best-effort: DsdDecoder.deleteCachedWav swallows errors and logs
+     * the result; a missing WAV is simply a no-op (nothing to prune).
+     */
+    private fun maybePruneStaleDsdCache() {
+        val t = currentTrack ?: return
+        if (!DsdSupport.isDsd(t.path)) return
+        if (recoveredDsd.contains(t.path) || failedDsd.contains(t.path)) return
+        if (nativeDsdCacheCleaned.contains(t.path)) return
+        if (recoveringDsd || _isConvertingDsd.value) return
+        val playingUri = player.currentMediaItem?.localConfiguration?.uri
+        if (playingUri != null && playingUri != t.uri) return
+        nativeDsdCacheCleaned.add(t.path)
+        runCatching { DsdDecoder.deleteCachedWav(ctx, t) }
+            .onFailure { MioLog.event(ctx, "DSD cache prune FAILED '${t.title}': ${it::class.java.simpleName} ${it.message}") }
+    }
     fun isDsdCurrent(): Boolean = currentTrack?.let { DsdSupport.isDsd(it.path) } ?: false
     fun release() { scope.cancel(); fx.release(); waveform.release(); player.release() }
 

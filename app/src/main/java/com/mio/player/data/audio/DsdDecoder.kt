@@ -73,6 +73,47 @@ object DsdDecoder {
         return Uri.fromFile(f)
     }
 
+    /**
+     * v1.1.2 (Fix 4): best-effort delete of ONE track's stale cached WAV.
+     * Called by PlayerManager when a DSD track has just proved it plays
+     * natively (STATE_READY with no fallback recovery), so the ~200 MB
+     * transcode WAVs left over from when native decode kept failing
+     * shrink away on their own instead of piling up in the cache.
+     *
+     * Safety: never deletes while a decode is in flight for this track
+     * (the [inflight] key is present) — the caller must additionally
+     * only call this for tracks NOT in its recovered set, i.e. tracks
+     * the fallback does not need. Returns true only if a cached WAV
+     * file was present and deleted; false if there was nothing to delete,
+     * a decode is in flight, or the delete failed. Never throws.
+     * The manual "Clear DSD cache" button (Detail.kt) is untouched and
+     * still wipes the whole dsd-cache directory.
+     */
+    fun deleteCachedWav(context: Context, track: Track): Boolean {
+        val key = cacheKey(track)
+        synchronized(inflight) {
+            if (inflight.containsKey(key)) {
+                MioLog.event(context, "DSD cache keep '${track.title}': decode in flight, not deleting")
+                return false
+            }
+        }
+        return runCatching {
+            val f = cacheFile(context, track)
+            if (!f.exists()) return false
+            val sizeKb = f.length() / 1024
+            if (f.delete()) {
+                MioLog.event(context, "DSD cache pruned '${track.title}': deleted stale WAV ${sizeKb}KB (native playback OK)")
+                true
+            } else {
+                MioLog.event(context, "DSD cache prune FAILED '${track.title}': could not delete cached WAV")
+                false
+            }
+        }.getOrElse {
+            MioLog.event(context, "DSD cache prune FAILED '${track.title}': ${it::class.java.simpleName} ${it.message}")
+            false
+        }
+    }
+
     /** Keep the WAV cache under ~1 GB: delete oldest files first. */
     private fun pruneCache(context: Context) {
         runCatching {

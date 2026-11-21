@@ -394,7 +394,12 @@ class DsdExtractor(private val logContext: Context? = null) : Extractor {
             val subSize = p.readUnsignedLongToLong()
             if (subSize < 0 || subSize > p.bytesLeft()) break
             val subStart = p.position
-            when (id) {
+            // DSDIFF chunk IDs are 4 bytes, space-padded: the sample-rate
+            // chunk is "FS  " (F, S, space, space — FFmpeg libavformat/iff.c
+            // MKTAG('F','S',' ',' ')), not "FS". Comparing the raw 4-byte
+            // id never matched, so sampleRate stayed 0 and every .dff
+            // failed with "DFF sampleRate=0". trim() covers any padding.
+            when (id.trim()) {
                 "FS" -> if (subSize >= 4) sampleRate = p.readUnsignedIntToInt()
                 "CHNL" -> if (subSize >= 2) channelCount = p.readUnsignedShort()
                 "CMPR" -> if (subSize >= 4) dstCompressed = p.readString(4) == "DST "
