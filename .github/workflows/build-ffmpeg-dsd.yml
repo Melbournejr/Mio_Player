@@ -275,6 +275,10 @@ jobs:
       # `git push` works; the push touches only the .so path, so this
       # workflow does not re-trigger itself (paths filter), while the app
       # build workflow (any push to main) does run — as intended.
+      # NOTE: push explicitly to main (`HEAD:main`): when this workflow
+      # is triggered by a tag push, the checkout is a detached HEAD and
+      # a bare `git push` fails with "not currently on a branch"
+      # (run #6, 2026-11-21).
       - name: Commit libffmpegJNI.so to repo
         run: |
           set -eux
@@ -293,6 +297,6 @@ jobs:
             echo "libffmpegJNI.so unchanged — skipping commit and push."
           else
             git commit -m "ffmpeg-dsd: rebuild libffmpegJNI.so"
-            git push
+            git push origin HEAD:main
             echo "Committed and pushed rebuilt libffmpegJNI.so."
           fi
