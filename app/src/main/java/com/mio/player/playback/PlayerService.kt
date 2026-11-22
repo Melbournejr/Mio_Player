@@ -12,9 +12,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.media.session.MediaButtonReceiver
-import androidx.media.session.PlaybackStateCompat
 import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 /** Foreground MediaSession service: notification + lockscreen + Bluetooth controls.
@@ -28,9 +26,17 @@ import androidx.media3.session.MediaSessionService
  *  androidx.media.app.NotificationCompat.MediaStyle — core's
  *  NotificationCompat has no MediaStyle. Both need the
  *  androidx.media:media dependency (see app/build.gradle.kts).
- *  MediaSession.getSessionCompatToken() is @UnstableApi, hence the
- *  opt-in on this class. */
-@OptIn(UnstableApi::class)
+ *  The transport action codes below are the PlaybackStateCompat
+ *  values (SKIP_TO_PREVIOUS = 2, SKIP_TO_NEXT = 32, PLAY_PAUSE =
+ *  512) written as literals: PlaybackStateCompat itself is not on
+ *  the compile classpath even with androidx.media:media:1.7.0
+ *  (two failed CI runs proved it), and neither is MediaSession's
+ *  getSessionCompatToken() return type — so the MediaStyle carries
+ *  no session token. That is fine on Android 13+: the lock-screen
+ *  media card and the Dynamic Island are driven by the framework
+ *  MediaSession itself, which 1.1.19 already proved surfaces
+ *  (island showed art + waveform); the token only mattered for
+ *  pre-13 SystemUI association. */
 class PlayerService : MediaSessionService() {
     private var session: MediaSession? = null
     private var lastArtworkUri: Uri? = null
@@ -51,8 +57,8 @@ class PlayerService : MediaSessionService() {
     // notification is a real media notification too — either way
     // the placeholder is gone. The seek bar on the lock screen /
     // Dynamic Island comes from the MediaSession itself (its
-    // playback state), which this notification carries via
-    // setMediaSession(sessionCompatToken).
+    // playback state), not from the notification — see the class
+    // KDoc on why no session token is attached.
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) { updateNotification() }
         override fun onIsPlayingChanged(isPlaying: Boolean) { updateNotification() }
@@ -119,9 +125,10 @@ class PlayerService : MediaSessionService() {
         )
     }
     /** The real media notification: track title + artist, cover art
-     *  as the large icon, prev / play-pause / next actions, and the
-     *  MediaSession token so the system renders its media card
-     *  (lock screen + Dynamic Island) with the seek bar. Before
+     *  as the large icon, prev / play-pause / next actions in
+     *  MediaStyle form. The system's media card (lock screen +
+     *  Dynamic Island) with the seek bar comes from the MediaSession
+     *  itself — no token is attached (see class KDoc). Before
      *  any track is loaded this falls back to "Mio Player / Đang
      *  phát nhạc" — the same words as the old placeholder, but
      *  already in MediaStyle form, so the first track change
@@ -132,15 +139,10 @@ class PlayerService : MediaSessionService() {
         val title = metadata?.title?.toString() ?: "Mio Player"
         val artist = metadata?.artist?.toString()
         val isPlaying = player?.isPlaying == true
-        val prevIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(
-            this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-        )
-        val playPauseIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(
-            this, PlaybackStateCompat.ACTION_PLAY_PAUSE
-        )
-        val nextIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(
-            this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-        )
+        // PlaybackStateCompat action codes as literals (see class KDoc).
+        val prevIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, 2L)
+        val playPauseIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, 512L)
+        val nextIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, 32L)
         val builder = NotificationCompat.Builder(this, "default_channel_id")
             .setSmallIcon(androidx.media3.session.R.drawable.media3_notification_small_icon)
             .setContentTitle(title)
@@ -158,7 +160,6 @@ class PlayerService : MediaSessionService() {
             .addAction(androidx.media3.session.R.drawable.media3_icon_next, "Next", nextIntent)
             .setStyle(
                 androidx.media.app.NotificationCompat.MediaStyle()
-                    .setMediaSession(session?.sessionCompatToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
         return builder.build()
