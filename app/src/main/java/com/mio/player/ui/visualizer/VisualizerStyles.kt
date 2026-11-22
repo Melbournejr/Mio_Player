@@ -82,9 +82,34 @@ import kotlin.math.sqrt
  * a frequency selector (Bass / Tất cả / Treble, see
  * [FerrofluidFreq]).
  *
+ * v1.1.16 — THOROUGH REDO, measured from the user's 22.9 s test
+ * video ("...Baby One More Time", MP3) + the demo screenshot, not
+ * guessed: the user rejected ALL five styles ("Tao ko ưng đc cái
+ * nào"), and the video proves them right. Three root causes, all
+ * with numbers: (1) FERROFLUID GRADIENT ANCHORING — the body
+ * gradient had no startY/endY, so it spanned the whole 140 dp row
+ * while the dome occupies only its bottom 24–80 dp; the dome
+ * rendered at ~#1B1B1F (1.06:1 — measured pixel by pixel), and the
+ * spike brush faded to #141419 (1.03:1), so only spike tips + rim
+ * lines showed (the comb). Fixed by anchoring the body gradient
+ * to the dome itself with brighter stops (rendered dome 4.27:1 at
+ * the surface, 2.66:1 mid-dome) and solid bright spike bodies.
+ * (2) CIRCULAR RAY THICKNESS — rays were 80% of the arc pitch
+ * (~8.2 dp wide, ~1.4 dp gaps; each ray spans ~10° of the 11.25°
+ * pitch, measured on the user's screenshot), so the ring read as
+ * solid petals; the demo's rays are ~1 dp thin lines with clear
+ * gaps. Fixed: 25% of pitch (~2.7 dp), disc 68 → 78 dp.
+ * (3) LIFT SATURATION — sqrt(level×4) saturates at level 0.25,
+ * so loud pop made every bar/spike/ray the same height (a flat
+ * wall). Fixed: shared gain 4 → 2 (saturates at 0.5), Mirror 6 →
+ * 2, Wave 3.5 → 2.5. Row heights UNCHANGED — the demo stage
+ * measures ~130–144 dp, about the same as the app's 140 dp tall
+ * row, so the "~300 dp demo stage" claim in the v1.1.14 note
+ * above was wrong and height was never the problem.
+ *
  * Sizing / colours: Bars / Wave / Mirror share the 88 dp slot and
  * Ferrofluid / Circular use the 140 dp slot (v1.1.14), the same
- * gain (4) for the FFT styles, and the same theme gradient (Deep
+ * gain (2, was 4 — v1.1.16, see VIS_GAIN) for the FFT styles, and the same theme gradient (Deep
  * Wave teal #14B8A6 -> cyan #22D3EE; Sunset coral -> orange -> amber
  * via the theme tokens — no hardcoded colours), except Ferrofluid
  * whose liquid body is deliberately near-black in both themes (that
@@ -96,14 +121,22 @@ import kotlin.math.sqrt
 // for the math): only a level >= 0.25 reaches full height.
 // v1.1.12: row height 112 dp -> 88 dp so the lyrics area on Now
 // Playing gains 24 dp.
-// v1.1.14: Ferrofluid / Circular get a TALL row (140 dp) — the demo
-// stages them on ~300 dp and they were unreadable at 88 dp; Bars /
-// Wave / Mirror keep 88 dp so the lyrics area only shrinks while a
-// tall style is active.
+// v1.1.16: the "~300 dp demo stage" claim above was WRONG — the
+// demo stage is ~130–144 dp, about the same as the app's 140 dp
+// tall row (measured from the user's demo screenshot: the whole
+// Circular visual is ~100 dp across). Row height was never the
+// problem; the three real causes are in the file header KDoc.
 private const val VIS_ROW_HEIGHT_DP = 88f
 private const val VIS_ROW_TALL_DP = 140f
 private const val VIS_MIN_HEIGHT_DP = 10f
-private const val VIS_GAIN = 4f
+// v1.1.16 — shared FFT lift gain 4 -> 2. The sqrt lift saturated
+// at level 0.25 (sqrt(0.25*4) = 1), so on a loud pop chorus most
+// bands sat at 0.75–1.0 and every style read as a flat wall /
+// uniform comb — no dynamic range. With gain 2 the curve keeps
+// its shape to level 0.5: level 0.04 -> 0.28, 0.10 -> 0.45,
+// 0.15 -> 0.55, 0.25 -> 0.71, 0.40 -> 0.89, 0.50 -> 1.0.
+// Quiet bands still read (the per-style floors are unchanged).
+private const val VIS_GAIN = 2f
 private const val VIS_LIVE_THRESHOLD = 0.005f
 // v1.1.6 — Mirror-only lift: the mirrored halves are each half the row,
 // so the same level reads half as tall as in Bars, and at levels
@@ -114,7 +147,11 @@ private const val VIS_LIVE_THRESHOLD = 0.005f
 // At level 0.04: sqrt(0.04*6) = 0.49 (was 0.40); at 0.01: 0.245 (was
 // 0.20); the minimum visible half is 12 - 2 (gap) = 10 dp per side,
 // 20 dp total, instead of 3 dp per side / 6 dp total.
-private const val VIS_MIRROR_GAIN = 6f
+// v1.1.16 — gain 6 -> 2 (same reason as VIS_GAIN): gain 6 saturated
+// at level 0.17, so Mirror's halves were maxed out on any loud
+// passage and read as two solid rows. The 12 dp minimum half stays,
+// so quiet bands still read as bars.
+private const val VIS_MIRROR_GAIN = 2f
 private const val VIS_MIRROR_MIN_HALF_DP = 12f
 
 // v1.1.8 — Wave lift: the v1.1.7 screenshot showed Wave as a thin,
@@ -130,7 +167,13 @@ private const val VIS_MIRROR_MIN_HALF_DP = 12f
 // faint (|x| 0.05 -> 0.42, 0.10 -> 0.59, 0.20 -> 0.84), and the
 // stroke thickens 3 dp -> 4.5 dp with a stronger glow (see
 // VisualizerWave).
-private const val VIS_WAVE_GAIN = 3.5f
+// v1.1.16 — gain 3.5 -> 2.5: gain 3.5 saturates at |x| 0.29, so on
+// loud pop the whole waveform clipped into a flat-topped block
+// (|x| 0.30 -> 1.0). At 2.5 the peaks still reach full height
+// (|x| 0.40 -> 1.0) but the body keeps its shape (|x| 0.05 ->
+// 0.35, 0.10 -> 0.50, 0.20 -> 0.71); the 4.5 dp stroke + glow
+// from 1.1.14 stay, so soft ballads stay visible.
+private const val VIS_WAVE_GAIN = 2.5f
 
 // v1.1.13 — peak caps (Bars / Mirror / Ferrofluid): a cap holds its
 // height for ~12 published frames (~0.4 s at ~30 Hz) after a new
@@ -527,6 +570,20 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
  * otherwise unchanged; the style-name pill no longer sits in the
  * centre covering the disc (see VisualizerPanel — it moved to the
  * top-left corner).
+ *
+ * v1.1.16 — WHY 68 dp STILL READ AS A SMALL FLOWER (user's video +
+ * screenshot, "...Baby One More Time", measured): the disc was
+ * never the problem — the RAYS were. At 80% of the arc pitch each
+ * ray is ~8.2 dp wide with ~1.4 dp gaps (measured: each ray spans
+ * ~10° of the 11.25° pitch), so the 32 rays merge into a solid
+ * petal ring that visually swallows the disc; the demo's rays are
+ * ~1 dp thin lines with clear gaps. Fixes: rays 80% → 25% of
+ * pitch (~2.7 dp), disc 68 → 78 dp (innerR 42 dp, budget 26 dp —
+ * the demo's disc/total proportion ≈ 0.60, preserved at the full
+ * row height). The lift is now the shared sqrt(level×2) curve
+ * (gain 4 → 2, power 0.75 → 0.5): the old curve saturated at
+ * level 0.25, so every ray hit full length on a loud chorus. The
+ * 0.75/frame release (v1.1.11 speed fix) is unchanged.
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -550,8 +607,13 @@ fun VisualizerCircular(
     // smoothing on top of WaveformTap's. When idle the chase state is
     // dropped, so the next live frame attacks instantly from zero
     // instead of decaying from stale bar lengths.
-    val liftGain = 4f // same gain as the shared sqrt lift; only the exponent changes
-    val liftPower = 0.75f
+    // v1.1.16 — lift gain 4 -> 2, power 0.75 -> 0.5: this is now
+    // exactly the shared sqrt(level * 2) curve (see scaledNorm).
+    // The old (level*4)^0.75 saturated at level 0.25, so on a loud
+    // chorus every ray hit full length and the ring read as a solid
+    // flower. The 0.75/frame release (the v1.1.11 speed fix) stays.
+    val liftGain = 2f // same gain as the shared sqrt lift; only the exponent changes
+    val liftPower = 0.5f
     val releaseWeight = 0.75f
     val displayed = remember(n) { FloatArray(n) }
     if (live) {
@@ -575,17 +637,26 @@ fun VisualizerCircular(
             val cx = size.width / 2f
             val cy = size.height / 2f
             val minDim = minOf(size.width, size.height)
-            // v1.1.14: the hub is the 68 dp art disc — innerR is the
-            // disc radius (34 dp) + a 3 dp gap, and the radial budget
-            // is what is left to the slot edge (31 dp on the 140 dp
-            // slot), so bar tips can never clip.
-            val discR = 34.dp.toPx()
+            // v1.1.16: the hub is the 78 dp art disc — innerR is the
+            // disc radius (39 dp) + a 3 dp gap, and the radial budget
+            // is what is left to the slot edge (26 dp on the 140 dp
+            // slot), so bar tips can never clip. The demo disc is
+            // ~59 dp with ~18 dp rays (disc/total ≈ 0.59); 78 dp +
+            // 26 dp rays gives the same 0.60 proportion at the full
+            // row height, so the disc reads as the focal point.
+            val discR = 39.dp.toPx()
             val innerR = discR + 3.dp.toPx()
             val budget = (minDim / 2f - innerR - 2.dp.toPx()).coerceAtLeast(4.dp.toPx())
             val midR = innerR + budget / 2f
-            // Bar thickness: ~80% of the arc pitch at the middle radius
-            // — the bars are nearly contiguous.
-            val barWidth = (2f * PI.toFloat() * midR / n.coerceAtLeast(1) * 0.8f).coerceAtLeast(2.dp.toPx())
+            // v1.1.16 — bar thickness: ~25% of the arc pitch at the
+            // middle radius (≈2.7 dp), NOT 80% (≈8.2 dp). At 80%
+            // the 32 rays were nearly contiguous (measured on the
+            // user's screenshot: each ray spans ~10° of the 11.25°
+            // pitch, ~1.4 dp gaps) and the whole circle read as a
+            // solid flower/petals. The demo's rays are thin lines
+            // (~1 dp) with clear gaps; 25% restores that delicate
+            // sunburst while the 2 dp floor keeps rays visible.
+            val barWidth = (2f * PI.toFloat() * midR / n.coerceAtLeast(1) * 0.25f).coerceAtLeast(2.dp.toPx())
             // Thin accent ring on the disc edge (the old divider inner
             // ring is gone — the disc is the hub now).
             drawCircle(accent.copy(alpha = 0.45f), radius = discR, center = Offset(cx, cy), style = Stroke(width = 1.dp.toPx()))
@@ -613,13 +684,13 @@ fun VisualizerCircular(
                 drawLine(color, start, end, strokeWidth = barWidth, cap = StrokeCap.Round)
             }
         }
-        // v1.1.14: centre disc — 68 dp, real art when there is any,
+        // v1.1.16: centre disc — 78 dp (was 68 dp), real art when there is any,
         // else a theme-gradient disc with a white note (never blank).
         if (hasArt) {
-            AlbumArt(albumId, Modifier.size(68.dp), CircleShape, coverPath = coverPath)
+            AlbumArt(albumId, Modifier.size(78.dp), CircleShape, coverPath = coverPath)
         } else {
             Box(
-                Modifier.size(68.dp).mioGradientBackground(CircleShape),
+                Modifier.size(78.dp).mioGradientBackground(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(Icons.Default.MusicNote, null, tint = Color.White, modifier = Modifier.size(32.dp))
@@ -852,6 +923,47 @@ private fun ferroSurfaceY(x: Float, w: Float, h: Float, minPool: Float, maxPool:
  * (FERRO_SLOT_FACTOR), body gradient brightened to #5A5A63 →
  * #2A2A30 → #121215, stronger specular arc + glossy band,
  * droplet thresholds 0.35/0.18.
+ *
+ * v1.1.16 — WHY 1.1.15 STILL READ AS A COMB (user's video of
+ * "...Baby One More Time", MP3, 22.9 s, frame by frame + pixel
+ * measurement; ratios from the sRGB relative-luminance formula):
+ * the 1.1.15 "brightened" gradient was still a
+ * Brush.verticalGradient with NO startY/endY, so it spans the
+ * whole 140 dp row while the dome only occupies its bottom 24–
+ * 80 dp — the dome surface renders the gradient's middle/bottom
+ * stops, not its bright top stop. Measured on the video: the dome
+ * interior renders at ~#1B1B1F, 1.06:1 against #07181D — the
+ * "top ~3.5:1, mid ~1.8:1" in the 1.1.15 note was the colour of
+ * the gradient STOPS, not the rendered dome (the same measuring
+ * mistake as 1.1.14's "2.07:1"). The spikes were the same story:
+ * their brush runs #6A6A73 (tip) → #141419 (base, 1.03:1), so
+ * only the bright tips + the 2 dp rim lines on both edges showed
+ * — a horizontal scan through the spike zone counts ~20 thin
+ * teal runs 4–6 px wide, i.e. 16 spikes × 2 rim lines each, no
+ * bodies. And Circular's rays were 80% of the arc pitch (~8.2 dp
+ * wide, ~1.4 dp gaps — measured: each ray spans ~10° of the
+ * 11.25° pitch), so the ring read as solid petals, not the
+ * demo's thin rays. Fixes, all measured, not guessed:
+ *  (1) The body gradient is ANCHORED to the dome itself
+ *      (startY = centre surface, endY = row bottom) and its
+ *      stops brightened to #7A7A83 → #5A5A63 → #2E2E35, so the
+ *      RENDERED dome is 4.27:1 at the surface, 2.66:1 at its
+ *      vertical middle, ~1.9:1 at the edges — a grey liquid mass,
+ *      clearly distinct from the background.
+ *  (2) Spike bodies are SOLID: #8A8A93 (tip, 5.30:1) → #5A5A63 →
+ *      #4A4A52 (base, 2.07:1) — no more fade to invisible black;
+ *      the wide bases (already ~60–90% of the slot) now read.
+ *  (3) Circular: disc 68 → 78 dp, rays 80% → 25% of pitch
+ *      (~2.7 dp) with clear gaps — the demo's proportions
+ *      (disc/total ≈ 0.60) at the full row height.
+ *  (4) The shared lift gain 4 → 2 (Bars / Ferrofluid / Circular /
+ *      Mirror) and Wave 3.5 → 2.5: the old curves saturated at
+ *      level 0.25 / |x| 0.29, so loud pop read as a flat wall of
+ *      equal-height bars/spikes. Row heights UNCHANGED (140 dp
+ *      tall styles, 88 dp the rest — the demo stage measures
+ *      ~130–144 dp, so height was never the problem).
+ *  (5) Tower prominence floor 1.4x → 1.5x median; droplets
+ *      brightened #3A3A42 → #6A6A73 and bigger (3 dp).
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -920,7 +1032,7 @@ fun VisualizerFerrofluid(
         // v1.1.15 — spike heights (dp), computed once so the draw
         // loop and the droplet spawn below agree. Spikes: 6 +
         // norm*50 (max 56 dp); tower: 12 + towerNorm*48 (max 60 dp)
-        // with a 1.4x prominence floor over the median spike, so the
+        // with a 1.5x prominence floor over the median spike, so the
         // centre tower always reads as a tower. Each non-tower slot
         // gets its deterministic unevenness factor. Budget: dome
         // centre 80 dp + tower 60 dp = 140 dp = the row, so nothing
@@ -937,7 +1049,7 @@ fun VisualizerFerrofluid(
             val sorted = spikeHeights.filterIndexed { i, _ -> i != spikeCount / 2 }.sorted()
             val median = sorted[sorted.size / 2]
             val towerIdx = spikeCount / 2
-            if (spikeHeights[towerIdx] < 1.4f * median) spikeHeights[towerIdx] = 1.4f * median
+            if (spikeHeights[towerIdx] < 1.5f * median) spikeHeights[towerIdx] = 1.5f * median
         } else {
             for (i in 0 until spikeCount) spikeHeights[i] = if (i == spikeCount / 2) 12f else 6f
         }
@@ -973,17 +1085,26 @@ fun VisualizerFerrofluid(
             val minPoolPx = FERRO_MIN_POOL_DP.dp.toPx()
             val maxPoolPx = FERRO_MAX_POOL_DP.dp.toPx()
             val slotWPx = wPx / spikeCount.coerceAtLeast(1)
-            // v1.1.15: the body gradient is brightened AGAIN — the
-            // 1.1.14 dome (#4A4A52 top, 2.07:1) was visible only at
-            // its top edge; the bulk (#1E1E22 → #0B0B0D, 1.08–1.3:1)
-            // was still invisible, so the blob read as a hole with a
-            // tooth row on top. The whole dome now reads as a grey
-            // mass: top ~3.5:1, mid ~1.8:1. Spikes still do not share
-            // this brush (see below) — only the blob and the spike
-            // bases use it, so the bases still blend into the blob
-            // with no seam.
+            // v1.1.16 — THE GRADIENT-ANCHOR FIX (the root cause of
+            // three failed Ferrofluids): this brush used to be an
+            // unanchored verticalGradient, so it spanned the whole
+            // 140 dp row while the dome only occupies its bottom
+            // 24–80 dp — the dome surface rendered the gradient's
+            // middle/bottom stops (~#1B1B1F, 1.06:1 — measured on
+            // the user's video), not its bright top stop. The
+            // "top ~3.5:1, mid ~1.8:1" claimed above was the colour
+            // of the STOPS, never the rendered dome. Now the
+            // gradient is anchored to the dome itself (startY =
+            // centre surface, endY = row bottom) with brighter
+            // stops, so the RENDERED dome is 4.27:1 at the surface
+            // (#7A7A83), 2.66:1 at its vertical middle (#5A5A63),
+            // ~1.9:1 at the edges — a grey liquid mass, clearly
+            // distinct from the background. Spikes still do not
+            // share this brush (see below).
             val bodyBrush = Brush.verticalGradient(
-                listOf(Color(0xFF5A5A63), Color(0xFF2A2A30), Color(0xFF121215))
+                listOf(Color(0xFF7A7A83), Color(0xFF5A5A63), Color(0xFF2E2E35)),
+                startY = hPx - maxPoolPx,
+                endY = hPx
             )
             // The blob: one domed pool across the whole row.
             blobPath.rewind()
@@ -1067,14 +1188,18 @@ fun VisualizerFerrofluid(
                 )
                 spikePath.close()
                 // v1.1.14: spikes get their OWN brighter brush — a
-                // per-spike vertical gradient, bright tip (#6A6A73,
-                // ~3.5:1 against the background) fading to a dark
-                // base — instead of sharing the blob's brush, which
-                // left only the 1.5 dp rim visible. The brush spans
-                // the spike itself, so the tip is always the bright
-                // end whatever the spike's height.
+                // v1.1.16 — SOLID spike bodies: the old gradient ran
+                // #6A6A73 (tip) → #141419 (base, 1.03:1), so only
+                // the bright tip + the 2 dp rim lines on both edges
+                // showed — the video's "comb" is 16 spikes × 2 rim
+                // lines, no bodies. Now the whole flare is bright:
+                // #8A8A93 (tip, 5.30:1) → #5A5A63 → #4A4A52 (base,
+                // 2.07:1). The brush still spans the spike itself,
+                // so the tip is always the bright end whatever the
+                // spike's height; the wide base (already ~60–90% of
+                // the slot) now reads instead of vanishing.
                 val spikeBrush = Brush.verticalGradient(
-                    listOf(Color(0xFF6A6A73), Color(0xFF2E2E35), Color(0xFF141419)),
+                    listOf(Color(0xFF8A8A93), Color(0xFF5A5A63), Color(0xFF4A4A52)),
                     startY = apex.y,
                     endY = baseY
                 )
@@ -1107,12 +1232,13 @@ fun VisualizerFerrofluid(
             }
             // Droplets: small glossy liquid beads above the tips.
             for (d in droplets) {
-                val r = (2.2f - d.age * 0.08f).dp.toPx().coerceAtLeast(0.8.dp.toPx())
+                // v1.1.16: beads bigger (3 dp, was 2.2 dp) and
+                // brighter (#6A6A73, 3.39:1 — was #3A3A42, 1.61:1,
+                // still too dim to notice on device).
+                val r = (3.0f - d.age * 0.1f).dp.toPx().coerceAtLeast(1.0.dp.toPx())
                 val centre = Offset(d.xDp.dp.toPx(), d.yDp.dp.toPx())
                 val alpha = (1f - d.age / 12f).coerceIn(0f, 1f)
-                // v1.1.14: bead brightened #1B1B1F -> #3A3A42 so the
-                // droplet reads against the dark background.
-                drawCircle(Color(0xFF3A3A42).copy(alpha = alpha), radius = r, center = centre)
+                drawCircle(Color(0xFF6A6A73).copy(alpha = alpha), radius = r, center = centre)
                 drawCircle(
                     Color.White.copy(alpha = 0.8f * alpha),
                     radius = r * 0.35f,
