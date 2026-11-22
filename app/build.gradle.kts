@@ -53,6 +53,19 @@ dependencies {
     implementation("androidx.media3:media3-session:$media3")
     implementation("androidx.media3:media3-common:$media3")
     implementation("androidx.media3:media3-ui:$media3")
+    // v1.1.20 — legacy androidx.media (NOT media3): the media
+    // notification's building blocks live here and nowhere else —
+    // PlaybackStateCompat + MediaButtonReceiver.buildMediaButtonPendingIntent
+    // (androidx.media.session) and NotificationCompat.MediaStyle +
+    // MediaSessionCompat.Token (androidx.media.app / androidx.media.session).
+    // Media3's own MediaButtonReceiver has no buildMediaButtonPendingIntent,
+    // and androidx.core.app.NotificationCompat has no MediaStyle — the
+    // 1.1.20 first push failed compile on exactly those three references.
+    // Version 1.7.0 (Nov 2023, developer.android.com release notes) is
+    // the stable release Media3 1.9 pairs with; it is deprecated in
+    // favour of media3 but still functional, and only used for the
+    // notification — playback stays on Media3.
+    implementation("androidx.media:media:1.7.0")
     // Native DSD: the vendored Media3 FFmpeg decoder module
     // (third_party/media3-ffmpeg-decoder-dsd) — Google does NOT publish
     // androidx.media3:media3-decoder-ffmpeg to Maven, so the 1.9.0 module

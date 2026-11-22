@@ -11,14 +11,26 @@ import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.media.session.MediaButtonReceiver
 import androidx.media.session.PlaybackStateCompat
 import androidx.media3.common.Player
-import androidx.media3.session.MediaButtonReceiver
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 /** Foreground MediaSession service: notification + lockscreen + Bluetooth controls.
  *  The ExoPlayer instance lives in the AppContainer and is shared with the UI,
- *  so the service and the UI never run two players. */
+ *  so the service and the UI never run two players.
+ *  v1.1.20 — the action PendingIntents come from the LEGACY
+ *  androidx.media.session.MediaButtonReceiver (Media3's own receiver
+ *  has no buildMediaButtonPendingIntent); the manifest registers
+ *  Media3's receiver for ACTION_MEDIA_BUTTON, so the KeyEvents it
+ *  builds land on the Media3 session. The MediaStyle is likewise
+ *  androidx.media.app.NotificationCompat.MediaStyle — core's
+ *  NotificationCompat has no MediaStyle. Both need the
+ *  androidx.media:media dependency (see app/build.gradle.kts).
+ *  MediaSession.getSessionCompatToken() is @UnstableApi, hence the
+ *  opt-in on this class. */
+@OptIn(UnstableApi::class)
 class PlayerService : MediaSessionService() {
     private var session: MediaSession? = null
     private var lastArtworkUri: Uri? = null
@@ -145,7 +157,7 @@ class PlayerService : MediaSessionService() {
             )
             .addAction(androidx.media3.session.R.drawable.media3_icon_next, "Next", nextIntent)
             .setStyle(
-                NotificationCompat.MediaStyle()
+                androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(session?.sessionCompatToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
