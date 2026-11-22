@@ -32,7 +32,6 @@ import com.mio.player.ui.theme.mioGradientBackground
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.maxOf
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -1171,7 +1170,9 @@ fun VisualizerFerrofluid(
             // user's 1.1.18 video: tower 72 dp, slot 6 81 dp). Floor at
             // 1.3x the tallest other spike (keeping the 1.5x median
             // floor), clamped so the tip stays inside the row.
-            val towerFloor = maxOf(1.5f * median, 1.3f * maxOther)
+            // (Plain if/else, not maxOf — no import to get wrong.)
+            var towerFloor = 1.5f * median
+            if (1.3f * maxOther > towerFloor) towerFloor = 1.3f * maxOther
             if (spikeHeights[towerIdx] < towerFloor) spikeHeights[towerIdx] = towerFloor
             val towerMax = (hDp - maxPoolDp) * 0.92f
             if (spikeHeights[towerIdx] > towerMax) spikeHeights[towerIdx] = towerMax
