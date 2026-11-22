@@ -128,6 +128,15 @@ import kotlin.math.sqrt
 // problem; the three real causes are in the file header KDoc.
 private const val VIS_ROW_HEIGHT_DP = 88f
 private const val VIS_ROW_TALL_DP = 140f
+// v1.1.17 — hero canvas: the visualizer is the protagonist on Now
+// Playing (was a 140 dp band under a 120 dp cover). The hero canvas
+// is 320 dp tall; the full-screen mode fills the screen. Public so
+// NowPlaying can pass it to VisualizerPanel.
+const val VIS_HERO_HEIGHT_DP = 320f
+// v1.1.17 — Circular ray count 32 -> 56 (the demo has ~56 thin
+// rays; 32 rays at 11.25° pitch read as a sparse halo). The 32 FFT
+// bands are resampled to 56 rays (see resampleLevels).
+private const val CIRC_RAY_COUNT = 56
 private const val VIS_MIN_HEIGHT_DP = 10f
 // v1.1.16 — shared FFT lift gain 4 -> 2. The sqrt lift saturated
 // at level 0.25 (sqrt(0.25*4) = 1), so on a loud pop chorus most
@@ -241,6 +250,26 @@ private fun waveLift(sample: Float): Float {
 private fun scaledNorm(level: Float): Float =
     sqrt((level * VIS_GAIN).coerceIn(0f, 1f))
 
+/**
+ * v1.1.17 — linearly resample `levels` to `count` values (used to
+ * ring 56 rays from the 32 FFT bands). Neighbouring rays share
+ * interpolated band values, so the ring stays smooth instead of
+ * duplicating whole bands.
+ */
+private fun resampleLevels(levels: FloatArray, count: Int): FloatArray {
+    if (levels.isEmpty()) return FloatArray(count)
+    if (count == levels.size) return levels.copyOf()
+    val out = FloatArray(count)
+    for (i in 0 until count) {
+        val pos = i.toFloat() * (levels.size - 1) / (count - 1).coerceAtLeast(1)
+        val lo = pos.toInt().coerceIn(0, levels.size - 1)
+        val hi = (lo + 1).coerceAtMost(levels.size - 1)
+        val frac = pos - lo
+        out[i] = levels[lo] * (1f - frac) + levels[hi] * frac
+    }
+    return out
+}
+
 private fun isLive(levels: FloatArray): Boolean =
     levels.any { it > VIS_LIVE_THRESHOLD }
 
@@ -317,7 +346,11 @@ private fun chaseDisplayed(displayed: FloatArray, levels: FloatArray, live: Bool
  */
 private class FerroDroplet(var xDp: Float, var yDp: Float, var age: Int)
 
-/** Dispatcher — the single entry point for Now Playing. */
+/** Dispatcher — the single entry point for Now Playing.
+ * v1.1.17: `heightDp` overrides the per-style default row height
+ * (88 dp Bars/Wave/Mirror, 140 dp Circular/Ferrofluid). The hero
+ * canvas passes 320 dp and the full-screen mode passes the screen
+ * height; null keeps the default. */
 @Composable
 fun MioVisualizer(
     style: VisualizerStyle,
@@ -327,14 +360,15 @@ fun MioVisualizer(
     albumId: Long = 0L,
     coverPath: String? = null,
     ferrofluidFreq: FerrofluidFreq = FerrofluidFreq.ALL,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    heightDp: Float? = null
 ) {
     when (style) {
-        VisualizerStyle.BARS -> VisualizerBars(levels, playing, modifier)
-        VisualizerStyle.WAVE -> VisualizerWave(pcmFrame, playing, modifier)
-        VisualizerStyle.CIRCULAR -> VisualizerCircular(levels, playing, albumId, coverPath, modifier)
-        VisualizerStyle.MIRROR -> VisualizerMirror(levels, playing, modifier)
-        VisualizerStyle.FERROFLUID -> VisualizerFerrofluid(levels, playing, ferrofluidFreq, modifier)
+        VisualizerStyle.BARS -> VisualizerBars(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
+        VisualizerStyle.WAVE -> VisualizerWave(pcmFrame, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
+        VisualizerStyle.CIRCULAR -> VisualizerCircular(levels, playing, albumId, coverPath, modifier, heightDp ?: VIS_ROW_TALL_DP)
+        VisualizerStyle.MIRROR -> VisualizerMirror(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
+        VisualizerStyle.FERROFLUID -> VisualizerFerrofluid(levels, playing, ferrofluidFreq, modifier, heightDp ?: VIS_ROW_TALL_DP)
     }
 }
 
@@ -356,7 +390,7 @@ fun MioVisualizer(
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
-fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
+fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier, heightDp: Float = VIS_ROW_HEIGHT_DP) {
     val colors = LocalMioColors.current.gradientColors
     val accent = LocalMioColors.current.accent
     val live = isLive(levels)
@@ -367,7 +401,9 @@ fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Mo
     chaseDisplayed(displayed, levels, live, VIS_BARS_RELEASE)
     for (i in 0 until n) norms[i] = if (live) scaledNorm(displayed[i]) else 0f
     caps.update(norms, live)
-    Canvas(modifier.height(VIS_ROW_HEIGHT_DP.dp).fillMaxWidth()) {
+    // v1.1.17: bar heights are fractions of the canvas height, so a
+    // taller hero/full-screen canvas makes the bars taller for free.
+    Canvas(modifier.height(heightDp.dp).fillMaxWidth()) {
         val spacing = 3.dp.toPx()
         val barW = ((size.width - (n - 1).coerceAtLeast(0) * spacing) / n.coerceAtLeast(1)).coerceAtLeast(1.dp.toPx())
         val bottom = size.height
@@ -443,14 +479,16 @@ fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Mo
  * the lift gain 2.5 -> 3.5 (see VIS_WAVE_GAIN). Same real samples.
  */
 @Composable
-fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
+fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = Modifier, heightDp: Float = VIS_ROW_HEIGHT_DP) {
     val colors = LocalMioColors.current.gradientColors
     val accent = LocalMioColors.current.accent
     val divider = LocalMioColors.current.divider
     // |x| > 0.02 anywhere in the frame counts as signal; a frame of
     // near-silence (leading/trailing) is a flat line, not noise.
     val hasSignal = playing && pcmFrame.any { it * it > 0.0004f }
-    Canvas(modifier.height(VIS_ROW_HEIGHT_DP.dp).fillMaxWidth()) {
+    // v1.1.17: amplitude is a fraction of the half-height, so a
+    // taller hero/full-screen canvas makes the wave taller for free.
+    Canvas(modifier.height(heightDp.dp).fillMaxWidth()) {
         val w = size.width
         val h = size.height
         val cy = h / 2f
@@ -592,12 +630,17 @@ fun VisualizerCircular(
     playing: Boolean,
     albumId: Long = 0L,
     coverPath: String? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    heightDp: Float = VIS_ROW_TALL_DP
 ) {
     val colors = LocalMioColors.current.gradientColors
     val accent = LocalMioColors.current.accent
     val live = isLive(levels)
-    val n = levels.size
+    // v1.1.17 — 56 rays (the demo has ~56 thin rays; 32 rays at
+    // 11.25° pitch read as a sparse halo). The 32 FFT bands are
+    // resampled to 56 ray values (see resampleLevels).
+    val rayCount = CIRC_RAY_COUNT
+    val rayLevels = resampleLevels(levels, rayCount)
     // v1.1.11 — per-bar displayed lengths (Circular-only constants,
     // kept local so no shared constant is touched). Updated here, in
     // composition, from the newest published levels only — no clock,
@@ -615,10 +658,10 @@ fun VisualizerCircular(
     val liftGain = 2f // same gain as the shared sqrt lift; only the exponent changes
     val liftPower = 0.5f
     val releaseWeight = 0.75f
-    val displayed = remember(n) { FloatArray(n) }
+    val displayed = remember(rayCount) { FloatArray(rayCount) }
     if (live) {
-        for (i in 0 until n) {
-            val target = ((levels[i] * liftGain).coerceIn(0f, 1f)).pow(liftPower)
+        for (i in 0 until rayCount) {
+            val target = ((rayLevels[i] * liftGain).coerceIn(0f, 1f)).pow(liftPower)
             displayed[i] = if (target > displayed[i]) target
             else displayed[i] + (target - displayed[i]) * releaseWeight
         }
@@ -630,37 +673,40 @@ fun VisualizerCircular(
     // (albumId > 0 does not guarantee MediaStore actually has the
     // image, but that is AlbumArt's own rule everywhere else too.)
     val hasArt = (coverPath?.let { File(it).exists() } == true) || albumId > 0
-    // v1.1.14: tall row (140 dp) — the disc is 68 dp, the focal
-    // point, with a 31 dp radial budget around it.
-    Box(modifier.height(VIS_ROW_TALL_DP.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+    // v1.1.17 — hero size: the box height is `heightDp` (140 dp
+    // default, 320 dp hero, screen height full-screen) and the disc
+    // is 56% of the smaller canvas dimension (the demo's disc/total
+    // is ~0.55–0.57), so the disc scales with the canvas instead of
+    // staying a fixed 78 dp in a big empty box.
+    BoxWithConstraints(modifier.height(heightDp.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        val minDimDp = minOf(maxWidth, maxHeight)
+        val discDp = minDimDp * 0.56f
         Canvas(Modifier.fillMaxSize()) {
             val cx = size.width / 2f
             val cy = size.height / 2f
             val minDim = minOf(size.width, size.height)
-            // v1.1.16: the hub is the 78 dp art disc — innerR is the
-            // disc radius (39 dp) + a 3 dp gap, and the radial budget
-            // is what is left to the slot edge (26 dp on the 140 dp
-            // slot), so bar tips can never clip. The demo disc is
-            // ~59 dp with ~18 dp rays (disc/total ≈ 0.59); 78 dp +
-            // 26 dp rays gives the same 0.60 proportion at the full
-            // row height, so the disc reads as the focal point.
-            val discR = 39.dp.toPx()
+            // v1.1.17: the disc is 28% of the smaller canvas
+            // dimension (diameter 56% — the demo's disc/total is
+            // ~0.55–0.57), so it scales with the canvas: 39 dp on
+            // the 140 dp row (unchanged), ~90 dp on the 320 dp hero
+            // (180 dp disc), ~115 dp full-screen. innerR is the
+            // disc radius + a 3 dp gap; the radial budget is what is
+            // left to the slot edge, so bar tips can never clip.
+            val discR = minDim * 0.28f
             val innerR = discR + 3.dp.toPx()
             val budget = (minDim / 2f - innerR - 2.dp.toPx()).coerceAtLeast(4.dp.toPx())
             val midR = innerR + budget / 2f
-            // v1.1.16 — bar thickness: ~25% of the arc pitch at the
-            // middle radius (≈2.7 dp), NOT 80% (≈8.2 dp). At 80%
-            // the 32 rays were nearly contiguous (measured on the
-            // user's screenshot: each ray spans ~10° of the 11.25°
-            // pitch, ~1.4 dp gaps) and the whole circle read as a
-            // solid flower/petals. The demo's rays are thin lines
-            // (~1 dp) with clear gaps; 25% restores that delicate
-            // sunburst while the 2 dp floor keeps rays visible.
-            val barWidth = (2f * PI.toFloat() * midR / n.coerceAtLeast(1) * 0.25f).coerceAtLeast(2.dp.toPx())
+            // v1.1.17 — bar thickness: ~1.5 dp absolute (the demo's
+            // rays are ~1.4 dp), NOT 25% of pitch (≈2.7 dp at 32
+            // rays). At 56 rays the pitch is smaller, so a pitch
+            // fraction would thin the rays too far; the 1.5 dp
+            // floor is the target and the 12% pitch term only
+            // thickens them slightly at hero scale (~1.7 dp).
+            val barWidth = (2f * PI.toFloat() * midR / rayCount.coerceAtLeast(1) * 0.12f).coerceAtLeast(1.5.dp.toPx())
             // Thin accent ring on the disc edge (the old divider inner
             // ring is gone — the disc is the hub now).
             drawCircle(accent.copy(alpha = 0.45f), radius = discR, center = Offset(cx, cy), style = Stroke(width = 1.dp.toPx()))
-            for (i in 0 until n) {
+            for (i in 0 until rayCount) {
                 val len = if (live) {
                     // v1.1.8: live floor so quiet bands still read as
                     // visible rays, not dots at the hub; v1.1.13: the
@@ -670,30 +716,32 @@ fun VisualizerCircular(
                 } else {
                     // Idle stub: same 18..30 dp shape as Bars, scaled to the ring.
                     3.dp.toPx() + (idleHeightDp(i) - VIS_MIN_HEIGHT_DP) /
-                        (VIS_ROW_TALL_DP - VIS_MIN_HEIGHT_DP) * budget * 0.4f
+                        (heightDp - VIS_MIN_HEIGHT_DP) * budget * 0.4f
                 }
-                val angle = (-PI / 2 + 2 * PI * i / n.coerceAtLeast(1)).toFloat()
+                val angle = (-PI / 2 + 2 * PI * i / rayCount.coerceAtLeast(1)).toFloat()
                 val dir = Offset(cos(angle), sin(angle))
                 val start = Offset(cx + dir.x * innerR, cy + dir.y * innerR)
                 val end = Offset(cx + dir.x * (innerR + len), cy + dir.y * (innerR + len))
                 val color: Color = if (live) {
-                    lerp(colors.first(), colors.last(), i.toFloat() / (n - 1).coerceAtLeast(1))
+                    lerp(colors.first(), colors.last(), i.toFloat() / (rayCount - 1).coerceAtLeast(1))
                 } else {
                     accent.copy(alpha = 0.4f)
                 }
                 drawLine(color, start, end, strokeWidth = barWidth, cap = StrokeCap.Round)
             }
         }
-        // v1.1.16: centre disc — 78 dp (was 68 dp), real art when there is any,
+        // v1.1.17: centre disc — 56% of the smaller canvas
+        // dimension (78 dp on the 140 dp row, ~180 dp on the 320 dp
+        // hero, ~230 dp full-screen). Real art when there is any,
         // else a theme-gradient disc with a white note (never blank).
         if (hasArt) {
-            AlbumArt(albumId, Modifier.size(78.dp), CircleShape, coverPath = coverPath)
+            AlbumArt(albumId, Modifier.size(discDp), CircleShape, coverPath = coverPath)
         } else {
             Box(
-                Modifier.size(78.dp).mioGradientBackground(CircleShape),
+                Modifier.size(discDp).mioGradientBackground(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.MusicNote, null, tint = Color.White, modifier = Modifier.size(32.dp))
+                Icon(Icons.Default.MusicNote, null, tint = Color.White, modifier = Modifier.size(discDp * 0.41f))
             }
         }
     }
@@ -726,7 +774,7 @@ fun VisualizerCircular(
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
-fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier) {
+fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier, heightDp: Float = VIS_ROW_HEIGHT_DP) {
     val colors = LocalMioColors.current.gradientColors
     val accent = LocalMioColors.current.accent
     val live = isLive(levels)
@@ -739,7 +787,9 @@ fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = 
         halfNorms[i] = if (live) sqrt((displayed[i] * VIS_MIRROR_GAIN).coerceIn(0f, 1f)) else 0f
     }
     caps.update(halfNorms, live)
-    Canvas(modifier.height(VIS_ROW_HEIGHT_DP.dp).fillMaxWidth()) {
+    // v1.1.17: halves are fractions of the canvas height, so a
+    // taller hero/full-screen canvas makes the mirror taller for free.
+    Canvas(modifier.height(heightDp.dp).fillMaxWidth()) {
         val gap = 2.dp.toPx()
         val spacing = 3.dp.toPx()
         val barW = ((size.width - (n - 1).coerceAtLeast(0) * spacing) / n.coerceAtLeast(1)).coerceAtLeast(1.dp.toPx())
@@ -971,7 +1021,8 @@ fun VisualizerFerrofluid(
     levels: FloatArray,
     playing: Boolean,
     freq: FerrofluidFreq = FerrofluidFreq.ALL,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    heightDp: Float = VIS_ROW_TALL_DP
 ) {
     val colors = LocalMioColors.current.gradientColors
     val accent = LocalMioColors.current.accent
@@ -1011,9 +1062,16 @@ fun VisualizerFerrofluid(
     // only reads state, never mutates it.
     // v1.1.14: tall row (140 dp) — the demo stages ferrofluid on
     // ~300 dp; at 88 dp the dome + spikes had no room to read.
-    BoxWithConstraints(modifier.height(VIS_ROW_TALL_DP.dp).fillMaxWidth()) {
+    // v1.1.17 — uniform scale factor: every structural size below
+    // is multiplied by `s`, so the blob/spikes/droplets grow with
+    // the canvas (s = 1.0 on the 140 dp row, ~2.29 on the 320 dp
+    // hero, ~5.7 full-screen) while the 140 dp look is unchanged.
+    BoxWithConstraints(modifier.height(heightDp.dp).fillMaxWidth()) {
         val wDp = maxWidth.value
-        val hDp = VIS_ROW_TALL_DP
+        val hDp = heightDp
+        val s = hDp / VIS_ROW_TALL_DP
+        val minPoolDp = FERRO_MIN_POOL_DP * s
+        val maxPoolDp = FERRO_MAX_POOL_DP * s
         val slotW = wDp / spikeCount.coerceAtLeast(1)
         // Chase the selected (resampled) levels per slot, then lift.
         if (live) {
@@ -1041,9 +1099,9 @@ fun VisualizerFerrofluid(
         if (live) {
             for (i in 0 until spikeCount) {
                 spikeHeights[i] = if (i == spikeCount / 2) {
-                    12f + towerNorm * 48f
+                    (12f + towerNorm * 48f) * s
                 } else {
-                    (6f + norms[i] * 50f) * FERRO_SLOT_FACTOR[i % FERRO_SLOT_FACTOR.size]
+                    (6f + norms[i] * 50f) * FERRO_SLOT_FACTOR[i % FERRO_SLOT_FACTOR.size] * s
                 }
             }
             val sorted = spikeHeights.filterIndexed { i, _ -> i != spikeCount / 2 }.sorted()
@@ -1051,7 +1109,7 @@ fun VisualizerFerrofluid(
             val towerIdx = spikeCount / 2
             if (spikeHeights[towerIdx] < 1.5f * median) spikeHeights[towerIdx] = 1.5f * median
         } else {
-            for (i in 0 until spikeCount) spikeHeights[i] = if (i == spikeCount / 2) 12f else 6f
+            for (i in 0 until spikeCount) spikeHeights[i] = if (i == spikeCount / 2) 12f * s else 6f * s
         }
         // Droplets: age one frame, rise, expire; spawn on sharp drops.
         if (live) {
@@ -1059,7 +1117,7 @@ fun VisualizerFerrofluid(
             while (it.hasNext()) {
                 val d = it.next()
                 d.age++
-                d.yDp -= 2.4f
+                d.yDp -= 2.4f * s
                 if (d.age > 12) it.remove()
             }
             var spawned = 0
@@ -1071,7 +1129,7 @@ fun VisualizerFerrofluid(
                 if (caps.peaks[i] > 0.35f && caps.peaks[i] - norms[i] > 0.18f) {
                     val cx = (i + 0.5f) * slotW
                     val spikeH = spikeHeights[i]
-                    val tipY = ferroSurfaceY(cx, wDp, hDp, FERRO_MIN_POOL_DP, FERRO_MAX_POOL_DP) - spikeH
+                    val tipY = ferroSurfaceY(cx, wDp, hDp, minPoolDp, maxPoolDp) - spikeH
                     droplets.add(FerroDroplet(cx, tipY, 0))
                     spawned++
                 }
@@ -1082,8 +1140,8 @@ fun VisualizerFerrofluid(
         Canvas(Modifier.fillMaxSize()) {
             val wPx = size.width
             val hPx = size.height
-            val minPoolPx = FERRO_MIN_POOL_DP.dp.toPx()
-            val maxPoolPx = FERRO_MAX_POOL_DP.dp.toPx()
+            val minPoolPx = minPoolDp.dp.toPx()
+            val maxPoolPx = maxPoolDp.dp.toPx()
             val slotWPx = wPx / spikeCount.coerceAtLeast(1)
             // v1.1.16 — THE GRADIENT-ANCHOR FIX (the root cause of
             // three failed Ferrofluids): this brush used to be an
@@ -1130,12 +1188,12 @@ fun VisualizerFerrofluid(
             drawPath(
                 sheenPath,
                 SolidColor(accent.copy(alpha = 0.25f)),
-                style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = (7f * s).dp.toPx(), cap = StrokeCap.Round)
             )
             drawPath(
                 sheenPath,
                 brush = Brush.linearGradient(colors, start = Offset.Zero, end = Offset(wPx, 0f)),
-                style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = (2.5f * s).dp.toPx(), cap = StrokeCap.Round)
             )
             // Specular highlight: soft white arc on the upper-left of
             // the dome, just above the surface.
@@ -1143,7 +1201,7 @@ fun VisualizerFerrofluid(
             val hlSteps = 8
             for (s in 0..hlSteps) {
                 val x = (0.08f + 0.27f * s.toFloat() / hlSteps) * wPx
-                val y = ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx) - 2.dp.toPx()
+                val y = ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx) - (2f * s).dp.toPx()
                 if (s == 0) highlightPath.moveTo(x, y) else highlightPath.lineTo(x, y)
             }
             // v1.1.15: the old 0.20-alpha arc was too faint to sell
@@ -1152,12 +1210,12 @@ fun VisualizerFerrofluid(
             drawPath(
                 highlightPath,
                 SolidColor(Color.White.copy(alpha = 0.10f)),
-                style = Stroke(width = 12.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = (12f * s).dp.toPx(), cap = StrokeCap.Round)
             )
             drawPath(
                 highlightPath,
                 SolidColor(Color.White.copy(alpha = 0.32f)),
-                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = (4f * s).dp.toPx(), cap = StrokeCap.Round)
             )
             // Spikes: curved flares growing out of the blob. Wide
             // base sunk 2 dp into the blob, concave sides (the
@@ -1167,7 +1225,7 @@ fun VisualizerFerrofluid(
             for (i in 0 until spikeCount) {
                 val cx = (i + 0.5f) * slotWPx
                 val surfaceY = ferroSurfaceY(cx, wPx, hPx, minPoolPx, maxPoolPx)
-                val baseY = surfaceY + 2.dp.toPx()
+                val baseY = surfaceY + (2f * s).dp.toPx()
                 val isTower = i == centreSlot
                 // v1.1.15: heights come from spikeHeights (computed
                 // above, with unevenness + tower prominence) — the
@@ -1212,21 +1270,21 @@ fun VisualizerFerrofluid(
                     rimColor.copy(alpha = 0.7f),
                     apex,
                     Offset(cx - baseHalfW, baseY),
-                    strokeWidth = 2.dp.toPx(),
+                    strokeWidth = (2f * s).dp.toPx(),
                     cap = StrokeCap.Round
                 )
                 drawLine(
                     rimColor,
                     apex,
                     Offset(cx + baseHalfW, baseY),
-                    strokeWidth = 2.dp.toPx(),
+                    strokeWidth = (2f * s).dp.toPx(),
                     cap = StrokeCap.Round
                 )
                 if (live && norm > 0.55f) {
                     if (isTower) {
-                        drawCircle(Color.White.copy(alpha = 0.9f), radius = 2.dp.toPx(), center = apex)
+                        drawCircle(Color.White.copy(alpha = 0.9f), radius = (2f * s).dp.toPx(), center = apex)
                     } else {
-                        drawCircle(rimColor, radius = 1.4.dp.toPx(), center = apex)
+                        drawCircle(rimColor, radius = (1.4f * s).dp.toPx(), center = apex)
                     }
                 }
             }
@@ -1235,7 +1293,7 @@ fun VisualizerFerrofluid(
                 // v1.1.16: beads bigger (3 dp, was 2.2 dp) and
                 // brighter (#6A6A73, 3.39:1 — was #3A3A42, 1.61:1,
                 // still too dim to notice on device).
-                val r = (3.0f - d.age * 0.1f).dp.toPx().coerceAtLeast(1.0.dp.toPx())
+                val r = ((3.0f - d.age * 0.1f) * s).dp.toPx().coerceAtLeast((1.0f * s).dp.toPx())
                 val centre = Offset(d.xDp.dp.toPx(), d.yDp.dp.toPx())
                 val alpha = (1f - d.age / 12f).coerceIn(0f, 1f)
                 drawCircle(Color(0xFF6A6A73).copy(alpha = alpha), radius = r, center = centre)

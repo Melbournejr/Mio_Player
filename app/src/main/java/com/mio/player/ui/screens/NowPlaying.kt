@@ -1,12 +1,13 @@
 package com.mio.player.ui.screens
 import android.net.Uri
-import androidx.compose.animation.animateContentSize
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -15,9 +16,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.navigation.NavHostController
@@ -25,6 +29,7 @@ import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.LyricLine
 import com.mio.player.ui.components.AlbumArt
 import com.mio.player.ui.components.MetadataEditDialog
+import com.mio.player.ui.visualizer.VIS_HERO_HEIGHT_DP
 import com.mio.player.ui.visualizer.VisualizerPanel
 import com.mio.player.ui.components.TrackRow
 import com.mio.player.ui.components.formatDuration
@@ -71,6 +76,15 @@ import kotlinx.coroutines.delay
  *  lines appearing during DSD converting as soon as they are fetched.
  *  The separate Lyrics screen stays reachable via "Xem đầy đủ", and
  *  the transport row stays pinned at the bottom.
+ *  v1.1.17 (hero visualizer): the square cover is gone from this
+ *  screen — the visualizer is the protagonist now. A 320 dp hero
+ *  visualizer sits directly under the top bar (Circular's disc is
+ *  ~180 dp there, Ferrofluid's blob/spikes scale up), the cover
+ *  survives only as a 40 dp circular thumb beside the title/artist
+ *  and as the art inside Circular's disc. A fullscreen icon in the
+ *  top bar opens an edge-to-edge expanded visualizer (Dialog +
+ *  BackHandler); the transport row repeats there. Lyrics lose
+ *  room (~3–4 lines instead of ~5) — accepted trade-off.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
@@ -100,6 +114,8 @@ import kotlinx.coroutines.delay
     // swap instead of freezing on the value from track start.
     var currentUri by remember { mutableStateOf<Uri?>(null) }
     var showQueue by remember { mutableStateOf(false) }
+    // v1.1.17: expanded (full-screen) visualizer Dialog.
+    var expandedVisualizer by remember { mutableStateOf(false) }
     // v1.1.12: the manual metadata action now opens the edit dialog
     // (MetadataEditDialog) instead of fetching immediately — the user
     // types the search info first. Reset on track change with the
@@ -199,35 +215,39 @@ import kotlinx.coroutines.delay
             }
         }
     }
-    // v1.1.6: the lyrics need real room. The old 240 dp cover +
-    // 112 dp visualizer + slider + transport left the lyrics
-    // weight(1f) area about two lines tall. Once lyrics are loaded
-    // the cover shrinks to 120 dp (v1.1.12, was 160 dp in v1.1.6;
-    // animated, so the track change does not jump); without lyrics
-    // it stays large at 220 dp.
-    // v1.1.14: Ferrofluid / Circular use a 140 dp visualizer row
-    // (was 88 dp for all styles) — the lyrics area loses ~1 line
-    // only while one of those two styles is active; Bars / Wave /
-    // Mirror keep the 88 dp row.
-    // v1.1.12 (lyrics room): the cover shrinks further once lyrics
-    // are loaded — 160 dp left ~2–3 visible lines, 120 dp leaves
-    // ~5–6. Without lyrics it stays large at 220 dp.
-    val hasLyrics = lines.isNotEmpty() || plain != null
-    val coverSize = if (hasLyrics) 120.dp else 220.dp
+    // v1.1.17: the square cover is GONE from this screen (the old
+    // coverSize/hasLyrics shrink logic with it). The visualizer is
+    // the protagonist: a 320 dp hero directly under the top bar.
+    // The cover survives only as a 40 dp circular thumb beside the
+    // title/artist, and as the art inside Circular's disc.
     Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
             Row {
                 IconButton(onClick = { showQueue = true }) { Icon(Icons.Default.QueueMusic, "Hàng đợi", tint = MioText) }
+                // v1.1.17: fullscreen visualizer (edge-to-edge Dialog).
+                IconButton(onClick = { expandedVisualizer = true }) { Icon(Icons.Default.Fullscreen, "Toàn màn hình", tint = MioText) }
                 // The ONLY Equalizer entry point on this screen (Fix 5).
                 IconButton(onClick = { nav.navigate(Routes.EQ) }) { Icon(Icons.Default.Tune, "Equalizer", tint = MioText) }
             }
         }
-        Spacer(Modifier.height(12.dp))
-        if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize).animateContentSize(), CardLarge, coverPath = t.coverPath) else Box(Modifier.size(coverSize).animateContentSize().background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(96.dp)) }
+        // v1.1.17 — HERO visualizer, 320 dp, full width, directly
+        // under the top bar. Circular's disc is ~180 dp here (56%
+        // of the 320 dp canvas), Ferrofluid's blob/spikes scale by
+        // 320/140 ≈ 2.29x; Bars/Wave/Mirror fill the taller canvas.
+        VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath, heightDp = VIS_HERO_HEIGHT_DP)
         Spacer(Modifier.height(8.dp))
-        Text(t?.title ?: "No song", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // v1.1.17 — title/artist row: a small circular art thumb
+        // (40 dp) + the title/artist beside it, left-aligned. The
+        // big square cover is gone (see above).
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (t != null) AlbumArt(t.albumId, Modifier.size(40.dp), CircleShape, coverPath = t.coverPath) else Box(Modifier.size(40.dp).background(MioSurfaceRaised, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(20.dp)) }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(t?.title ?: "No song", color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
         Spacer(Modifier.height(8.dp))
         // v1.1.7: the DSD native state line is identical to displayFormat
         // ("DSD128 · Native decode"), so show the format once — the
@@ -262,11 +282,9 @@ import kotlinx.coroutines.delay
                 Text("Tìm metadata", color = MioCyan, fontSize = 13.sp)
             }
         }
-        Spacer(Modifier.height(8.dp))
-        // v1.1.13: the panel gets the current track's cover so the
-        // Circular style can ring the album art (other styles ignore
-        // it); `t` is the playing track in scope here.
-        VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath)
+        // v1.1.17: the visualizer moved to the hero slot directly
+        // under the top bar — it is no longer down here.
+        Spacer(Modifier.height(4.dp))
         Slider(value = pos.toFloat().coerceIn(0f, totalF), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..totalF, modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(formatDuration(pos), color = MioTextSecondary, fontSize = 12.sp)
@@ -313,6 +331,43 @@ import kotlinx.coroutines.delay
             }
             IconButton(onClick = { vm.pm.next() }) { Icon(Icons.Default.SkipNext, null, tint = MioText, modifier = Modifier.size(40.dp)) }
             IconButton(onClick = { vm.pm.cycleRepeat() }) { Icon(if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat, null, tint = if (repeatMode == Player.REPEAT_MODE_OFF) MioTextSecondary else MioCyan) }
+        }
+    }
+    // v1.1.17 — expanded (full-screen) visualizer. Edge-to-edge
+    // Dialog (no platform default width), dark background, top bar
+    // with a close button + the track title, the visualizer filling
+    // the remaining height, and a transport row at the bottom. Back
+    // (system/gesture) exits via BackHandler. Tap/swipe on the
+    // visualizer still cycles styles; Ferrofluid's freq chips still
+    // show top-right.
+    BackHandler(enabled = expandedVisualizer) { expandedVisualizer = false }
+    if (expandedVisualizer) {
+        Dialog(
+            onDismissRequest = { expandedVisualizer = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(Modifier.fillMaxSize().background(MioBg)) {
+                Column(Modifier.fillMaxSize().padding(20.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { expandedVisualizer = false }) { Icon(Icons.Default.Close, "Đóng", tint = MioText) }
+                        Text(t?.title ?: "Đang phát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+                        Spacer(Modifier.size(48.dp))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath, heightDp = maxHeight.value)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { vm.pm.previous() }) { Icon(Icons.Default.SkipPrevious, null, tint = MioText, modifier = Modifier.size(40.dp)) }
+                        Box(Modifier.size(72.dp).mioGradientBackground(CircleShape), contentAlignment = Alignment.Center) {
+                            IconButton(onClick = { vm.toggle() }, modifier = Modifier.size(72.dp)) { Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(32.dp)) }
+                        }
+                        IconButton(onClick = { vm.pm.next() }) { Icon(Icons.Default.SkipNext, null, tint = MioText, modifier = Modifier.size(40.dp)) }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
         }
     }
     // v1.1.12: metadata edit dialog — opened by the "Tìm metadata"

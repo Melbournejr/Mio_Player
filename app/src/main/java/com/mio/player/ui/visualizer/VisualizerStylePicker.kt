@@ -101,6 +101,7 @@ import kotlinx.coroutines.launch
  * @param playing whether audio is actually playing
  * @param albumId current track's album id, for the Circular art disc (0 = none)
  * @param coverPath current track's downloaded cover file, for the Circular art disc (null = none)
+ * @param heightDp v1.1.17 — canvas height in dp; null keeps the per-style default (88 dp Bars/Wave/Mirror, 140 dp Circular/Ferrofluid)
  */
 @Composable
 fun VisualizerPanel(
@@ -109,7 +110,8 @@ fun VisualizerPanel(
     playing: Boolean,
     modifier: Modifier = Modifier,
     albumId: Long = 0L,
-    coverPath: String? = null
+    coverPath: String? = null,
+    heightDp: Float? = null
 ) {
     val ctx = LocalContext.current
     val settings = remember(ctx) { (ctx.applicationContext as MioApp).container.settings }
@@ -168,7 +170,7 @@ fun VisualizerPanel(
             },
         contentAlignment = Alignment.Center
     ) {
-        MioVisualizer(style, levels, pcmFrame, playing, albumId, coverPath, ferroFreq, Modifier.fillMaxWidth())
+        MioVisualizer(style, levels, pcmFrame, playing, albumId, coverPath, ferroFreq, Modifier.fillMaxWidth(), heightDp)
         // v1.1.14: the pill sits in the top-left corner — it used to
         // sit centred, covering Circular's art disc.
         if (showLabel) {
