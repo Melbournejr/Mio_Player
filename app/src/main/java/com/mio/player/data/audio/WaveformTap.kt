@@ -33,7 +33,7 @@ import kotlin.math.sqrt
  * through byte-identical (configure returns the input format, queueInput
  * returns the input buffer untouched) and only READS the samples: stereo
  * is downmixed to mono, a rolling window feeds an 8192-point FFT
- * throttled to ~30 Hz, and 32 log-spaced band magnitudes (20 Hz–12 kHz,
+ * throttled to ~60 Hz (v1.1.18 — was ~30 Hz), and 32 log-spaced band magnitudes (20 Hz–12 kHz,
  * same band mapping the Visualizer code used) are published to [levels].
  * Because the tap sits in the sink chain it sees PCM for ALL formats —
  * native DSD (after decimation to 176.4/88.2 kHz) and normal files alike.
@@ -59,6 +59,15 @@ import kotlin.math.sqrt
  * frames so the 3x publish rate does not triple GC churn on the audio
  * thread. No fake time-based animation anywhere: every published frame
  * is real audio.
+ *
+ * v1.1.18: publish rate ~30 Hz -> ~60 Hz (FFT_INTERVAL_MS 33 -> 16).
+ * The v1.1.6 rejection of 60 Hz ("no visible gain") no longer holds:
+ * the user explicitly reports the Circular rays do not change fast
+ * and smooth enough ("thay đổi nhanh mượt") at 30 fps on a 60 Hz
+ * display. At 60 fps the same 0.7/0.4 per-frame weights give ~half
+ * the wall-clock time constants, and every style redraws at display
+ * rate. Windows now overlap ~91% at 44.1 kHz (~65% at 176.4 kHz),
+ * so successive frames stay correlated and smooth.
  *
  * v1.1.4 (Fix 3): the wave was tall but flat/static — the user's v1.1.3
  * video (bars 0-14 pixel-identical at 0:06 and 0:36 of one track, and
@@ -92,7 +101,7 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
     /**
      * v1.1.5 (visualizer styles): the newest mono PCM samples, in time
      * order, for the Wave / oscilloscope style. Published together with
-     * each FFT frame (~30 Hz, same cadence as [levels]) as the tail of
+     * each FFT frame (~60 Hz, same cadence as [levels]) as the tail of
      * that frame's 8192-sample window — real samples from the ring
      * buffer, never synthesised. A Wave composable draws this array
      * directly (linear amplitude, no gain fudge, no time-based motion);
@@ -100,10 +109,11 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
      * flat instead of freezing on the last frame.
      * v1.1.6: the frame is published at the new ~30 Hz cadence (it is
      * published inside maybeRunFft, so no separate timer was needed).
+     * v1.1.18: cadence ~30 Hz -> ~60 Hz.
      * No interpolation between frames: interpolating would invent
      * samples that were never played, so the Wave style relies on the
-     * higher refresh rate alone — at 30 Hz the line is redrawn from
-     * fresh real samples every 33 ms.
+     * higher refresh rate alone — at ~60 Hz the line is redrawn from
+     * fresh real samples every 16 ms.
      */
     private val _pcmFrame = MutableStateFlow(FloatArray(PCM_FRAME_SIZE) { 0f })
     val pcmFrame: StateFlow<FloatArray> = _pcmFrame.asStateFlow()
@@ -144,8 +154,8 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
         private var ringCount = 0
         private var lastFftNs = 0L
         // v1.1.6: FFT scratch buffers, reused every frame instead of
-        // allocated per frame — at 30 Hz a per-frame allocation would
-        // be ~2 MB/s of short-lived arrays on the audio sink thread.
+        // allocated per frame — at ~60 Hz a per-frame allocation would
+        // be ~4 MB/s of short-lived arrays on the audio sink thread.
         // Safe to reuse: all FFT state is touched only from the sink
         // callbacks (queueInput / flush / reset / configure), one
         // thread, no reentrancy. The published `out` array and the
@@ -230,10 +240,10 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
         }
 
         /** Runs the FFT only when a full frame is buffered AND at least
-         *  [FFT_INTERVAL_MS] have passed since the last run (~30 Hz,
-         *  v1.1.6 — was ~10 Hz). The window is the NEWEST FFT_SIZE
-         *  samples, so successive frames overlap (~29% at 176.4 kHz,
-         *  ~82% at 44.1 kHz) and the spectrum moves smoothly instead of
+         *  [FFT_INTERVAL_MS] have passed since the last run (~60 Hz,
+         *  v1.1.18 — was ~30 Hz). The window is the NEWEST FFT_SIZE
+         *  samples, so successive frames overlap (~65% at 176.4 kHz,
+         *  ~91% at 44.1 kHz) and the spectrum moves smoothly instead of
          *  jumping between disjoint windows. */
         private fun maybeRunFft() {
             if (ringCount < FFT_SIZE) return
@@ -311,7 +321,12 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
          * successive windows share ~29% (176.4 kHz) to ~82% (44.1 kHz)
          * of their samples with the previous window, so neighbouring
          * frames are correlated. Attack stays 0.7/frame (~27 ms at
-         * 30 Hz) so onsets still jump instantly. The scratch arrays
+         * 30 Hz) so onsets still jump instantly.
+         * v1.1.18 — at ~60 Hz the same 0.7/0.4 weights give attack
+         * ~13 ms / release ~33 ms wall-clock, and windows now share
+         * ~65% (176.4 kHz) to ~91% (44.1 kHz), so the spectrum moves
+         * at display rate and the rays change fast and smooth.
+         * The scratch arrays
          * [fftRe]/[fftIm] are reused across frames (see their KDoc).
          */
         private fun computeBands(frame: FloatArray, sampleRate: Int): FloatArray {
@@ -473,9 +488,22 @@ class WaveformTap(private val bars: Int = 32, private val context: Context? = nu
          *  samples (~5.8 ms at 176.4 kHz, ~23 ms at 44.1 kHz). */
         private const val PCM_FRAME_SIZE = 1024
         // v1.1.6: ~30 Hz publish rate (was 100L / ~10 Hz). 60 Hz was
-        // rejected: it would double the FFT cost on the audio sink
-        // thread and double Compose recompositions for no visible gain.
-        private const val FFT_INTERVAL_MS = 33L // ~30 Hz publish rate
+        // rejected then: it would double the FFT cost on the audio
+        // sink thread and double Compose recompositions for no
+        // visible gain.
+        // v1.1.18: 30 Hz -> ~60 Hz (FFT_INTERVAL_MS 33 -> 16). The
+        // user explicitly asked for the Circular rays to change
+        // "nhanh mượt" (fast and smooth): at 30 fps the motion is
+        // visibly steppy on a 60 Hz display, and the tap's
+        // attack/release weights (0.7/0.4 per frame) take twice as
+        // long in wall-clock time. At 60 fps the same weights give
+        // attack ~13 ms / release ~33 ms wall-clock, and every
+        // style redraws at display rate. Cost: FFT ~0.5-2 ms/frame
+        // -> ~30-120 ms CPU/s (~3-12% of one core) on the audio
+        // sink thread; Compose recompositions double but the
+        // visualizer is Canvas-based (cheap redraw). FFT size stays
+        // 8192 (frequency resolution unchanged).
+        private const val FFT_INTERVAL_MS = 16L // ~60 Hz publish rate
         // v1.1.6 smoothing (see computeBands KDoc for the wall-clock
         // math): attack unchanged at 0.7, release raised 0.3 -> 0.4.
         private const val ATTACK_NEW_WEIGHT = 0.7f

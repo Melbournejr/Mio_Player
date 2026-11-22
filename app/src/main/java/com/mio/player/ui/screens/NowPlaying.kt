@@ -79,12 +79,13 @@ import kotlinx.coroutines.delay
  *  v1.1.17 (hero visualizer): the square cover is gone from this
  *  screen — the visualizer is the protagonist now. A 320 dp hero
  *  visualizer sits directly under the top bar (Circular's disc is
- *  ~180 dp there, Ferrofluid's blob/spikes scale up), the cover
- *  survives only as a 40 dp circular thumb beside the title/artist
- *  and as the art inside Circular's disc. A fullscreen icon in the
- *  top bar opens an edge-to-edge expanded visualizer (Dialog +
- *  BackHandler); the transport row repeats there. Lyrics lose
- *  room (~3–4 lines instead of ~5) — accepted trade-off.
+ *  ~128 dp there — 40%, v1.1.18, was ~180 dp at 56% — Ferrofluid's
+ *  blob/spikes scale up), the cover survives only as a 40 dp
+ *  circular thumb beside the title/artist and as the art inside
+ *  Circular's disc. A fullscreen icon in the top bar opens an
+ *  edge-to-edge expanded visualizer (Dialog + BackHandler); the
+ *  transport row repeats there. Lyrics lose room (~3–4 lines
+ *  instead of ~5) — accepted trade-off.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
@@ -232,9 +233,10 @@ import kotlinx.coroutines.delay
             }
         }
         // v1.1.17 — HERO visualizer, 320 dp, full width, directly
-        // under the top bar. Circular's disc is ~180 dp here (56%
-        // of the 320 dp canvas), Ferrofluid's blob/spikes scale by
-        // 320/140 ≈ 2.29x; Bars/Wave/Mirror fill the taller canvas.
+        // under the top bar. Circular's disc is ~128 dp here (40%
+        // of the 320 dp canvas, v1.1.18 — was ~180 dp at 56%),
+        // Ferrofluid's blob/spikes scale by 320/140 ≈ 2.29x;
+        // Bars/Wave/Mirror fill the taller canvas.
         VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath, heightDp = VIS_HERO_HEIGHT_DP)
         Spacer(Modifier.height(8.dp))
         // v1.1.17 — title/artist row: a small circular art thumb

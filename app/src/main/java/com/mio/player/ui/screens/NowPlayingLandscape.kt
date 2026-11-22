@@ -37,15 +37,32 @@ import kotlinx.coroutines.delay
  * (~360 dp tall) it clips. This is a SEPARATE landscape layout for the
  * same screen, not a rewrite of the portrait one:
  *
- *   - left: cover (sized to the available height) + live waveform
- *   - right: title / artist / format / real playback-state line,
- *     inline synced lyrics, seek slider, compact transport row
+ *   - left: live visualizer (fills the column — v1.1.18, was
+ *     cover + a 140 dp visualizer strip)
+ *   - right: compact title row (40 dp art thumb + title/artist),
+ *     format + state on one line, inline synced lyrics, seek
+ *     slider, compact transport row
  *
  * State is the SAME as portrait, collected from the same PlayerViewModel
  * and the same LyricsRepository call — no new ViewModel, no new audio
  * code. The queue bottom sheet, the single EQ entry point (top-right
  * Tune icon) and the actual-state line (native vs WAV-fallback, never
  * claimed from the file type alone) are identical to portrait.
+ *
+ * v1.1.18 — landscape RESTRUCTURE (the v1.1.17 landscape was
+ * broken on the user's screenshot, 2026-11-22 21:55: Circular
+ * ~75 dp, 0 lyric lines, the play button squeezed to a pill).
+ * (a) The large cover is GONE from the left column (portrait
+ * v1.1.17 already removed it; the art lives in the Circular
+ * disc + the 40 dp thumb in the title row) and the visualizer
+ * fills the ENTIRE left column, so Circular is as big in
+ * landscape as the portrait hero (~130 dp disc, ~92 dp rays).
+ * (b) The right column is compacted: a 40 dp art thumb + title/
+ * artist beside it (matching portrait), format + state on ONE
+ * line, and the "Tìm metadata" button moved to the header — so
+ * the lyrics list gets ~106 dp (~3 lines) and the transport
+ * keeps its full 56 dp play button instead of being squeezed.
+ * Nothing else in this screen changes.
  *
  * WIRING (in MainActivity.kt, Routes.NOW_PLAYING destination):
  *   `composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, nav) }`
@@ -147,43 +164,64 @@ import kotlinx.coroutines.delay
         // EQ entry point (top-right Tune icon).
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // v1.1.18: the "Tìm metadata" button lives here now
+                // (was a full row in the right column) — it frees
+                // ~36 dp so the lyrics list gets ~3 lines. Same
+                // labelled action as portrait; opens the metadata
+                // edit dialog (v1.1.12).
+                TextButton(onClick = { showMetadataDialog = true }) {
+                    Icon(Icons.Default.Download, null, tint = MioCyan, modifier = Modifier.size(16.dp))
+                    Text("Tìm metadata", color = MioCyan, fontSize = 13.sp)
+                }
                 IconButton(onClick = { showQueue = true }) { Icon(Icons.Default.QueueMusic, "Hàng đợi", tint = MioText) }
                 IconButton(onClick = { nav.navigate(Routes.EQ) }) { Icon(Icons.Default.Tune, "Equalizer", tint = MioText) }
             }
         }
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-            // LEFT — cover sized to the available height (never the
-            // portrait fixed 240 dp, which overflows a ~360 dp-tall
-            // landscape screen) + the live waveform underneath it.
-            Column(Modifier.weight(0.42f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    BoxWithConstraints(Modifier.fillMaxSize()) {
-                        val coverSize = minOf(maxWidth, maxHeight)
-                        if (t != null) AlbumArt(t.albumId, Modifier.size(coverSize), CardLarge, coverPath = t.coverPath)
-                        else Box(Modifier.size(coverSize).background(MioSurfaceRaised, CardLarge), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(64.dp)) }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                // v1.1.13: the panel gets the current track's cover so the
-                // Circular style can ring the album art (other styles
-                // ignore it); `t` is the playing track in scope here.
-                VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath)
+            // LEFT — v1.1.18: the visualizer fills the ENTIRE column
+            // (was: a large cover + a 140 dp visualizer strip). The
+            // large cover is gone — portrait v1.1.17 already removed
+            // it; the art lives in the Circular disc + the 40 dp
+            // thumb in the title row. `heightDp` comes from this
+            // column's own constraints (same pattern as the portrait
+            // full-screen dialog in NowPlaying.kt), so Circular's
+            // disc is ~130 dp here, as big as the portrait hero.
+            // v1.1.13: the panel gets the current track's cover so the
+            // Circular style can ring the album art (other styles
+            // ignore it); `t` is the playing track in scope here.
+            BoxWithConstraints(Modifier.weight(0.42f).fillMaxHeight()) {
+                VisualizerPanel(levels, pcmFrame, playing, Modifier.fillMaxWidth(), albumId = t?.albumId ?: 0L, coverPath = t?.coverPath, heightDp = maxHeight.value)
             }
             // RIGHT — track info, inline synced lyrics, seek, transport.
             // Compact transport (56 dp play button vs 72 dp portrait)
             // so the lyrics list keeps usable height on short screens.
             Column(Modifier.weight(0.58f).fillMaxHeight()) {
-                Text(t?.title ?: "No song", color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // v1.1.18 — compact title row (was: separate 24 sp
+                // title + 14 sp artist lines): a 40 dp circular art
+                // thumb + the title/artist beside it, matching
+                // portrait v1.1.17. Frees vertical room for the
+                // lyrics list.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (t != null) AlbumArt(t.albumId, Modifier.size(40.dp), androidx.compose.foundation.shape.CircleShape, coverPath = t.coverPath) else Box(Modifier.size(40.dp).background(MioSurfaceRaised, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MioCyan, modifier = Modifier.size(20.dp)) }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(t?.title ?: "No song", color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
                 // v1.1.7: same dedupe as portrait NowPlaying — the DSD
                 // native state line is identical to displayFormat, so
                 // show the format once; the state line only renders
                 // when it says something different.
+                // v1.1.18: format + state on ONE line (was two
+                // lines) — frees ~16 dp for the lyrics list.
                 val formatText = t?.displayFormat ?: ""
-                Text(formatText, color = MioCyan, fontSize = 12.sp)
-                if (stateText.isNotEmpty() && stateText != formatText) {
-                    Text(stateText, color = MioTextSecondary, fontSize = 12.sp)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(formatText, color = MioCyan, fontSize = 12.sp, maxLines = 1)
+                    if (stateText.isNotEmpty() && stateText != formatText) {
+                        Text(" · $stateText", color = MioTextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 if (converting) {
                     Spacer(Modifier.height(4.dp))
@@ -196,17 +234,11 @@ import kotlinx.coroutines.delay
                     Spacer(Modifier.height(4.dp))
                     Text(err, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 12.sp)
                 }
-                // v1.1.11: manual metadata action — same labelled
-                // "Tìm metadata" button as portrait. v1.1.12: the
-                // button opens the metadata edit dialog (rendered
-                // at the bottom of this file) instead of fetching
-                // immediately; the dialog shows the result line.
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { showMetadataDialog = true }) {
-                        Icon(Icons.Default.Download, null, tint = MioCyan, modifier = Modifier.size(16.dp))
-                        Text("Tìm metadata", color = MioCyan, fontSize = 13.sp)
-                    }
-                }
+                // v1.1.18: the "Tìm metadata" button moved to the
+                // header (see above) — this row is gone, freeing
+                // ~36 dp for the lyrics list. The button still opens
+                // the metadata edit dialog (v1.1.12, rendered at the
+                // bottom of this file).
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Lời bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)

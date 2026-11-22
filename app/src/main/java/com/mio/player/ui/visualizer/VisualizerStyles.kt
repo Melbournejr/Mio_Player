@@ -42,7 +42,8 @@ import kotlin.math.sqrt
  *  - Bars / Circular / Mirror / Ferrofluid read `levels` (the 32
  *    log-spaced FFT band magnitudes, 20 Hz–12 kHz, from WaveformTap).
  *  - Wave reads `pcmFrame` (the newest 1024 mono PCM samples, also from
- *    WaveformTap, published with each FFT frame at ~30 Hz, v1.1.6).
+ *    WaveformTap, published with each FFT frame at ~60 Hz, v1.1.18 —
+ *    was ~30 Hz, v1.1.6).
  * Nothing here depends on time, playback position, duration or
  * progress. When there is no live signal (paused / silence) every
  * style sits still at a low, fixed, index-determined shape.
@@ -107,6 +108,17 @@ import kotlin.math.sqrt
  * row, so the "~300 dp demo stage" claim in the v1.1.14 note
  * above was wrong and height was never the problem.
  *
+ * v1.1.18 — Circular: disc smaller, rays more/longer/faster.
+ * The user (v1.1.17 screenshots, 21:54 portrait + 21:55
+ * landscape, "...Baby One More Time") wants the art disc SMALLER
+ * and the rays MORE, LONGER, FASTER/SMOOTHER, and the landscape
+ * bugs fixed — nothing else. Disc 56% -> 40% of minDim, rays
+ * 56 -> 96 (resampled), release 0.75 -> 0.85/frame, shared
+ * publish rate 30 Hz -> ~60 Hz (WaveformTap). Landscape: the
+ * visualizer now fills the whole left column (the large cover
+ * is gone, matching portrait v1.1.17), the right column gets a
+ * compact title row + lyrics room + a full-size transport.
+ *
  * Sizing / colours: Bars / Wave / Mirror share the 88 dp slot and
  * Ferrofluid / Circular use the 140 dp slot (v1.1.14), the same
  * gain (2, was 4 — v1.1.16, see VIS_GAIN) for the FFT styles, and the same theme gradient (Deep
@@ -136,7 +148,13 @@ const val VIS_HERO_HEIGHT_DP = 320f
 // v1.1.17 — Circular ray count 32 -> 56 (the demo has ~56 thin
 // rays; 32 rays at 11.25° pitch read as a sparse halo). The 32 FFT
 // bands are resampled to 56 rays (see resampleLevels).
-private const val CIRC_RAY_COUNT = 56
+// v1.1.18 — 56 -> 96 rays: the user wants many more, longer rays
+// ("số lượng cột âm phải tăng nhiều hơn, dài hơn"). 96 is nearly
+// double the demo's ~56; the 32 FFT bands are resampled to 96
+// rays (see resampleLevels). Bar width stays at the 1.5 dp floor
+// (pitch 7.4 dp on the hero, 3.2 dp on the 140 dp row), so the
+// ring reads as a dense halo of thin rays, not a solid flower.
+private const val CIRC_RAY_COUNT = 96
 private const val VIS_MIN_HEIGHT_DP = 10f
 // v1.1.16 — shared FFT lift gain 4 -> 2. The sqrt lift saturated
 // at level 0.25 (sqrt(0.25*4) = 1), so on a loud pop chorus most
@@ -185,16 +203,17 @@ private const val VIS_MIRROR_MIN_HALF_DP = 12f
 private const val VIS_WAVE_GAIN = 2.5f
 
 // v1.1.13 — peak caps (Bars / Mirror / Ferrofluid): a cap holds its
-// height for ~12 published frames (~0.4 s at ~30 Hz) after a new
-// peak, then falls 0.02 of full height per published frame
-// (~1.7 s for a full fall). Updated per published FFT frame only —
-// no clock, no animation.
+// height for ~12 published frames (~0.2 s at ~60 Hz, v1.1.18 — was
+// ~0.4 s at ~30 Hz) after a new peak, then falls 0.02 of full height
+// per published frame (~0.8 s for a full fall). Updated per published
+// FFT frame only — no clock, no animation.
 private const val PEAK_HOLD_FRAMES = 12
 private const val PEAK_FALL_PER_FRAME = 0.02f
 // v1.1.13 — chase (displayed-value) release per published frame:
 // Bars 0.30 and Mirror 0.35 fall to ~10% of a step in ~7 frames
-// (~0.25 s); attack is always instant. Ferrofluid is more viscous
-// (0.50) so the liquid lags the beat slightly instead of snapping.
+// (~0.12 s at ~60 Hz, v1.1.18 — was ~0.25 s at ~30 Hz); attack is
+// always instant. Ferrofluid is more viscous (0.50) so the liquid
+// lags the beat slightly instead of snapping.
 private const val VIS_BARS_RELEASE = 0.30f
 private const val VIS_MIRROR_RELEASE = 0.35f
 private const val VIS_FERRO_RELEASE = 0.50f
@@ -252,9 +271,9 @@ private fun scaledNorm(level: Float): Float =
 
 /**
  * v1.1.17 — linearly resample `levels` to `count` values (used to
- * ring 56 rays from the 32 FFT bands). Neighbouring rays share
- * interpolated band values, so the ring stays smooth instead of
- * duplicating whole bands.
+ * ring 96 rays from the 32 FFT bands, v1.1.18 — was 56). Neighbouring
+ * rays share interpolated band values, so the ring stays smooth
+ * instead of duplicating whole bands.
  */
 private fun resampleLevels(levels: FloatArray, count: Int): FloatArray {
     if (levels.isEmpty()) return FloatArray(count)
@@ -448,11 +467,11 @@ fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Mo
  * Style 2 — Wave / oscilloscope line. Draws the raw mono PCM frame
  * (1024 samples) as one continuous polyline, stroked with the theme
  * gradient and a faint fill underneath. The frame refreshes at the
- * FFT cadence (~30 Hz, v1.1.6 — was ~10 Hz); between frames the line
+ * FFT cadence (~60 Hz, v1.1.18 — was ~30 Hz); between frames the line
  * is simply redrawn from the same real samples — nothing is
  * interpolated or animated, deliberately: interpolation would invent
- * samples that were never played, and at 30 Hz fresh real samples
- * arrive every 33 ms, so the higher rate alone makes the line move
+ * samples that were never played, and at ~60 Hz fresh real samples
+ * arrive every 16 ms, so the higher rate alone makes the line move
  * smoothly. With no signal the line is a flat, still centre line.
  *
  * v1.1.8 — amplitude rework (the v1.1.7 screenshot showed a thin,
@@ -622,6 +641,22 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
  * (gain 4 → 2, power 0.75 → 0.5): the old curve saturated at
  * level 0.25, so every ray hit full length on a loud chorus. The
  * 0.75/frame release (v1.1.11 speed fix) is unchanged.
+ *
+ * v1.1.18 — user wants the art disc SMALLER and the rays MORE,
+ * LONGER, FASTER/SMOOTHER ("vòng tròn chứa hình bài hát nhỏ
+ * lại, còn số lượng cột âm phải tăng nhiều hơn, dài hơn, thay
+ * đổi nhanh mượt"). Disc 56% -> 40% of minDim (hero 180 dp ->
+ * 128 dp, radial budget 65 dp -> 91 dp); rays 56 -> 96
+ * (resampled from the 32 FFT bands, bar width stays at the
+ * 1.5 dp floor); release 0.75 -> 0.85/frame AND the shared
+ * publish rate goes 30 Hz -> ~60 Hz (see WaveformTap), so the
+ * rays track the beat in ~half the wall-clock time and move at
+ * display rate. Measured on the user's v1.1.17 screenshots
+ * (21:54 portrait, 21:55 landscape): portrait hero disc 179 dp
+ * (as coded), landscape disc ~75 dp on a 140 dp panel — the
+ * "small again" is the 140 dp panel, fixed by the landscape
+ * restructure in NowPlayingLandscape.kt (the visualizer now
+ * fills the column).
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -639,13 +674,15 @@ fun VisualizerCircular(
     // v1.1.17 — 56 rays (the demo has ~56 thin rays; 32 rays at
     // 11.25° pitch read as a sparse halo). The 32 FFT bands are
     // resampled to 56 ray values (see resampleLevels).
+    // v1.1.18 — 96 rays (user: many more, longer rays). Same
+    // resample, just a larger count (see CIRC_RAY_COUNT).
     val rayCount = CIRC_RAY_COUNT
     val rayLevels = resampleLevels(levels, rayCount)
     // v1.1.11 — per-bar displayed lengths (Circular-only constants,
     // kept local so no shared constant is touched). Updated here, in
     // composition, from the newest published levels only — no clock,
     // no animation: a rising target is taken instantly, a falling
-    // target is chased at 0.75/frame, so the bars hug the published
+    // target is chased at 0.85/frame, so the bars hug the published
     // levels within ~1 frame instead of adding a second layer of
     // smoothing on top of WaveformTap's. When idle the chase state is
     // dropped, so the next live frame attacks instantly from zero
@@ -654,10 +691,16 @@ fun VisualizerCircular(
     // exactly the shared sqrt(level * 2) curve (see scaledNorm).
     // The old (level*4)^0.75 saturated at level 0.25, so on a loud
     // chorus every ray hit full length and the ring read as a solid
-    // flower. The 0.75/frame release (the v1.1.11 speed fix) stays.
+    // flower.
+    // v1.1.18 — release 0.75 -> 0.85/frame (faster falls, still
+    // smooth) AND the shared publish rate goes 30 Hz -> ~60 Hz
+    // (see WaveformTap FFT_INTERVAL_MS), so the chase runs twice
+    // as often: the wall-clock fall time constant roughly halves
+    // again. Together the rays track the beat "nhanh mượt" (fast
+    // and smooth) as the user asked.
     val liftGain = 2f // same gain as the shared sqrt lift; only the exponent changes
     val liftPower = 0.5f
-    val releaseWeight = 0.75f
+    val releaseWeight = 0.85f
     val displayed = remember(rayCount) { FloatArray(rayCount) }
     if (live) {
         for (i in 0 until rayCount) {
@@ -678,30 +721,40 @@ fun VisualizerCircular(
     // is 56% of the smaller canvas dimension (the demo's disc/total
     // is ~0.55–0.57), so the disc scales with the canvas instead of
     // staying a fixed 78 dp in a big empty box.
+    // v1.1.18 — disc 56% -> 40%: the user wants the art disc
+    // SMALLER and the rays LONGER ("vòng tròn chứa hình bài hát
+    // nhỏ lại, còn số lượng cột âm phải tăng nhiều hơn, dài hơn").
+    // A smaller hub leaves a much bigger radial budget for the rays.
     BoxWithConstraints(modifier.height(heightDp.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
         val minDimDp = minOf(maxWidth, maxHeight)
-        val discDp = minDimDp * 0.56f
+        val discDp = minDimDp * 0.40f
         Canvas(Modifier.fillMaxSize()) {
             val cx = size.width / 2f
             val cy = size.height / 2f
             val minDim = minOf(size.width, size.height)
-            // v1.1.17: the disc is 28% of the smaller canvas
+            // v1.1.17: the disc WAS 28% of the smaller canvas
             // dimension (diameter 56% — the demo's disc/total is
-            // ~0.55–0.57), so it scales with the canvas: 39 dp on
-            // the 140 dp row (unchanged), ~90 dp on the 320 dp hero
-            // (180 dp disc), ~115 dp full-screen. innerR is the
-            // disc radius + a 3 dp gap; the radial budget is what is
-            // left to the slot edge, so bar tips can never clip.
-            val discR = minDim * 0.28f
+            // ~0.55–0.57), so it scaled with the canvas: 39 dp on
+            // the 140 dp row, ~90 dp on the 320 dp hero (180 dp
+            // disc), ~115 dp full-screen. innerR is the disc radius
+            // + a 3 dp gap; the radial budget is what is left to the
+            // slot edge, so bar tips can never clip.
+            // v1.1.18 — disc radius 28% -> 20% of minDim (diameter
+            // 40%): 28 dp on the 140 dp row (56 dp disc, budget
+            // 37 dp), 64 dp on the 320 dp hero (128 dp disc,
+            // budget 91 dp), ~65 dp in landscape (~130 dp disc,
+            // budget ~92 dp). The rays are now the dominant
+            // feature, as the user asked.
+            val discR = minDim * 0.20f
             val innerR = discR + 3.dp.toPx()
             val budget = (minDim / 2f - innerR - 2.dp.toPx()).coerceAtLeast(4.dp.toPx())
             val midR = innerR + budget / 2f
             // v1.1.17 — bar thickness: ~1.5 dp absolute (the demo's
             // rays are ~1.4 dp), NOT 25% of pitch (≈2.7 dp at 32
-            // rays). At 56 rays the pitch is smaller, so a pitch
-            // fraction would thin the rays too far; the 1.5 dp
-            // floor is the target and the 12% pitch term only
-            // thickens them slightly at hero scale (~1.7 dp).
+            // rays). At 96 rays (v1.1.18) the pitch is smaller still
+            // (7.4 dp hero, 3.2 dp on the 140 dp row), so the 12%
+            // pitch term (0.9 dp / 0.4 dp) is always below the 1.5 dp
+            // floor and the rays are a uniform 1.5 dp everywhere.
             val barWidth = (2f * PI.toFloat() * midR / rayCount.coerceAtLeast(1) * 0.12f).coerceAtLeast(1.5.dp.toPx())
             // Thin accent ring on the disc edge (the old divider inner
             // ring is gone — the disc is the hub now).
@@ -734,6 +787,8 @@ fun VisualizerCircular(
         // dimension (78 dp on the 140 dp row, ~180 dp on the 320 dp
         // hero, ~230 dp full-screen). Real art when there is any,
         // else a theme-gradient disc with a white note (never blank).
+        // v1.1.18 — 40% (56 dp on the 140 dp row, ~128 dp on the
+        // 320 dp hero, ~130 dp in landscape): smaller hub, longer rays.
         if (hasArt) {
             AlbumArt(albumId, Modifier.size(discDp), CircleShape, coverPath = coverPath)
         } else {
