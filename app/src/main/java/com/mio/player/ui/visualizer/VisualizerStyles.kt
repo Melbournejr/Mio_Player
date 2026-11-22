@@ -160,10 +160,34 @@ private const val FERRO_TREBLE_START_BAND = 23
 // demo shows ~14–18 uneven spikes, not a 32-tooth comb); each spike
 // slot resamples the selected band range, so the blob stays full
 // whatever the frequency selector says.
-private const val FERRO_MIN_POOL_DP = 16f
-private const val FERRO_MAX_POOL_DP = 56f
+// v1.1.15 — WHY 1.1.14 STILL READ AS A COMB (measured from the
+// user's video of "...Baby One More Time", MP3): the spikes maxed
+// at 40 dp on a 140 dp row and the dome only 56 dp deep, so the
+// whole silhouette filled just the bottom ~85 dp; the dome bulk
+// (#1E1E22 → #0B0B0D) was 1.08–1.3:1 against the background —
+// invisible — so only the bright spike tips showed, a thin tooth
+// row. The sqrt lift also saturates norms (~0.45–0.7 for most
+// bands), so all 16 spikes came out the same height, and the tower
+// was barely taller than its neighbours. Fixes: dome 24 dp at the
+// edges / 80 dp at the centre (centre surface 60 dp from the top);
+// spikes 6 + norm*50 dp (max 56), tower 12 + towerNorm*48 (max
+// 60) with a 1.4x prominence floor over the median spike; a
+// deterministic per-slot factor (0.75–1.3) so spikes are uneven
+// even when norms saturate; body gradient brightened so the whole
+// dome reads as a mass, not just its top edge.
+private const val FERRO_MIN_POOL_DP = 24f
+private const val FERRO_MAX_POOL_DP = 80f
 private const val FERRO_SPIKE_COUNT = 16
 private const val FERRO_MAX_DROPLETS = 8
+// v1.1.15 — deterministic per-slot height factors: the sqrt lift
+// saturates most norms, so without this every spike comes out the
+// same height (the comb look). Centre slot (index 8) is the tower
+// and keeps factor 1.0 — its prominence comes from the tower
+// formula, not from this table.
+private val FERRO_SLOT_FACTOR = floatArrayOf(
+    0.75f, 1.15f, 0.9f, 1.3f, 0.8f, 1.05f, 1.25f, 0.85f,
+    1.0f, 1.2f, 0.8f, 1.1f, 0.95f, 1.3f, 0.75f, 1.05f
+)
 
 private fun waveLift(sample: Float): Float {
     val s = (sample * VIS_WAVE_GAIN).coerceIn(-1f, 1f)
@@ -810,6 +834,24 @@ private fun ferroSurfaceY(x: Float, w: Float, h: Float, minPool: Float, maxPool:
  *      spike is budgeted inside the row (centre dome top 56 dp +
  *      tower max 50 dp = 106 dp of the 140 dp row), so nothing
  *      clips.
+ *
+ * v1.1.15 — WHY 1.1.14 STILL READ AS A COMB (user's video of
+ * "...Baby One More Time", MP3, frame by frame): the other four
+ * styles read fine (Circular's disc + rays, Wave, Bars, Mirror),
+ * but Ferrofluid was a thin tooth row at the bottom of its row —
+ * no blob mass, no tower, no droplets. Measured causes: (1) the
+ * silhouette filled only the bottom ~85 dp of the 140 dp row
+ * (dome 56 + spike 40 max); (2) the dome bulk was still
+ * 1.08–1.3:1, so only the bright spike tips showed; (3) the sqrt
+ * lift saturates norms, so all 16 spikes came out the same height;
+ * (4) the tower was barely taller than its neighbours; (5) the
+ * droplet thresholds (peak > 0.45, drop > 0.30) almost never fired
+ * with saturated norms. Fixes: dome 24/80 dp, spikes 6 + norm*50
+ * (max 56), tower 12 + towerNorm*48 (max 60) with a 1.4x median
+ * prominence floor, deterministic per-slot unevenness factors
+ * (FERRO_SLOT_FACTOR), body gradient brightened to #5A5A63 →
+ * #2A2A30 → #121215, stronger specular arc + glossy band,
+ * droplet thresholds 0.35/0.18.
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -875,6 +917,30 @@ fun VisualizerFerrofluid(
             norms.fill(0f)
         }
         caps.update(norms, live)
+        // v1.1.15 — spike heights (dp), computed once so the draw
+        // loop and the droplet spawn below agree. Spikes: 6 +
+        // norm*50 (max 56 dp); tower: 12 + towerNorm*48 (max 60 dp)
+        // with a 1.4x prominence floor over the median spike, so the
+        // centre tower always reads as a tower. Each non-tower slot
+        // gets its deterministic unevenness factor. Budget: dome
+        // centre 80 dp + tower 60 dp = 140 dp = the row, so nothing
+        // clips; idle heights stay small (tower 12 dp, spikes 6 dp).
+        val spikeHeights = FloatArray(spikeCount)
+        if (live) {
+            for (i in 0 until spikeCount) {
+                spikeHeights[i] = if (i == spikeCount / 2) {
+                    12f + towerNorm * 48f
+                } else {
+                    (6f + norms[i] * 50f) * FERRO_SLOT_FACTOR[i % FERRO_SLOT_FACTOR.size]
+                }
+            }
+            val sorted = spikeHeights.filterIndexed { i, _ -> i != spikeCount / 2 }.sorted()
+            val median = sorted[sorted.size / 2]
+            val towerIdx = spikeCount / 2
+            if (spikeHeights[towerIdx] < 1.4f * median) spikeHeights[towerIdx] = 1.4f * median
+        } else {
+            for (i in 0 until spikeCount) spikeHeights[i] = if (i == spikeCount / 2) 12f else 6f
+        }
         // Droplets: age one frame, rise, expire; spawn on sharp drops.
         if (live) {
             val it = droplets.iterator()
@@ -887,11 +953,12 @@ fun VisualizerFerrofluid(
             var spawned = 0
             for (i in 0 until spikeCount) {
                 if (spawned >= 2 || droplets.size >= FERRO_MAX_DROPLETS) break
-                if (caps.peaks[i] > 0.45f && caps.peaks[i] - norms[i] > 0.30f) {
+                // v1.1.15: thresholds lowered (peak > 0.35, drop >
+                // 0.18) — with saturated norms the old 0.45/0.30
+                // almost never fired, so no droplets ever showed.
+                if (caps.peaks[i] > 0.35f && caps.peaks[i] - norms[i] > 0.18f) {
                     val cx = (i + 0.5f) * slotW
-                    // v1.1.14: heights match the draw formulas below
-                    // (tower 10 + 40, spikes 4 + 36).
-                    val spikeH = if (i == spikeCount / 2) 10f + towerNorm * 40f else 4f + norms[i] * 36f
+                    val spikeH = spikeHeights[i]
                     val tipY = ferroSurfaceY(cx, wDp, hDp, FERRO_MIN_POOL_DP, FERRO_MAX_POOL_DP) - spikeH
                     droplets.add(FerroDroplet(cx, tipY, 0))
                     spawned++
@@ -906,17 +973,17 @@ fun VisualizerFerrofluid(
             val minPoolPx = FERRO_MIN_POOL_DP.dp.toPx()
             val maxPoolPx = FERRO_MAX_POOL_DP.dp.toPx()
             val slotWPx = wPx / spikeCount.coerceAtLeast(1)
-            // v1.1.14: the body gradient is BRIGHTENED — the old
-            // near-black brush (#2E2E33 → #050506) on the near-black
-            // Deep Wave background (#07181D) was 1.08:1 at the
-            // mid/base (1.34:1 at the top), i.e. invisible. The dome
-            // top #4A4A52 is now 2.07:1 against the background, so
-            // the blob reads as a body, not a hole. Spikes no longer
-            // share this brush (see below) — only the blob and the
-            // spike bases use it, so the bases still blend into the
-            // blob with no seam.
+            // v1.1.15: the body gradient is brightened AGAIN — the
+            // 1.1.14 dome (#4A4A52 top, 2.07:1) was visible only at
+            // its top edge; the bulk (#1E1E22 → #0B0B0D, 1.08–1.3:1)
+            // was still invisible, so the blob read as a hole with a
+            // tooth row on top. The whole dome now reads as a grey
+            // mass: top ~3.5:1, mid ~1.8:1. Spikes still do not share
+            // this brush (see below) — only the blob and the spike
+            // bases use it, so the bases still blend into the blob
+            // with no seam.
             val bodyBrush = Brush.verticalGradient(
-                listOf(Color(0xFF4A4A52), Color(0xFF1E1E22), Color(0xFF0B0B0D))
+                listOf(Color(0xFF5A5A63), Color(0xFF2A2A30), Color(0xFF121215))
             )
             // The blob: one domed pool across the whole row.
             blobPath.rewind()
@@ -958,10 +1025,18 @@ fun VisualizerFerrofluid(
                 val y = ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx) - 2.dp.toPx()
                 if (s == 0) highlightPath.moveTo(x, y) else highlightPath.lineTo(x, y)
             }
+            // v1.1.15: the old 0.20-alpha arc was too faint to sell
+            // gloss on the dark blob — stronger arc plus a wide soft
+            // glossy band just under the rim.
             drawPath(
                 highlightPath,
-                SolidColor(Color.White.copy(alpha = 0.20f)),
-                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+                SolidColor(Color.White.copy(alpha = 0.10f)),
+                style = Stroke(width = 12.dp.toPx(), cap = StrokeCap.Round)
+            )
+            drawPath(
+                highlightPath,
+                SolidColor(Color.White.copy(alpha = 0.32f)),
+                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
             )
             // Spikes: curved flares growing out of the blob. Wide
             // base sunk 2 dp into the blob, concave sides (the
@@ -973,13 +1048,12 @@ fun VisualizerFerrofluid(
                 val surfaceY = ferroSurfaceY(cx, wPx, hPx, minPoolPx, maxPoolPx)
                 val baseY = surfaceY + 2.dp.toPx()
                 val isTower = i == centreSlot
-                // v1.1.14: spikes up to 40 dp, tower up to 50 dp
-                // (was 27 / 34 dp) — the tall row finally has room.
-                val spikeH = if (live) {
-                    if (isTower) (10f + towerNorm * 40f).dp.toPx() else (4f + norms[i] * 36f).dp.toPx()
-                } else {
-                    if (isTower) 10.dp.toPx() else 3.dp.toPx()
-                }
+                // v1.1.15: heights come from spikeHeights (computed
+                // above, with unevenness + tower prominence) — the
+                // old inline formula (4 + norm*36, tower 10 + 40)
+                // capped everything at 40 dp on a 140 dp row and made
+                // all 16 spikes the same height: the comb.
+                val spikeH = spikeHeights[i].dp.toPx()
                 val norm = if (isTower) towerNorm else norms[i]
                 val baseHalfW = slotWPx * (if (isTower) 0.8f else 0.45f) * (1f - 0.3f * norm)
                 val apex = Offset(cx, surfaceY - spikeH)

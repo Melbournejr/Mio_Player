@@ -26,7 +26,6 @@ import androidx.media3.common.Player
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.*
 import com.mio.player.data.prefs.SettingsStore
-import com.mio.player.ui.components.GradientIcon
 import com.mio.player.ui.components.isLandscape
 import com.mio.player.ui.components.MiniPlayer
 import com.mio.player.ui.navigation.Routes
@@ -169,7 +168,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
     // restoreState / saveState: every tap pushed a NEW destination
     // instance on top of the stack after popping to HOME, so rapid taps
     // queued several overlapping fade transitions and recreated the
-    // bottom bar (and its GradientIcon drawWithCache + SrcIn rect)
+    // bottom bar (and its then-custom gradient icon)
     // mid-transition — that is when the icons rendered as grey circles /
     // a red square blob. Now: standard bottom-nav block (single top
     // instance per tab, state saved/restored across tabs) + a 300 ms
@@ -199,10 +198,13 @@ suspend fun restoreSoundSettings(ctx: Context) {
             NavigationRail(containerColor = com.mio.player.ui.theme.MioSurface) {
                 tabs.forEach { (r, label, icon) ->
                     NavigationRailItem(selected = current == r, onClick = { goTab(r) },
-                        icon = { if (current == r) GradientIcon(icon, null) else Icon(icon, null, tint = com.mio.player.ui.theme.MioTextSecondary) },
+                        // v1.1.15 — standard Material 3 selected
+                        // treatment: accent tint + tonal indicator
+                        // pill (GradientIcon's SrcIn blend is deleted).
+                        icon = { Icon(icon, null, tint = if (current == r) com.mio.player.ui.theme.MioCyan else com.mio.player.ui.theme.MioTextSecondary) },
                         label = { Text(label, color = if (current == r) com.mio.player.ui.theme.MioText else com.mio.player.ui.theme.MioTextSecondary, fontSize = 11.sp) },
-                        colors = NavigationRailItemDefaults.colors(selectedIconColor = androidx.compose.ui.graphics.Color.White, unselectedIconColor = com.mio.player.ui.theme.MioTextSecondary,
-                            selectedTextColor = com.mio.player.ui.theme.MioText, unselectedTextColor = com.mio.player.ui.theme.MioTextSecondary, indicatorColor = androidx.compose.ui.graphics.Color.Transparent))
+                        colors = NavigationRailItemDefaults.colors(selectedIconColor = com.mio.player.ui.theme.MioCyan, unselectedIconColor = com.mio.player.ui.theme.MioTextSecondary,
+                            selectedTextColor = com.mio.player.ui.theme.MioText, unselectedTextColor = com.mio.player.ui.theme.MioTextSecondary, indicatorColor = com.mio.player.ui.theme.MioCyan.copy(alpha = 0.12f)))
                 }
             }
             Column(Modifier.weight(1f)) {
@@ -224,12 +226,17 @@ suspend fun restoreSoundSettings(ctx: Context) {
                 NavigationBar(containerColor = com.mio.player.ui.theme.MioSurface) {
                     tabs.forEach { (r, label, icon) ->
                         NavigationBarItem(selected = current == r, onClick = { goTab(r) },
-                            // Design system: the selected icon uses the theme
-                            // gradient; unselected icons are secondary text.
-                            icon = { if (current == r) GradientIcon(icon, null) else Icon(icon, null, tint = com.mio.player.ui.theme.MioTextSecondary) },
+                            // v1.1.15 — standard Material 3 selected
+                            // treatment: accent tint + tonal indicator
+                            // pill. The old GradientIcon (SrcIn blend)
+                            // caused the solid-square tab icons of
+                            // v1.1.9–v1.1.11 and is deleted; the
+                            // gradient stays only where it is a plain
+                            // background fill (buttons, play button).
+                            icon = { Icon(icon, null, tint = if (current == r) com.mio.player.ui.theme.MioCyan else com.mio.player.ui.theme.MioTextSecondary) },
                             label = { Text(label, color = if (current == r) com.mio.player.ui.theme.MioText else com.mio.player.ui.theme.MioTextSecondary) },
-                            colors = NavigationBarItemDefaults.colors(selectedIconColor = androidx.compose.ui.graphics.Color.White, unselectedIconColor = com.mio.player.ui.theme.MioTextSecondary,
-                                selectedTextColor = com.mio.player.ui.theme.MioText, unselectedTextColor = com.mio.player.ui.theme.MioTextSecondary, indicatorColor = androidx.compose.ui.graphics.Color.Transparent))
+                            colors = NavigationBarItemDefaults.colors(selectedIconColor = com.mio.player.ui.theme.MioCyan, unselectedIconColor = com.mio.player.ui.theme.MioTextSecondary,
+                                selectedTextColor = com.mio.player.ui.theme.MioText, unselectedTextColor = com.mio.player.ui.theme.MioTextSecondary, indicatorColor = com.mio.player.ui.theme.MioCyan.copy(alpha = 0.12f)))
                     }
                 }
             }

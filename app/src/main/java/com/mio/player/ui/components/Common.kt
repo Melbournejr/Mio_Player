@@ -4,7 +4,6 @@ import android.provider.MediaStore
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -13,12 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.geometry.toRect
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Paint
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -38,35 +32,14 @@ import com.mio.player.ui.theme.*
         }
     }
 }
-/** An icon painted with the theme gradient (design system: the selected
- *  bottom-nav icon uses the gradient). The icon is drawn in white first,
- *  then the gradient is masked onto it with SrcIn.
- *
- *  v1.1.11: the SrcIn rect MUST run inside its own saved layer. Without
- *  one, SrcIn blends against everything already on the canvas — including
- *  the opaque NavigationBar background behind the icon — so the gradient
- *  rect shows as a solid square instead of being masked to the icon
- *  shape. It only sometimes looked right before (when a layer happened
- *  to exist, e.g. during the indicator animation). The layer isolates
- *  the blend destination to just the white icon pixels, so the mask is
- *  the icon shape on all four tabs. */
-@Composable fun GradientIcon(imageVector: ImageVector, contentDescription: String?, modifier: Modifier = Modifier) {
-    val gradient = MioGradient
-    Icon(imageVector, contentDescription, tint = Color.White,
-        modifier = modifier.drawWithCache {
-            onDrawWithContent {
-                drawIntoCanvas { canvas ->
-                    // Compose Canvas has no restoreToCount (that is
-                    // android.graphics.Canvas): saveLayer returns Unit
-                    // and restore() pops the layer it opened.
-                    canvas.saveLayer(size.toRect(), Paint())
-                    drawContent()
-                    drawRect(brush = gradient, blendMode = BlendMode.SrcIn)
-                    canvas.restore()
-                }
-            }
-        })
-}
+/** v1.1.15 — GradientIcon is DELETED, not moved: the SrcIn blend that
+ *  painted the selected tab icon with the gradient caused the solid
+ *  square icons of v1.1.9–v1.1.11. The selected tab now uses the
+ *  standard Material 3 treatment — accent tint + a tonal indicator
+ *  pill (see MainScaffold) — no custom drawing at all. Do not
+ *  re-add a gradient-masked icon: a gradient fill is only safe as a
+ *  plain background (see mioGradientBackground), never as a blend
+ *  over icon pixels. */
 @Composable fun SectionTitle(text: String) { Text(text, color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp)) }
 /** Real album art from MediaStore (content://media/external/audio/albumart/<albumId>).
  *  Falls back to the teal MusicNote box when there is no art — the PDF
@@ -116,16 +89,10 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
         }
     }
 }
-@Composable fun WaveformBar(progress: Float, modifier: Modifier = Modifier) {
-    // Deterministic pseudo-waveform (no fake audio analysis): bars are visual only.
-    Row(modifier.height(36.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        val heights = listOf(10,18,26,14,30,22,12,28,18,10,24,16,30,20,12,26,14,22,10,18)
-        heights.forEachIndexed { i, h ->
-            Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape)
-                .background(if (i.toFloat()/heights.size <= progress) MioCyan else MioDivider))
-        }
-    }
-}
+// v1.1.15 — WaveformBar DELETED: a fake pseudo-waveform (20 hard-coded
+// bar heights coloured by progress), and dead code — no screen used
+// it. A waveform that does not come from the audio has no place in
+// the app; the live FFT bars live in ui/visualizer/VisualizerStyles.kt.
 /** v1.1.13 — LiveWaveform is GONE (deleted, not moved): the Bars
  *  visualizer is now native in ui/visualizer/VisualizerStyles.kt
  *  (Monstercat-style peak caps, fast attack / slow release, same gain
