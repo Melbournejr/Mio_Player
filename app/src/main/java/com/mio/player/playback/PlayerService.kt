@@ -15,6 +15,12 @@ class PlayerService : MediaSessionService() {
         super.onCreate()
         val container = (application as com.mio.player.MioApp).container
         session = MediaSession.Builder(this, container.playerManager.player).build()
+        // v1.1.19: log the session creation so the next user log proves
+        // the notification path ran (the placeholder below is replaced
+        // by Media3's real media notification once the session is
+        // active — it only reaches the shade when POST_NOTIFICATIONS
+        // is granted, see MainActivity).
+        com.mio.player.data.log.MioLog.event(this, "PlayerService created: MediaSession built")
         startForegroundNow()
     }
     /** Start in the foreground IMMEDIATELY. MediaSessionService only

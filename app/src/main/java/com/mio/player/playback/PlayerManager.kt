@@ -1,9 +1,11 @@
 package com.mio.player.playback
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
+import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.media3.common.*
 import androidx.media3.common.audio.AudioProcessor
@@ -516,7 +518,18 @@ class PlayerManager(private val ctx: Context) {
         }.onFailure { MioLog.event(ctx, "Service start failed: ${it.message}") }
     }
     private fun buildItem(t: Track, uri: Uri): MediaItem = MediaItem.Builder().setUri(uri).setMediaId(t.id.toString())
-        .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).build()).build()
+        .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).setArtworkUri(artworkUriFor(t)).build()).build()
+    /** v1.1.19 — cover art for the media notification + the phone's
+     *  Dynamic Island: the session metadata had title/artist/album
+     *  but no artwork, so the notification/island showed no cover.
+     *  Prefer the downloaded cover file, else the MediaStore album
+     *  art (the same two sources AlbumArt uses). */
+    private fun artworkUriFor(t: Track): Uri? {
+        val coverFile = t.coverPath?.let { java.io.File(it) }?.takeIf { it.exists() }
+        if (coverFile != null) return Uri.fromFile(coverFile)
+        if (t.albumId > 0) return ContentUris.withAppendedId(MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, t.albumId)
+        return null
+    }
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
         if (tracks.isEmpty()) return
         // Clear the per-track failure sets — a transient failure (low

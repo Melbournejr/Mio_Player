@@ -32,6 +32,7 @@ import com.mio.player.ui.theme.mioGradientBackground
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.maxOf
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -1161,8 +1162,19 @@ fun VisualizerFerrofluid(
             }
             val sorted = spikeHeights.filterIndexed { i, _ -> i != spikeCount / 2 }.sorted()
             val median = sorted[sorted.size / 2]
+            val maxOther = sorted.lastOrNull() ?: 0f
             val towerIdx = spikeCount / 2
-            if (spikeHeights[towerIdx] < 1.5f * median) spikeHeights[towerIdx] = 1.5f * median
+            // v1.1.19 — the tower must be the TALLEST spike, not just
+            // 1.5x the median: on a low-bass intro the median is small
+            // while a few slots are already tall, so the old floor left
+            // the tower shorter than its neighbours (measured on the
+            // user's 1.1.18 video: tower 72 dp, slot 6 81 dp). Floor at
+            // 1.3x the tallest other spike (keeping the 1.5x median
+            // floor), clamped so the tip stays inside the row.
+            val towerFloor = maxOf(1.5f * median, 1.3f * maxOther)
+            if (spikeHeights[towerIdx] < towerFloor) spikeHeights[towerIdx] = towerFloor
+            val towerMax = (hDp - maxPoolDp) * 0.92f
+            if (spikeHeights[towerIdx] > towerMax) spikeHeights[towerIdx] = towerMax
         } else {
             for (i in 0 until spikeCount) spikeHeights[i] = if (i == spikeCount / 2) 12f * s else 6f * s
         }
@@ -1238,17 +1250,20 @@ fun VisualizerFerrofluid(
                 val x = s.toFloat() / domeSteps * wPx
                 sheenPath.lineTo(x, ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx))
             }
-            // v1.1.14: soft glow under the rim, then the rim itself
-            // at 2.5 dp (was 1.5 dp) — the dome outline must read.
+            // v1.1.14: soft glow under the rim, then the rim itself.
+            // v1.1.19 — FIXED widths (were 7x / 2.5x the hero scale
+            // `s`, i.e. 16 dp / 5.7 dp on the hero): a rim that thick
+            // reads as a separate teal band, not a liquid edge. The
+            // dome's edge is now a 1.5 dp rim + a 3 dp soft glow.
             drawPath(
                 sheenPath,
                 SolidColor(accent.copy(alpha = 0.25f)),
-                style = Stroke(width = (7f * s).dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
             )
             drawPath(
                 sheenPath,
                 brush = Brush.linearGradient(colors, start = Offset.Zero, end = Offset(wPx, 0f)),
-                style = Stroke(width = (2.5f * s).dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round)
             )
             // Specular highlight: soft white arc on the upper-left of
             // the dome, just above the surface.
@@ -1289,15 +1304,22 @@ fun VisualizerFerrofluid(
                 // all 16 spikes the same height: the comb.
                 val spikeH = spikeHeights[i].dp.toPx()
                 val norm = if (isTower) towerNorm else norms[i]
-                val baseHalfW = slotWPx * (if (isTower) 0.8f else 0.45f) * (1f - 0.3f * norm)
+                // v1.1.19 — WIDER, CONVEX spikes: the old base was
+                // 0.45x the slot with concave (pinched) sides, so the
+                // 16 spikes read as separate sharp triangles. The base
+                // is now 0.65x the slot (0.85x tower) with sides that
+                // bulge OUTWARD, so neighbouring spikes merge at the
+                // base into one continuous liquid surface and only
+                // separate toward the tips.
+                val baseHalfW = slotWPx * (if (isTower) 0.85f else 0.65f) * (1f - 0.2f * norm)
                 val apex = Offset(cx, surfaceY - spikeH)
                 spikePath.rewind()
                 spikePath.moveTo(cx - baseHalfW, baseY)
                 spikePath.quadraticBezierTo(
-                    cx - baseHalfW * 0.45f, baseY - spikeH * 0.6f, apex.x, apex.y
+                    cx - baseHalfW * 1.1f, baseY - spikeH * 0.45f, apex.x, apex.y
                 )
                 spikePath.quadraticBezierTo(
-                    cx + baseHalfW * 0.45f, baseY - spikeH * 0.6f, cx + baseHalfW, baseY
+                    cx + baseHalfW * 1.1f, baseY - spikeH * 0.45f, cx + baseHalfW, baseY
                 )
                 spikePath.close()
                 // v1.1.14: spikes get their OWN brighter brush — a
@@ -1317,29 +1339,23 @@ fun VisualizerFerrofluid(
                     endY = baseY
                 )
                 drawPath(spikePath, spikeBrush)
-                // Glossy rim down BOTH spike edges (was one edge at
-                // 1.5 dp) + a bright tip dot on loud spikes (white
-                // on the tower tip).
-                val rimColor = lerp(colors.first(), colors.last(), i.toFloat() / (spikeCount - 1).coerceAtLeast(1))
-                drawLine(
-                    rimColor.copy(alpha = 0.7f),
-                    apex,
-                    Offset(cx - baseHalfW, baseY),
-                    strokeWidth = (2f * s).dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    rimColor,
-                    apex,
-                    Offset(cx + baseHalfW, baseY),
-                    strokeWidth = (2f * s).dp.toPx(),
-                    cap = StrokeCap.Round
-                )
+                // v1.1.19 — ROUNDED APEX: a bead at the tip in the
+                // same brush, so the spike ends in a liquid drop,
+                // not a sharp point.
+                drawCircle(spikeBrush, radius = baseHalfW * 0.3f, center = apex)
+                // v1.1.19 — the teal rim lines down BOTH spike edges
+                // are GONE. Measured on the user's 1.1.18 video they
+                // were 4.6 dp thick at hero scale ((2f * s), s=2.29)
+                // and ate 50–80% of each spike's width — the whole
+                // upper spike rendered solid teal, which is why the
+                // ferrofluid read as "teeth". The tip dot is now a
+                // white gloss highlight on every loud spike, not a
+                // teal blob.
                 if (live && norm > 0.55f) {
                     if (isTower) {
                         drawCircle(Color.White.copy(alpha = 0.9f), radius = (2f * s).dp.toPx(), center = apex)
                     } else {
-                        drawCircle(rimColor, radius = (1.4f * s).dp.toPx(), center = apex)
+                        drawCircle(Color.White.copy(alpha = 0.7f), radius = (1.4f * s).dp.toPx(), center = apex)
                     }
                 }
             }

@@ -1,6 +1,8 @@
 package com.mio.player.ui.screens
+import android.app.Activity
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -16,6 +18,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.navigation.NavHostController
@@ -64,6 +69,20 @@ import kotlinx.coroutines.delay
  * keeps its full 56 dp play button instead of being squeezed.
  * Nothing else in this screen changes.
  *
+ * v1.1.19 — landscape goes FULL-SCREEN (immersive) and the right
+ * column is re-budgeted for the lyrics list. Measured on the
+ * user's 1.1.18 screenshot (2026-11-22 23:01): the lyrics
+ * viewport was only ~57 dp and showed exactly 1 line — the
+ * "~106 dp (~3 lines)" claimed in (b) was wrong. (a) The status
+ * + navigation bars are hidden while this screen shows (restored
+ * on dispose), freeing ~40 dp. (b) Outer vertical padding 12 ->
+ * 8 dp. (c) The "Xem đầy đủ" TextButton (48 dp min touch target)
+ * becomes a plain clickable Text, so the lyrics header row drops
+ * from ~48 dp to ~24 dp. Together the lyrics viewport grows from
+ * ~57 dp to ~130 dp (~4 lines, estimated — unproven until the
+ * user tests). The visualizer, the transport (56 dp play button)
+ * and "Tìm metadata" are unchanged.
+ *
  * WIRING (in MainActivity.kt, Routes.NOW_PLAYING destination):
  *   `composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, nav) }`
  * `NowPlayingRoute` picks this screen in landscape and the existing
@@ -99,6 +118,19 @@ import kotlinx.coroutines.delay
     var plain by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf("Đang tìm lời…") }
     val ctx = LocalContext.current
+    // v1.1.19 — landscape is FULL-SCREEN (immersive): hide the status
+    // + navigation bars while this screen is showing, so the lyrics
+    // get the freed height (~40 dp). Restored on dispose (rotation
+    // back to portrait / leaving the screen). Transient bars on swipe.
+    DisposableEffect(ctx) {
+        val activity = ctx as? Activity
+        val window = activity?.window
+        if (window == null) return@DisposableEffect onDispose {}
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
+    }
     LaunchedEffect(t?.id) {
         pos = 0L
         currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri
@@ -159,7 +191,9 @@ import kotlinx.coroutines.delay
             }
         }
     }
-    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = 20.dp, vertical = 12.dp)) {
+    // v1.1.19: vertical padding 12 -> 8 dp (landscape full-screen:
+    // every dp goes to the lyrics list).
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = 20.dp, vertical = 8.dp)) {
         // Header — same actions as portrait: back, queue sheet, the ONLY
         // EQ entry point (top-right Tune icon).
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -242,7 +276,11 @@ import kotlinx.coroutines.delay
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Lời bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    TextButton(onClick = { nav.navigate(Routes.LYRICS) }) { Text("Xem đầy đủ", color = MioCyan, fontSize = 13.sp) }
+                    // v1.1.19: a plain clickable Text, not a TextButton —
+                    // TextButton enforces a 48 dp min touch target, which
+                    // made this header row 48 dp tall and stole ~24 dp
+                    // from the lyrics list. Same destination.
+                    Text("Xem đầy đủ", color = MioCyan, fontSize = 13.sp, modifier = Modifier.clickable { nav.navigate(Routes.LYRICS) }.padding(8.dp))
                 }
                 if (lines.isNotEmpty()) {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = lyricListState) {

@@ -25,6 +25,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.*
+import com.mio.player.data.log.MioLog
 import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.ui.components.isLandscape
 import com.mio.player.ui.components.MiniPlayer
@@ -53,6 +54,17 @@ fun musicPermission(): String =
     else Manifest.permission.READ_EXTERNAL_STORAGE
 fun hasMusicPermission(ctx: Context): Boolean =
     ContextCompat.checkSelfPermission(ctx, musicPermission()) == PackageManager.PERMISSION_GRANTED
+/** v1.1.19 — notification permission (Android 13+): the manifest
+ *  declared POST_NOTIFICATIONS since the MediaSession service was
+ *  added, but it was NEVER requested at runtime, so the system
+ *  silently dropped every notification — no media notification in
+ *  the shade, and no media surface for the phone's Dynamic Island.
+ *  Requested alongside the music permission below. On Android <13
+ *  notifications need no runtime grant (null = nothing to ask). */
+fun notificationPermission(): String? =
+    if (Build.VERSION.SDK_INT >= 33) Manifest.permission.POST_NOTIFICATIONS else null
+fun hasNotificationPermission(ctx: Context): Boolean =
+    notificationPermission()?.let { ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED } ?: true
 /** v1.1.9 TASK 1 — rapid-tab-tap debounce (black screen fix).
  *  MUST be a file-level var, not remember{} inside MainScaffold:
  *  every tab destination creates a NEW MainScaffold instance, so a
@@ -103,12 +115,23 @@ suspend fun restoreSoundSettings(ctx: Context) {
     val libVm: LibraryViewModel = viewModel()
     val playerVm: PlayerViewModel = viewModel()
     val update = rememberUpdateState()
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) libVm.scan() else libVm.load()
+    // v1.1.19 — one launcher for BOTH runtime permissions (music +
+    // notification): RequestPermission only handles a single
+    // permission. The music result drives the library scan exactly
+    // as before; the notification result is only logged, so the
+    // next user log proves whether the media notification can show.
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+        if (results[musicPermission()] == true) libVm.scan() else libVm.load()
+        notificationPermission()?.let { perm ->
+            MioLog.event(ctx, "Notification permission: granted=${results[perm] == true}")
+        }
     }
     LaunchedEffect(Unit) {
         restoreSoundSettings(ctx)
-        if (hasMusicPermission(ctx)) libVm.scan() else { libVm.load(); permissionLauncher.launch(musicPermission()) }
+        if (hasMusicPermission(ctx)) libVm.scan() else libVm.load()
+        val missing = listOfNotNull(musicPermission(), notificationPermission())
+            .filter { ContextCompat.checkSelfPermission(ctx, it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
         update.check(false)
     }
     update.available?.let { info -> UpdateDialog(info) { update.available = null } }
