@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -63,6 +64,16 @@ import kotlinx.coroutines.launch
  *    requires an unconsumed down). The control is hidden for every
  *    other style, and the tap / swipe / pill behaviour is otherwise
  *    exactly as in v1.1.12.
+ *
+ * v1.1.20 — the frequency chips MOVE OUT of the canvas: on the
+ * user's 1.1.19 landscape frame the cyan "Tất cả" chip sits on top
+ * of the centre tower's tip. The chips now live in a row BELOW the
+ * visualizer (same segmented control, same DataStore key, same
+ * tap behaviour — chips are outside the tap/swipe area now, so a
+ * chip tap can never switch the style either). When the panel is
+ * given a fixed height (hero / landscape / full-screen), the
+ * visualizer shrinks by 32 dp to make room for the row, so the
+ * panel's total height is unchanged.
  *
  * [VisualizerPanel] is the one-call version for Now Playing: it reads
  * the saved style from DataStore (same "mio_settings" store as every
@@ -147,8 +158,21 @@ fun VisualizerPanel(
         }
     }
 
+    // v1.1.20 — the Ferrofluid frequency chips live BELOW the
+    // visualizer, not overlaid on it (the overlay covered the
+    // centre tower tip on the user's 1.1.19 frame). With a fixed
+    // panel height the visualizer gives up 32 dp for the chip row,
+    // so the panel's total height is unchanged; without a fixed
+    // height the row just adds below the default-height visualizer.
+    val vizHeightDp = if (style == VisualizerStyle.FERROFLUID && heightDp != null) {
+        (heightDp - 32f).coerceAtLeast(88f)
+    } else {
+        heightDp
+    }
+    Column(modifier) {
     Box(
-        modifier
+        Modifier
+            .fillMaxWidth()
             .pointerInput(style) {
                 detectTapGestures(onTap = { switchTo(style.next()) })
             }
@@ -170,7 +194,7 @@ fun VisualizerPanel(
             },
         contentAlignment = Alignment.Center
     ) {
-        MioVisualizer(style, levels, pcmFrame, playing, albumId, coverPath, ferroFreq, Modifier.fillMaxWidth(), heightDp)
+        MioVisualizer(style, levels, pcmFrame, playing, albumId, coverPath, ferroFreq, Modifier.fillMaxWidth(), vizHeightDp)
         // v1.1.14: the pill sits in the top-left corner — it used to
         // sit centred, covering Circular's art disc.
         if (showLabel) {
@@ -190,44 +214,47 @@ fun VisualizerPanel(
                 )
             }
         }
-        // v1.1.13 — Ferrofluid frequency selector: a small segmented
-        // control overlaid top-right, visible only while Ferrofluid
-        // is active. Each chip is `clickable`, which consumes the
-        // tap's down event, so tapping a chip does NOT also trigger
-        // the panel's tap-to-next-style above.
+    }
+        // v1.1.20 — Ferrofluid frequency selector, BELOW the
+        // visualizer: the same segmented control (Bass / Tất cả /
+        // Treble, same DataStore key), now centred under the canvas
+        // where it covers nothing. Outside the tap/swipe Box, so a
+        // chip tap can never also switch the style.
         if (style == VisualizerStyle.FERROFLUID) {
             Row(
                 Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.Center
             ) {
-                for (option in FerrofluidFreq.values()) {
-                    val selected = option == ferroFreq
-                    Box(
-                        Modifier
-                            .background(
-                                if (selected) accent else Color.Black.copy(alpha = 0.55f),
-                                CircleShape
-                            )
-                            .clickable {
-                                if (option != ferroFreq) {
-                                    scope.launch {
-                                        runCatching {
-                                            settings.set(VisualizerStyle.KEY_FERROFLUID_FREQ, option.id)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    for (option in FerrofluidFreq.values()) {
+                        val selected = option == ferroFreq
+                        Box(
+                            Modifier
+                                .background(
+                                    if (selected) accent else Color.Black.copy(alpha = 0.55f),
+                                    CircleShape
+                                )
+                                .clickable {
+                                    if (option != ferroFreq) {
+                                        scope.launch {
+                                            runCatching {
+                                                settings.set(VisualizerStyle.KEY_FERROFLUID_FREQ, option.id)
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            option.label,
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                        )
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                option.label,
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
                     }
                 }
             }

@@ -200,7 +200,16 @@ private const val VIS_MIRROR_MIN_HALF_DP = 12f
 // (|x| 0.40 -> 1.0) but the body keeps its shape (|x| 0.05 ->
 // 0.35, 0.10 -> 0.50, 0.20 -> 0.71); the 4.5 dp stroke + glow
 // from 1.1.14 stay, so soft ballads stay visible.
-private const val VIS_WAVE_GAIN = 2.5f
+// v1.1.20 — gain 2.5 -> 1.5 + only 128 plotted points (was ~500):
+// measured on the user's 1.1.19 video (f22), Wave filled 39.6% of
+// its bbox — a solid comb, not a line — because ~500 samples 2 px
+// apart, each jumping near full height, overlapped under a 4.5 dp
+// stroke + 12 dp glow + 0.30 fill. At 128 points the vertical runs
+// are ~8 px apart on a phone and cannot merge into a solid mass;
+// gain 1.5 keeps dynamics (|x| 0.05 -> 0.27, 0.10 -> 0.39,
+// 0.20 -> 0.55, 0.40 -> 0.77, 0.67 -> 1.0) instead of saturating
+// quiet passages to half height. Stroke 2.5 dp, glow 6 dp, fill 0.08.
+private const val VIS_WAVE_GAIN = 1.5f
 
 // v1.1.13 — peak caps (Bars / Mirror / Ferrofluid): a cap holds its
 // height for ~12 published frames (~0.2 s at ~60 Hz, v1.1.18 — was
@@ -248,16 +257,22 @@ private const val FERRO_TREBLE_START_BAND = 23
 // dome reads as a mass, not just its top edge.
 private const val FERRO_MIN_POOL_DP = 24f
 private const val FERRO_MAX_POOL_DP = 80f
-private const val FERRO_SPIKE_COUNT = 16
-private const val FERRO_MAX_DROPLETS = 8
+// v1.1.20 — 16 -> 28 spikes: measured on the user's 1.1.19 frames,
+// 16 wide-based triangles (0.65x slot) merge at the foot and read as
+// a crown / teeth, not liquid. The SoulBeat reference has many thin
+// black needles, uneven, each clearly separate. 28 slots, thin bases
+// (0.30x slot, tower 0.45x — see the draw loop), sharp apices.
+private const val FERRO_SPIKE_COUNT = 28
 // v1.1.15 — deterministic per-slot height factors: the sqrt lift
 // saturates most norms, so without this every spike comes out the
-// same height (the comb look). Centre slot (index 8) is the tower
+// same height (the comb look). Centre slot (index 14) is the tower
 // and keeps factor 1.0 — its prominence comes from the tower
-// formula, not from this table.
+// formula, not from this table. v1.1.20: extended to 28 slots.
 private val FERRO_SLOT_FACTOR = floatArrayOf(
-    0.75f, 1.15f, 0.9f, 1.3f, 0.8f, 1.05f, 1.25f, 0.85f,
-    1.0f, 1.2f, 0.8f, 1.1f, 0.95f, 1.3f, 0.75f, 1.05f
+    0.7f, 1.2f, 0.85f, 1.3f, 0.75f, 1.1f, 1.25f, 0.8f,
+    1.15f, 0.9f, 1.3f, 0.75f, 1.05f, 1.2f, 1.0f, 1.25f,
+    0.8f, 1.1f, 0.95f, 1.3f, 0.7f, 1.15f, 0.85f, 1.2f,
+    0.75f, 1.05f, 1.3f, 0.9f
 )
 
 private fun waveLift(sample: Float): Float {
@@ -356,14 +371,6 @@ private fun chaseDisplayed(displayed: FloatArray, levels: FloatArray, live: Bool
         else displayed[i] + (target - displayed[i]) * release
     }
 }
-
-/**
- * v1.1.13 — one droplet detached from a ferrofluid spike tip.
- * Position is in dp of the 140 dp row; `age` counts published FFT
- * frames since detachment — no clock. The droplet rises ~2.4 dp per
- * frame and is removed after 12 frames.
- */
-private class FerroDroplet(var xDp: Float, var yDp: Float, var age: Int)
 
 /** Dispatcher — the single entry point for Now Playing.
  * v1.1.17: `heightDp` overrides the per-style default row height
@@ -496,6 +503,12 @@ fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Mo
  * "Anh Mo" barely moves the line): stroke 3 dp -> 4.5 dp, glow
  * 9 dp / 0.22 -> 12 dp / 0.35 alpha, fill 0.22 -> 0.30 alpha, and
  * the lift gain 2.5 -> 3.5 (see VIS_WAVE_GAIN). Same real samples.
+ *
+ * v1.1.20 — the 1.1.14 thickening overshot: the user's 1.1.19 video
+ * (f22) measures Wave as a solid comb filling 39.6% of its bbox,
+ * not a line. Cause: ~500 plotted points + 4.5 dp stroke + 12 dp
+ * glow + 0.30 fill. Fix: 128 points, 2.5 dp stroke, 6 dp glow,
+ * 0.08 fill, gain 2.5 -> 1.5 (see VIS_WAVE_GAIN).
  */
 @Composable
 fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = Modifier, heightDp: Float = VIS_ROW_HEIGHT_DP) {
@@ -521,9 +534,13 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
             )
             return@Canvas
         }
-        // One plotted point per ~2 px of width (the 1024-sample frame
-        // is downsampled, never upsampled or smoothed).
-        val points = (w / 2.dp.toPx()).toInt().coerceAtLeast(2)
+        // v1.1.20 — ONE plotted point per ~8 px, capped at 128 points
+        // for the whole frame (was ~500, one per ~2 px): at ~500 points
+        // the near-vertical runs between adjacent samples overlap
+        // under the thick stroke + glow and the line fills into a
+        // solid comb (39.6% of the bbox on the user's 1.1.19 frame).
+        // 128 points stay a thin zigzag line at any width.
+        val points = 128
         val n = pcmFrame.size
         val amp = h / 2f - 4.dp.toPx()
         val linePath = Path()
@@ -543,20 +560,22 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
         }
         fillPath.lineTo(w, cy)
         fillPath.close()
-        // v1.1.14: fill 0.22 -> 0.30 alpha, glow 9 dp / 0.22 -> 12 dp
-        // / 0.35 alpha, main stroke 3 dp -> 4.5 dp.
-        drawPath(fillPath, SolidColor(accent.copy(alpha = 0.30f)))
-        // v1.1.14: soft glow — a wide low-alpha stroke underneath
-        // the thin full-alpha gradient stroke on top.
+        // v1.1.20: fill 0.30 -> 0.08 alpha, glow 12 dp / 0.35 ->
+        // 6 dp / 0.20, main stroke 4.5 dp -> 2.5 dp. The old paint
+        // is what turned the 500-point polyline into a solid mass;
+        // the line itself is now thin and the paint stays thin.
+        drawPath(fillPath, SolidColor(accent.copy(alpha = 0.08f)))
+        // Soft glow — a narrow low-alpha stroke underneath the
+        // thin full-alpha gradient stroke on top.
         drawPath(
             linePath,
-            SolidColor(accent.copy(alpha = 0.35f)),
-            style = Stroke(width = 12.dp.toPx(), cap = StrokeCap.Round)
+            SolidColor(accent.copy(alpha = 0.20f)),
+            style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
         )
         drawPath(
             linePath,
             brush = Brush.linearGradient(colors, start = Offset.Zero, end = Offset(w, 0f)),
-            style = Stroke(width = 4.5.dp.toPx(), cap = StrokeCap.Round)
+            style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
         )
     }
 }
@@ -1069,6 +1088,29 @@ private fun ferroSurfaceY(x: Float, w: Float, h: Float, minPool: Float, maxPool:
  *      ~130–144 dp, so height was never the problem).
  *  (5) Tower prominence floor 1.4x → 1.5x median; droplets
  *      brightened #3A3A42 → #6A6A73 and bigger (3 dp).
+ *
+ * v1.1.20 — WHY 1.1.19 STILL READ AS CANDLES / TEETH (user's
+ * 1.1.19 frames, landscape 00:30 + video f13): the 1.1.16 "bright
+ * grey liquid" fix was the wrong material — the dome renders
+ * #4C4C54–#6D6D75 flat grey (2.1–3.5:1), the spikes #62626A, so
+ * the whole thing is a grey mountain range, not black liquid.
+ * The white tip dots (418 bright px) + the teal rim running down
+ * the dome's sloping sides (873 teal px) are what the user called
+ * "nến sinh nhật". And 16 spikes at 0.65x slot merge at the foot
+ * (a horizontal scan at mid-height finds one 325 px merged run),
+ * so they read as a crown. Fix, from the SoulBeat reference the
+ * user sent (https://m.youtube.com/watch?v=oUHY3P_y-Pw — black
+ * ferrofluid dancing on a speaker, lit by white LEDs, many thin
+ * black needles, no dots, no coloured rim): body back to
+ * near-black (#141417 → #050506, anchored to the dome as in
+ * 1.1.16) and readable ONLY through narrow white gloss — one
+ * 2 dp specular arc on the dome's upper-left + one 1.2 dp gloss
+ * line down one edge of each spike; the teal rim/glow, the tip
+ * dots, the rounded apex bead and the droplets are ALL deleted;
+ * 28 thin spikes (0.30x slot, tower 0.45x) with concave sides
+ * and sharp apices, bases sunk into the dome. The frequency
+ * chips move out of the canvas entirely (see VisualizerPanel) —
+ * the "Tất cả" chip used to cover the tower tip.
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -1079,13 +1121,15 @@ fun VisualizerFerrofluid(
     modifier: Modifier = Modifier,
     heightDp: Float = VIS_ROW_TALL_DP
 ) {
-    val colors = LocalMioColors.current.gradientColors
-    val accent = LocalMioColors.current.accent
+    // v1.1.20 — no theme colours here any more: the teal sheen /
+    // rim is deleted, the liquid is near-black with white gloss
+    // only, in both themes (that is what ferrofluid looks like).
     val live = isLive(levels)
     val n = levels.size
     // v1.1.14: 16 thick spikes, not 32 thin ones — the selected band
-    // range is resampled across the 16 slots below, so the blob
-    // stays full whatever the frequency selector says.
+    // range is resampled across the slots below, so the blob stays
+    // full whatever the frequency selector says. v1.1.20: 28 thin
+    // spikes (see FERRO_SPIKE_COUNT) — 16 wide ones read as teeth.
     val spikeCount = FERRO_SPIKE_COUNT
     // The selected band range, resampled across all spike slots.
     val selStart = when (freq) {
@@ -1100,11 +1144,9 @@ fun VisualizerFerrofluid(
     }
     val displayed = remember(spikeCount) { FloatArray(spikeCount) }
     val norms = remember(spikeCount) { FloatArray(spikeCount) }
-    val caps = remember(spikeCount) { PeakCaps(spikeCount) }
-    val droplets = remember { mutableListOf<FerroDroplet>() }
     val blobPath = remember { Path() }
     val spikePath = remember { Path() }
-    val sheenPath = remember { Path() }
+    val glossPath = remember { Path() }
     val highlightPath = remember { Path() }
     // Bass energy for the centre tower: mean of bands 0..5, raw.
     var bassSum = 0f
@@ -1112,13 +1154,10 @@ fun VisualizerFerrofluid(
     for (i in 0 until bassCount) bassSum += levels[i]
     val bassEnergy = if (bassCount > 0) bassSum / bassCount else 0f
     val towerNorm = if (live) scaledNorm(bassEnergy) else 0f
-    // BoxWithConstraints so droplet spawn positions (in dp) are known
-    // in composition, where the per-frame state lives — the Canvas
-    // only reads state, never mutates it.
     // v1.1.14: tall row (140 dp) — the demo stages ferrofluid on
     // ~300 dp; at 88 dp the dome + spikes had no room to read.
     // v1.1.17 — uniform scale factor: every structural size below
-    // is multiplied by `s`, so the blob/spikes/droplets grow with
+    // is multiplied by `s`, so the blob/spikes grow with
     // the canvas (s = 1.0 on the 140 dp row, ~2.29 on the 320 dp
     // hero, ~5.7 full-screen) while the 140 dp look is unchanged.
     BoxWithConstraints(modifier.height(heightDp.dp).fillMaxWidth()) {
@@ -1127,7 +1166,6 @@ fun VisualizerFerrofluid(
         val s = hDp / VIS_ROW_TALL_DP
         val minPoolDp = FERRO_MIN_POOL_DP * s
         val maxPoolDp = FERRO_MAX_POOL_DP * s
-        val slotW = wDp / spikeCount.coerceAtLeast(1)
         // Chase the selected (resampled) levels per slot, then lift.
         if (live) {
             for (i in 0 until spikeCount) {
@@ -1141,9 +1179,8 @@ fun VisualizerFerrofluid(
             displayed.fill(0f)
             norms.fill(0f)
         }
-        caps.update(norms, live)
         // v1.1.15 — spike heights (dp), computed once so the draw
-        // loop and the droplet spawn below agree. Spikes: 6 +
+        // loop below reads them. Spikes: 6 +
         // norm*50 (max 56 dp); tower: 12 + towerNorm*48 (max 60 dp)
         // with a 1.5x prominence floor over the median spike, so the
         // centre tower always reads as a tower. Each non-tower slot
@@ -1179,56 +1216,30 @@ fun VisualizerFerrofluid(
         } else {
             for (i in 0 until spikeCount) spikeHeights[i] = if (i == spikeCount / 2) 12f * s else 6f * s
         }
-        // Droplets: age one frame, rise, expire; spawn on sharp drops.
-        if (live) {
-            val it = droplets.iterator()
-            while (it.hasNext()) {
-                val d = it.next()
-                d.age++
-                d.yDp -= 2.4f * s
-                if (d.age > 12) it.remove()
-            }
-            var spawned = 0
-            for (i in 0 until spikeCount) {
-                if (spawned >= 2 || droplets.size >= FERRO_MAX_DROPLETS) break
-                // v1.1.15: thresholds lowered (peak > 0.35, drop >
-                // 0.18) — with saturated norms the old 0.45/0.30
-                // almost never fired, so no droplets ever showed.
-                if (caps.peaks[i] > 0.35f && caps.peaks[i] - norms[i] > 0.18f) {
-                    val cx = (i + 0.5f) * slotW
-                    val spikeH = spikeHeights[i]
-                    val tipY = ferroSurfaceY(cx, wDp, hDp, minPoolDp, maxPoolDp) - spikeH
-                    droplets.add(FerroDroplet(cx, tipY, 0))
-                    spawned++
-                }
-            }
-        } else {
-            droplets.clear()
-        }
+        // v1.1.20 — droplets are GONE: the detached beads (grey
+        // #6A6A73 with a white specular dot) were more floating
+        // dots on top of the tip dots the user called candles.
+        // The liquid reads through the dome + spikes + gloss only.
         Canvas(Modifier.fillMaxSize()) {
             val wPx = size.width
             val hPx = size.height
             val minPoolPx = minPoolDp.dp.toPx()
             val maxPoolPx = maxPoolDp.dp.toPx()
             val slotWPx = wPx / spikeCount.coerceAtLeast(1)
-            // v1.1.16 — THE GRADIENT-ANCHOR FIX (the root cause of
-            // three failed Ferrofluids): this brush used to be an
-            // unanchored verticalGradient, so it spanned the whole
-            // 140 dp row while the dome only occupies its bottom
-            // 24–80 dp — the dome surface rendered the gradient's
-            // middle/bottom stops (~#1B1B1F, 1.06:1 — measured on
-            // the user's video), not its bright top stop. The
-            // "top ~3.5:1, mid ~1.8:1" claimed above was the colour
-            // of the STOPS, never the rendered dome. Now the
-            // gradient is anchored to the dome itself (startY =
-            // centre surface, endY = row bottom) with brighter
-            // stops, so the RENDERED dome is 4.27:1 at the surface
-            // (#7A7A83), 2.66:1 at its vertical middle (#5A5A63),
-            // ~1.9:1 at the edges — a grey liquid mass, clearly
-            // distinct from the background. Spikes still do not
-            // share this brush (see below).
+            // v1.1.16 — THE GRADIENT-ANCHOR FIX: the brush is
+            // anchored to the dome itself (startY = centre surface,
+            // endY = row bottom), never to the whole row — an
+            // unanchored gradient renders the dome in the wrong
+            // stops (measured ~#1B1B1F, 1.06:1 on the 1.1.15 video).
+            // v1.1.20 — the 1.1.16 bright stops (#7A7A83 → #2E2E35)
+            // were the wrong MATERIAL: the dome rendered flat grey
+            // #4C4C54–#6D6D75 on the user's 1.1.19 frames. Real
+            // ferrofluid is near-black; it reads ONLY through narrow
+            // white gloss (the SoulBeat reference is lit by white
+            // LEDs). So the body goes back to near-black (#141417
+            // → #050506) and the gloss below does all the work.
             val bodyBrush = Brush.verticalGradient(
-                listOf(Color(0xFF7A7A83), Color(0xFF5A5A63), Color(0xFF2E2E35)),
+                listOf(Color(0xFF141417), Color(0xFF0A0A0C), Color(0xFF050506)),
                 startY = hPx - maxPoolPx,
                 endY = hPx
             )
@@ -1244,30 +1255,16 @@ fun VisualizerFerrofluid(
             blobPath.lineTo(wPx, hPx)
             blobPath.close()
             drawPath(blobPath, bodyBrush)
-            // Sheen: theme-gradient stroke along the dome surface.
-            sheenPath.rewind()
-            sheenPath.moveTo(0f, ferroSurfaceY(0f, wPx, hPx, minPoolPx, maxPoolPx))
-            for (s in 1..domeSteps) {
-                val x = s.toFloat() / domeSteps * wPx
-                sheenPath.lineTo(x, ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx))
-            }
-            // v1.1.14: soft glow under the rim, then the rim itself.
-            // v1.1.19 — FIXED widths (were 7x / 2.5x the hero scale
-            // `s`, i.e. 16 dp / 5.7 dp on the hero): a rim that thick
-            // reads as a separate teal band, not a liquid edge. The
-            // dome's edge is now a 1.5 dp rim + a 3 dp soft glow.
-            drawPath(
-                sheenPath,
-                SolidColor(accent.copy(alpha = 0.25f)),
-                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-            )
-            drawPath(
-                sheenPath,
-                brush = Brush.linearGradient(colors, start = Offset.Zero, end = Offset(wPx, 0f)),
-                style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round)
-            )
-            // Specular highlight: soft white arc on the upper-left of
-            // the dome, just above the surface.
+            // v1.1.20 — the teal rim + glow along the dome surface
+            // are DELETED, not thinned: on the 1.1.19 landscape
+            // frame the 1.5 dp rim still reads as teal diagonal
+            // lines down both sloping sides of the dome (873 teal
+            // px). No coloured edge anywhere on the liquid now.
+            // Specular highlight: ONE narrow white arc on the
+            // upper-left of the dome, just above the surface —
+            // the only light on the dome. Deliberately 2 dp (not
+            // scaled by `s`): the old 4 dp + 12 dp soft band is
+            // what made a grey glossy stripe across the dome.
             highlightPath.rewind()
             val hlSteps = 8
             for (s in 0..hlSteps) {
@@ -1275,23 +1272,15 @@ fun VisualizerFerrofluid(
                 val y = ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx) - (2f * s).dp.toPx()
                 if (s == 0) highlightPath.moveTo(x, y) else highlightPath.lineTo(x, y)
             }
-            // v1.1.15: the old 0.20-alpha arc was too faint to sell
-            // gloss on the dark blob — stronger arc plus a wide soft
-            // glossy band just under the rim.
             drawPath(
                 highlightPath,
-                SolidColor(Color.White.copy(alpha = 0.10f)),
-                style = Stroke(width = (12f * s).dp.toPx(), cap = StrokeCap.Round)
+                SolidColor(Color.White.copy(alpha = 0.55f)),
+                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
             )
-            drawPath(
-                highlightPath,
-                SolidColor(Color.White.copy(alpha = 0.32f)),
-                style = Stroke(width = (4f * s).dp.toPx(), cap = StrokeCap.Round)
-            )
-            // Spikes: curved flares growing out of the blob. Wide
-            // base sunk 2 dp into the blob, concave sides (the
-            // control points pull inward), sharp when loud (narrow
-            // base, tall), blunt when quiet (wide base, short).
+            // Spikes: thin black needles growing out of the blob.
+            // Base sunk 2 dp into the blob, concave sides (the
+            // control points pull inward), sharp apices — the
+            // SoulBeat reference shape, not triangles.
             val centreSlot = spikeCount / 2
             for (i in 0 until spikeCount) {
                 val cx = (i + 0.5f) * slotWPx
@@ -1299,80 +1288,59 @@ fun VisualizerFerrofluid(
                 val baseY = surfaceY + (2f * s).dp.toPx()
                 val isTower = i == centreSlot
                 // v1.1.15: heights come from spikeHeights (computed
-                // above, with unevenness + tower prominence) — the
-                // old inline formula (4 + norm*36, tower 10 + 40)
-                // capped everything at 40 dp on a 140 dp row and made
-                // all 16 spikes the same height: the comb.
+                // above, with unevenness + tower prominence).
                 val spikeH = spikeHeights[i].dp.toPx()
                 val norm = if (isTower) towerNorm else norms[i]
-                // v1.1.19 — WIDER, CONVEX spikes: the old base was
-                // 0.45x the slot with concave (pinched) sides, so the
-                // 16 spikes read as separate sharp triangles. The base
-                // is now 0.65x the slot (0.85x tower) with sides that
-                // bulge OUTWARD, so neighbouring spikes merge at the
-                // base into one continuous liquid surface and only
-                // separate toward the tips.
-                val baseHalfW = slotWPx * (if (isTower) 0.85f else 0.65f) * (1f - 0.2f * norm)
+                // v1.1.20 — THIN spikes: base 0.30x the slot
+                // (tower 0.45x), was 0.65x / 0.85x in 1.1.19. At
+                // 0.65x the 16 spikes merged at the foot into one
+                // 325 px run and read as a crown; at 0.30x with
+                // 28 slots each needle stands separate with a clear
+                // gap to its neighbours. Sides are concave (control
+                // points at 0.55x the base half-width), so the spike
+                // narrows fast from the base and ends in a sharp
+                // point — no rounded apex bead (deleted: it read as
+                // a candle tip together with the tip dot).
+                val baseHalfW = slotWPx * (if (isTower) 0.45f else 0.30f) * (1f - 0.2f * norm)
                 val apex = Offset(cx, surfaceY - spikeH)
                 spikePath.rewind()
                 spikePath.moveTo(cx - baseHalfW, baseY)
                 spikePath.quadraticBezierTo(
-                    cx - baseHalfW * 1.1f, baseY - spikeH * 0.45f, apex.x, apex.y
+                    cx - baseHalfW * 0.55f, baseY - spikeH * 0.45f, apex.x, apex.y
                 )
                 spikePath.quadraticBezierTo(
-                    cx + baseHalfW * 1.1f, baseY - spikeH * 0.45f, cx + baseHalfW, baseY
+                    cx + baseHalfW * 0.55f, baseY - spikeH * 0.45f, cx + baseHalfW, baseY
                 )
                 spikePath.close()
-                // v1.1.14: spikes get their OWN brighter brush — a
-                // v1.1.16 — SOLID spike bodies: the old gradient ran
-                // #6A6A73 (tip) → #141419 (base, 1.03:1), so only
-                // the bright tip + the 2 dp rim lines on both edges
-                // showed — the video's "comb" is 16 spikes × 2 rim
-                // lines, no bodies. Now the whole flare is bright:
-                // #8A8A93 (tip, 5.30:1) → #5A5A63 → #4A4A52 (base,
-                // 2.07:1). The brush still spans the spike itself,
-                // so the tip is always the bright end whatever the
-                // spike's height; the wide base (already ~60–90% of
-                // the slot) now reads instead of vanishing.
+                // v1.1.20 — spike bodies are near-black like the
+                // dome (#232327 tip → #0C0C0E → #08080A base), NOT
+                // the 1.1.16 bright grey (#8A8A93 → #4A4A52) that
+                // made grey mountains on the 1.1.19 frames. The
+                // brush still spans the spike itself so the tip is
+                // always the slightly lighter end.
                 val spikeBrush = Brush.verticalGradient(
-                    listOf(Color(0xFF8A8A93), Color(0xFF5A5A63), Color(0xFF4A4A52)),
+                    listOf(Color(0xFF232327), Color(0xFF0C0C0E), Color(0xFF08080A)),
                     startY = apex.y,
                     endY = baseY
                 )
                 drawPath(spikePath, spikeBrush)
-                // v1.1.19 — ROUNDED APEX: a bead at the tip in the
-                // same brush, so the spike ends in a liquid drop,
-                // not a sharp point.
-                drawCircle(spikeBrush, radius = baseHalfW * 0.3f, center = apex)
-                // v1.1.19 — the teal rim lines down BOTH spike edges
-                // are GONE. Measured on the user's 1.1.18 video they
-                // were 4.6 dp thick at hero scale ((2f * s), s=2.29)
-                // and ate 50–80% of each spike's width — the whole
-                // upper spike rendered solid teal, which is why the
-                // ferrofluid read as "teeth". The tip dot is now a
-                // white gloss highlight on every loud spike, not a
-                // teal blob.
-                if (live && norm > 0.55f) {
-                    if (isTower) {
-                        drawCircle(Color.White.copy(alpha = 0.9f), radius = (2f * s).dp.toPx(), center = apex)
-                    } else {
-                        drawCircle(Color.White.copy(alpha = 0.7f), radius = (1.4f * s).dp.toPx(), center = apex)
-                    }
-                }
-            }
-            // Droplets: small glossy liquid beads above the tips.
-            for (d in droplets) {
-                // v1.1.16: beads bigger (3 dp, was 2.2 dp) and
-                // brighter (#6A6A73, 3.39:1 — was #3A3A42, 1.61:1,
-                // still too dim to notice on device).
-                val r = ((3.0f - d.age * 0.1f) * s).dp.toPx().coerceAtLeast((1.0f * s).dp.toPx())
-                val centre = Offset(d.xDp.dp.toPx(), d.yDp.dp.toPx())
-                val alpha = (1f - d.age / 12f).coerceIn(0f, 1f)
-                drawCircle(Color(0xFF6A6A73).copy(alpha = alpha), radius = r, center = centre)
-                drawCircle(
-                    Color.White.copy(alpha = 0.8f * alpha),
-                    radius = r * 0.35f,
-                    center = Offset(centre.x - r * 0.35f, centre.y - r * 0.35f)
+                // v1.1.20 — gloss, not dots: ONE thin white line
+                // down the spike's left edge (from the apex to
+                // ~55% down), 1.2 dp, alpha 0.5 on loud spikes,
+                // 0.25 when quiet. This is how the black needle
+                // reads as glossy liquid in the reference — the
+                // white tip dots of 1.1.19 (418 bright px, the
+                // "birthday candles") are deleted outright.
+                glossPath.rewind()
+                glossPath.moveTo(apex.x, apex.y)
+                glossPath.quadraticBezierTo(
+                    cx - baseHalfW * 0.55f, baseY - spikeH * 0.45f,
+                    cx - baseHalfW * 0.75f, baseY - spikeH * 0.45f
+                )
+                drawPath(
+                    glossPath,
+                    SolidColor(Color.White.copy(alpha = if (live && norm > 0.35f) 0.5f else 0.25f)),
+                    style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
                 )
             }
         }

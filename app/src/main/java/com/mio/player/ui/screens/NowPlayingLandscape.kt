@@ -83,6 +83,12 @@ import kotlinx.coroutines.delay
  * user tests). The visualizer, the transport (56 dp play button)
  * and "Tìm metadata" are unchanged.
  *
+ * v1.1.20 — the user (1.1.19 landscape frame, 00:30) still wants
+ * the text out of the header: "Tìm metadata" moves into a
+ * MoreVert overflow menu (same metadata dialog), and "Xem đầy
+ * đủ" becomes a small 20 dp Fullscreen icon. Nothing else on
+ * this screen changes.
+ *
  * WIRING (in MainActivity.kt, Routes.NOW_PLAYING destination):
  *   `composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, nav) }`
  * `NowPlayingRoute` picks this screen in landscape and the existing
@@ -109,6 +115,9 @@ import kotlinx.coroutines.delay
     var pos by remember { mutableStateOf(0L) }
     var currentUri by remember { mutableStateOf<Uri?>(null) }
     var showQueue by remember { mutableStateOf(false) }
+    // v1.1.20 — overflow menu for the header actions that used to
+    // be labelled text (see below): "Tìm metadata" moves in here.
+    var showOverflow by remember { mutableStateOf(false) }
     // v1.1.12: the manual metadata action now opens the edit dialog
     // (MetadataEditDialog) instead of fetching immediately — same as
     // portrait (NowPlaying.kt). Reset on track change with the
@@ -199,14 +208,21 @@ import kotlinx.coroutines.delay
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // v1.1.18: the "Tìm metadata" button lives here now
-                // (was a full row in the right column) — it frees
-                // ~36 dp so the lyrics list gets ~3 lines. Same
-                // labelled action as portrait; opens the metadata
-                // edit dialog (v1.1.12).
-                TextButton(onClick = { showMetadataDialog = true }) {
-                    Icon(Icons.Default.Download, null, tint = MioCyan, modifier = Modifier.size(16.dp))
-                    Text("Tìm metadata", color = MioCyan, fontSize = 13.sp)
+                // v1.1.20 — "Tìm metadata" leaves the header: on the
+                // user's 1.1.19 landscape frame the labelled button
+                // is one more line of text crowding the header. It
+                // now lives in the overflow menu (same dialog,
+                // v1.1.12) behind a standard MoreVert icon — the
+                // action is unchanged, only its affordance shrinks.
+                Box {
+                    IconButton(onClick = { showOverflow = true }) { Icon(Icons.Default.MoreVert, "Thêm", tint = MioText) }
+                    DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Tìm metadata") },
+                            onClick = { showOverflow = false; showMetadataDialog = true },
+                            leadingIcon = { Icon(Icons.Default.Download, null, tint = MioCyan) }
+                        )
+                    }
                 }
                 IconButton(onClick = { showQueue = true }) { Icon(Icons.Default.QueueMusic, "Hàng đợi", tint = MioText) }
                 IconButton(onClick = { nav.navigate(Routes.EQ) }) { Icon(Icons.Default.Tune, "Equalizer", tint = MioText) }
@@ -276,11 +292,17 @@ import kotlinx.coroutines.delay
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Lời bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    // v1.1.19: a plain clickable Text, not a TextButton —
-                    // TextButton enforces a 48 dp min touch target, which
-                    // made this header row 48 dp tall and stole ~24 dp
-                    // from the lyrics list. Same destination.
-                    Text("Xem đầy đủ", color = MioCyan, fontSize = 13.sp, modifier = Modifier.clickable { nav.navigate(Routes.LYRICS) }.padding(8.dp))
+                    // v1.1.20 — "Xem đầy đủ" becomes a small icon
+                    // (was a text line in 1.1.19, still a line of text
+                    // on the user's 1.1.19 landscape frame): a 20 dp
+                    // Fullscreen icon with 4 dp padding, same
+                    // destination (the full Lyrics screen). No
+                    // IconButton — its 48 dp min touch target would
+                    // steal the height the icon is meant to save.
+                    Icon(
+                        Icons.Default.Fullscreen, "Xem đầy đủ", tint = MioCyan,
+                        modifier = Modifier.size(20.dp).clickable { nav.navigate(Routes.LYRICS) }.padding(4.dp)
+                    )
                 }
                 if (lines.isNotEmpty()) {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = lyricListState) {
