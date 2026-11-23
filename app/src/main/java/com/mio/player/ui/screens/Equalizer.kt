@@ -14,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -23,6 +24,7 @@ import androidx.navigation.NavHostController
 import com.mio.player.data.audio.AudioEffectsManager
 import com.mio.player.data.audio.EqPresets
 import com.mio.player.data.prefs.SettingsStore
+import com.mio.player.ui.components.isLandscape
 import com.mio.player.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -58,6 +60,9 @@ import java.util.Locale
     var headphoneModel by remember { mutableStateOf("") }
     var customPresets by remember { mutableStateOf<Map<String, FloatArray>>(emptyMap()) }
     var statusMsg by remember { mutableStateOf("") }
+    // v1.1.26 — the bands section lays out differently in landscape
+    // (vertical faders side by side); read the orientation once here.
+    val landscape = isLandscape()
     /** v1.1.13 — preampDb is set on pm.fx BEFORE applyBands, because
      *  applyBands writes (band + preamp) per band. */
     fun apply() { pm.fx.preampDb = preamp; pm.fx.applyBands(bands); pm.fx.setBassBoost((bass*1000).toInt()); pm.fx.setVirtualizer((virt*1000).toInt()); pm.fx.setLoudness((loud*1000).toInt()); pm.fx.balance = balance }
@@ -192,9 +197,29 @@ import java.util.Locale
             }
         }
         // --- Dải tần ---
-        item { SectionTitle("Dải tần") }
-        items(AudioEffectsManager.BAND_FREQS_HZ.size) { i ->
-            Column { Text("${AudioEffectsManager.BAND_FREQS_HZ[i]} Hz — ${bands[i].toInt()} dB", color = MioText); Slider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() }, valueRange = -15f..15f) }
+        // v1.1.26 — in landscape the 10 bands become vertical faders
+        // side by side (the classic graphic-EQ layout: up = boost),
+        // so the whole EQ fits the wide screen instead of a long
+        // vertical scroll of horizontal sliders. Portrait keeps the
+        // stacked horizontal sliders.
+        if (landscape) {
+            item {
+                SectionTitle("Dải tần")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    AudioEffectsManager.BAND_FREQS_HZ.forEachIndexed { i, freq ->
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("${if (bands[i] > 0) "+" else ""}${bands[i].toInt()} dB", color = MioText, fontSize = 11.sp)
+                            VerticalBandSlider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() })
+                            Text(if (freq >= 1000) "${freq / 1000}k" else "$freq", color = MioTextSecondary, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        } else {
+            item { SectionTitle("Dải tần") }
+            items(AudioEffectsManager.BAND_FREQS_HZ.size) { i ->
+                Column { Text("${AudioEffectsManager.BAND_FREQS_HZ[i]} Hz — ${bands[i].toInt()} dB", color = MioText); Slider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() }, valueRange = -15f..15f) }
+            }
         }
         // --- Preamp ---
         item {
@@ -253,4 +278,23 @@ import java.util.Locale
 
 @Composable private fun SectionTitle(text: String) {
     Text(text, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
+}
+
+/** A vertical fader for one EQ band (v1.1.26, landscape only): a
+ *  Material3 Slider rotated -90°, so min (-15 dB) is at the bottom
+ *  and max (+15 dB) at the top — drag up to boost, like a hardware
+ *  graphic EQ. The Box is 200 dp tall; the Slider inside is laid
+ *  out 200 dp wide (its rotated height) and rotated around its
+ *  centre, so its drawn content fills the Box exactly. Touch is
+ *  transformed by the same rotation, so dragging vertically on the
+ *  fader changes the value. */
+@Composable private fun VerticalBandSlider(value: Float, onValueChange: (Float) -> Unit) {
+    Box(Modifier.height(200.dp), contentAlignment = Alignment.Center) {
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = -15f..15f,
+            modifier = Modifier.width(200.dp).graphicsLayer { rotationZ = -90f }
+        )
+    }
 }
