@@ -165,7 +165,10 @@ import kotlinx.coroutines.delay
         isFallback -> "Đang phát bản đổi (WAV 176.4 kHz)"
         isDsd && isNativeProven -> "${t?.dsdRate ?: "DSD"} · Native decode"
         isDsd -> "DSD · Đang tải…"
-        else -> "Thiết bị phát tối đa ${vm.pm.deviceSampleRateHz / 1000} kHz"
+        // v1.1.21 — concise, same as portrait: just the rate
+        // ("48 kHz"), not the sentence ("Thiết bị phát tối đa
+        // 48 kHz") — the user wants the track-info tail short.
+        else -> "${vm.pm.deviceSampleRateHz / 1000} kHz"
     }
     // v1.1.6 (coordinator, mirroring portrait): scroll the current
     // line to the CENTRE of the viewport, not the top edge, and only

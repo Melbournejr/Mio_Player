@@ -2,6 +2,7 @@ package com.mio.player.ui.screens
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -86,6 +87,13 @@ import kotlinx.coroutines.delay
  *  edge-to-edge expanded visualizer (Dialog + BackHandler); the
  *  transport row repeats there. Lyrics lose room (~3–4 lines
  *  instead of ~5) — accepted trade-off.
+ *  v1.1.21 — portrait like landscape (user's 1.1.20 test): the
+ *  "Tìm metadata" text button moves into a MoreVert overflow menu
+ *  in the top bar and "Xem đầy đủ" becomes a 20 dp Fullscreen
+ *  icon (both as landscape v1.1.20), and the format line is ONE
+ *  centred line with a concise rate ("MP3 · 48 kHz", was two
+ *  lines "MP3" + "Thiết bị phát tối đa 48 kHz") — the freed
+ *  vertical room goes to the lyrics list.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
@@ -115,6 +123,10 @@ import kotlinx.coroutines.delay
     // swap instead of freezing on the value from track start.
     var currentUri by remember { mutableStateOf<Uri?>(null) }
     var showQueue by remember { mutableStateOf(false) }
+    // v1.1.21 — overflow menu for the header actions that used to
+    // be labelled text (mirrors landscape v1.1.20): "Tìm metadata"
+    // moves in here, so the portrait screen reads like landscape.
+    var showOverflow by remember { mutableStateOf(false) }
     // v1.1.17: expanded (full-screen) visualizer Dialog.
     var expandedVisualizer by remember { mutableStateOf(false) }
     // v1.1.12: the manual metadata action now opens the edit dialog
@@ -168,7 +180,11 @@ import kotlinx.coroutines.delay
         isFallback -> "Đang phát bản đổi (WAV 176.4 kHz)"
         isDsd && isNativeProven -> "${t?.dsdRate ?: "DSD"} · Native decode"
         isDsd -> "DSD · Đang tải…"
-        else -> "Thiết bị phát tối đa ${vm.pm.deviceSampleRateHz / 1000} kHz"
+        // v1.1.21 — concise: just the rate ("48 kHz"), not the
+        // sentence ("Thiết bị phát tối đa 48 kHz") — the user wants
+        // the track-info tail short to save space, and the portrait
+        // format line is now ONE line (see below), so "MP3 · 48 kHz".
+        else -> "${vm.pm.deviceSampleRateHz / 1000} kHz"
     }
     // Live lyric sync: same rule as LyricsScreen — the line whose time
     // has passed, highlighted teal, list auto-scrolled to it.
@@ -224,7 +240,24 @@ import kotlinx.coroutines.delay
     Column(Modifier.fillMaxSize().background(MioBg).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.KeyboardArrowDown, null, tint = MioText) }
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // v1.1.21 — "Tìm metadata" leaves the header (same as
+                // landscape v1.1.20): on the user's 1.1.20 portrait
+                // frame the labelled button is one more line of text
+                // crowding the screen. It now lives in the overflow
+                // menu (same dialog, v1.1.12) behind a standard
+                // MoreVert icon — the action is unchanged, only its
+                // affordance shrinks.
+                Box {
+                    IconButton(onClick = { showOverflow = true }) { Icon(Icons.Default.MoreVert, "Thêm", tint = MioText) }
+                    DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Tìm metadata") },
+                            onClick = { showOverflow = false; showMetadataDialog = true },
+                            leadingIcon = { Icon(Icons.Default.Download, null, tint = MioCyan) }
+                        )
+                    }
+                }
                 IconButton(onClick = { showQueue = true }) { Icon(Icons.Default.QueueMusic, "Hàng đợi", tint = MioText) }
                 // v1.1.17: fullscreen visualizer (edge-to-edge Dialog).
                 IconButton(onClick = { expandedVisualizer = true }) { Icon(Icons.Default.Fullscreen, "Toàn màn hình", tint = MioText) }
@@ -254,10 +287,16 @@ import kotlinx.coroutines.delay
         // v1.1.7: the DSD native state line is identical to displayFormat
         // ("DSD128 · Native decode"), so show the format once — the
         // state line is only rendered when it says something different.
+        // v1.1.21 — format + state on ONE centred line (was two
+        // lines, like landscape v1.1.18): with the concise state
+        // ("48 kHz", see above) this reads "MP3 · 48 kHz" and frees
+        // a whole line of vertical room for the lyrics list.
         val formatText = t?.displayFormat ?: ""
-        Text(formatText, color = MioCyan, fontSize = 12.sp)
-        if (stateText.isNotEmpty() && stateText != formatText) {
-            Text(stateText, color = MioTextSecondary, fontSize = 12.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Text(formatText, color = MioCyan, fontSize = 12.sp, maxLines = 1)
+            if (stateText.isNotEmpty() && stateText != formatText) {
+                Text(" · $stateText", color = MioTextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         if (converting) {
             Spacer(Modifier.height(8.dp))
@@ -270,20 +309,12 @@ import kotlinx.coroutines.delay
             Spacer(Modifier.height(8.dp))
             Text(err, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 12.sp)
         }
-        // v1.1.11: manual metadata action — a visible Vietnamese
-        // label ("Tìm metadata"), not an icon-only affordance.
-        // v1.1.12: the button now OPENS the metadata edit dialog
-        // (MetadataEditDialog, rendered at the bottom of this file)
-        // instead of fetching immediately — the user types the
-        // search info first, and the dialog shows the result line.
-        // Works even when the Profile auto toggle is off and even
-        // for tracks the auto pass already failed on.
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { showMetadataDialog = true }) {
-                Icon(Icons.Default.Download, null, tint = MioCyan, modifier = Modifier.size(16.dp))
-                Text("Tìm metadata", color = MioCyan, fontSize = 13.sp)
-            }
-        }
+        // v1.1.21 — the "Tìm metadata" text button is GONE from this
+        // screen (it moved into the MoreVert overflow menu in the
+        // top bar, see above — same as landscape v1.1.20). The
+        // button still opens the metadata edit dialog (v1.1.12,
+        // rendered at the bottom of this file); only its affordance
+        // changed. Removing this row frees ~36 dp for the lyrics list.
         // v1.1.17: the visualizer moved to the hero slot directly
         // under the top bar — it is no longer down here.
         Spacer(Modifier.height(4.dp))
@@ -297,7 +328,16 @@ import kotlinx.coroutines.delay
         // the screen; the transport row below stays pinned at the bottom.
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Lời bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            TextButton(onClick = { nav.navigate(Routes.LYRICS) }) { Text("Xem đầy đủ", color = MioCyan, fontSize = 13.sp) }
+            // v1.1.21 — "Xem đầy đủ" becomes a small icon (was a
+            // text line, same as landscape v1.1.20): a 20 dp
+            // Fullscreen icon with 4 dp padding, same destination
+            // (the full Lyrics screen). No IconButton — its 48 dp
+            // min touch target would steal the height the icon is
+            // meant to save.
+            Icon(
+                Icons.Default.Fullscreen, "Xem đầy đủ", tint = MioCyan,
+                modifier = Modifier.size(20.dp).clickable { nav.navigate(Routes.LYRICS) }.padding(4.dp)
+            )
         }
         if (loadingLyrics) {
             // Fetching (incl. while DSD is converting — the fetch is

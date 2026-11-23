@@ -245,34 +245,50 @@ private const val FERRO_TREBLE_START_BAND = 23
 // at 40 dp on a 140 dp row and the dome only 56 dp deep, so the
 // whole silhouette filled just the bottom ~85 dp; the dome bulk
 // (#1E1E22 → #0B0B0D) was 1.08–1.3:1 against the background —
-// invisible — so only the bright spike tips showed, a thin tooth
-// row. The sqrt lift also saturates norms (~0.45–0.7 for most
-// bands), so all 16 spikes came out the same height, and the tower
-// was barely taller than its neighbours. Fixes: dome 24 dp at the
-// edges / 80 dp at the centre (centre surface 60 dp from the top);
-// spikes 6 + norm*50 dp (max 56), tower 12 + towerNorm*48 (max
-// 60) with a 1.4x prominence floor over the median spike; a
-// deterministic per-slot factor (0.75–1.3) so spikes are uneven
-// even when norms saturate; body gradient brightened so the whole
-// dome reads as a mass, not just its top edge.
-private const val FERRO_MIN_POOL_DP = 24f
-private const val FERRO_MAX_POOL_DP = 80f
-// v1.1.20 — 16 -> 28 spikes: measured on the user's 1.1.19 frames,
-// 16 wide-based triangles (0.65x slot) merge at the foot and read as
-// a crown / teeth, not liquid. The SoulBeat reference has many thin
-// black needles, uneven, each clearly separate. 28 slots, thin bases
-// (0.30x slot, tower 0.45x — see the draw loop), sharp apices.
-private const val FERRO_SPIKE_COUNT = 28
+// v1.1.21 — TRUE SoulBeat spiky disc (the 1.1.20 black dome + 28 thin
+// white-gloss spikes read as stabbing knives — measured on the user's
+// 1.1.20 frames: the black dome renders at mean brightness 22.5/255,
+// invisible against #07181D, and only the 2–3 px white gloss lines
+// show, i.e. white needles on black). The SoulBeat reference
+// (https://m.youtube.com/watch?v=oUHY3P_y-Pw) is a black spiky DISC
+// floating in a light-green glowing chamber: ~40–50 SHORT spikes
+// (1/10 of the disc diameter) forming a continuous serrated rim like
+// a sea urchin / gear, bursting up on strong beats and collapsing,
+// plus small floating droplets. So the dome + tall spikes are gone:
+//  - disc base radius = 19% of the canvas height (the SoulBeat disc
+//    is ~1/3 of the chamber, so the disc is ~38% of the canvas height
+//    at rest and bursts to ~59%);
+//  - disc bursts with the bass (radius +55% at full bass, fast
+//    attack / viscous release, so it snaps up and collapses);
+//  - 44 spikes around the rim, each SHORT (0.14x the disc radius at
+//    full level, ~1/10 of the disc diameter) and WIDE (base 62% of
+//    the angular pitch, so neighbours nearly touch and the rim reads
+//    as one serrated edge, not separate needles), all the SAME black
+//    as the disc, drawn as ONE continuous silhouette — no white gloss
+//    lines on the spikes (that is what made knives);
+//  - the disc floats in a LIGHT glowing chamber (radial teal glow,
+//    the SoulBeat backlit liquid) so the black silhouette reads;
+//  - 8 small black droplets with a tiny white dot, floating around
+//    the disc, detaching on bursts.
+private const val FERRO_DISC_SPIKE_COUNT = 44
+private const val FERRO_DISC_BASE_R_FRAC = 0.19f
+private const val FERRO_DISC_BURST = 0.55f
+private const val FERRO_SPIKE_LEN_FRAC = 0.14f
+private const val FERRO_SPIKE_BASE_PITCH_FRAC = 0.62f
+private const val FERRO_DROPLET_COUNT = 8
+private const val VIS_FERRO_BURST_RELEASE = 0.45f
 // v1.1.15 — deterministic per-slot height factors: the sqrt lift
 // saturates most norms, so without this every spike comes out the
-// same height (the comb look). Centre slot (index 14) is the tower
-// and keeps factor 1.0 — its prominence comes from the tower
-// formula, not from this table. v1.1.20: extended to 28 slots.
+// same height (the comb look). v1.1.21: extended to 44 slots for the
+// spiky disc rim (the old centre-tower slot is gone — the bass now
+// bursts the whole disc, see VisualizerFerrofluid).
 private val FERRO_SLOT_FACTOR = floatArrayOf(
     0.7f, 1.2f, 0.85f, 1.3f, 0.75f, 1.1f, 1.25f, 0.8f,
     1.15f, 0.9f, 1.3f, 0.75f, 1.05f, 1.2f, 1.0f, 1.25f,
     0.8f, 1.1f, 0.95f, 1.3f, 0.7f, 1.15f, 0.85f, 1.2f,
-    0.75f, 1.05f, 1.3f, 0.9f
+    0.75f, 1.05f, 1.3f, 0.9f, 1.1f, 0.8f, 1.25f, 0.95f,
+    1.2f, 0.7f, 1.05f, 1.3f, 0.85f, 1.15f, 0.75f, 1.0f,
+    1.2f, 0.9f, 1.25f, 0.8f
 )
 
 private fun waveLift(sample: Float): Float {
@@ -509,6 +525,18 @@ fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Mo
  * not a line. Cause: ~500 plotted points + 4.5 dp stroke + 12 dp
  * glow + 0.30 fill. Fix: 128 points, 2.5 dp stroke, 6 dp glow,
  * 0.08 fill, gain 2.5 -> 1.5 (see VIS_WAVE_GAIN).
+ *
+ * v1.1.21 — 1.1.20 STILL reads as a dim jagged scribble (user's
+ * 1.1.20 video, 0–11 s: "Sóng cũng vẫn quá xấu"). Measured on a
+ * frame at t=5 s: the wave zone renders at max brightness ~71/255
+ * (zone mean 10.2/255) — nearly invisible — and the 128 single
+ * samples zigzag near full height in opposite directions, so the
+ * polyline is a scribble, not a wave. Fix: each of the 128 columns
+ * now takes the PEAK |sample| over its window of the 1024-sample
+ * frame (DAW / "Blue Waveform" envelope), smoothed 3-tap, and is
+ * drawn as a symmetric FILLED shape (top + bottom) with a bright
+ * gradient outline and a soft glow. Same lift (waveLift), same
+ * 128 columns, same no-signal flat line.
  */
 @Composable
 fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = Modifier, heightDp: Float = VIS_ROW_HEIGHT_DP) {
@@ -534,46 +562,76 @@ fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = 
             )
             return@Canvas
         }
-        // v1.1.20 — ONE plotted point per ~8 px, capped at 128 points
-        // for the whole frame (was ~500, one per ~2 px): at ~500 points
-        // the near-vertical runs between adjacent samples overlap
-        // under the thick stroke + glow and the line fills into a
-        // solid comb (39.6% of the bbox on the user's 1.1.19 frame).
-        // 128 points stay a thin zigzag line at any width.
-        val points = 128
+        // v1.1.21 — MIRRORED ENVELOPE, not raw samples. The 1.1.20
+        // line plotted 128 single PCM samples: at audio frequencies
+        // adjacent samples swing near full height in opposite
+        // directions, so the polyline is a jagged scribble — and it
+        // renders at max brightness ~71/255 (measured on the user's
+        // 1.1.20 video frame at t=5s, zone mean 10.2/255), i.e.
+        // nearly invisible. Now each of the 128 columns takes the
+        // PEAK |sample| over its window of the 1024-sample frame
+        // (the DAW / "Blue Waveform" look), smoothed with a 3-tap
+        // moving average, and is drawn as a symmetric filled shape
+        // (top and bottom) with a bright outline and a soft glow —
+        // a clean, bright, readable waveform, not a scribble.
+        val cols = 128
         val n = pcmFrame.size
         val amp = h / 2f - 4.dp.toPx()
-        val linePath = Path()
-        val fillPath = Path()
-        for (p in 0 until points) {
-            val idx = (p * (n - 1) / (points - 1)).coerceIn(0, n - 1)
-            val x = p.toFloat() / (points - 1) * w
-            val y = cy - waveLift(pcmFrame[idx]) * amp
-            if (p == 0) {
-                linePath.moveTo(x, y)
-                fillPath.moveTo(x, cy)
-                fillPath.lineTo(x, y)
-            } else {
-                linePath.lineTo(x, y)
-                fillPath.lineTo(x, y)
+        val peaks = FloatArray(cols)
+        for (c in 0 until cols) {
+            val start = c * n / cols
+            val end = ((c + 1) * n / cols).coerceAtMost(n)
+            var peak = 0f
+            for (i in start until end) {
+                val v = kotlin.math.abs(pcmFrame[i])
+                if (v > peak) peak = v
             }
+            peaks[c] = peak
         }
-        fillPath.lineTo(w, cy)
-        fillPath.close()
-        // v1.1.20: fill 0.30 -> 0.08 alpha, glow 12 dp / 0.35 ->
-        // 6 dp / 0.20, main stroke 4.5 dp -> 2.5 dp. The old paint
-        // is what turned the 500-point polyline into a solid mass;
-        // the line itself is now thin and the paint stays thin.
-        drawPath(fillPath, SolidColor(accent.copy(alpha = 0.08f)))
-        // Soft glow — a narrow low-alpha stroke underneath the
-        // thin full-alpha gradient stroke on top.
+        // 3-tap smoothing (0.25 / 0.5 / 0.25) so neighbouring
+        // columns step instead of jumping.
+        val smooth = FloatArray(cols)
+        for (c in 0 until cols) {
+            val prev = peaks[(c - 1).coerceAtLeast(0)]
+            val next = peaks[(c + 1).coerceAtMost(cols - 1)]
+            smooth[c] = prev * 0.25f + peaks[c] * 0.5f + next * 0.25f
+        }
+        // Lift the envelope (the same perceptual curve as before)
+        // so quiet passages still read.
+        val lifted = FloatArray(cols) { waveLift(smooth[it]) }
+        // Filled symmetric shape: top edge left->right, bottom edge
+        // right->left, closed.
+        val shapePath = Path()
+        for (c in 0 until cols) {
+            val x = c.toFloat() / (cols - 1) * w
+            val yTop = cy - lifted[c] * amp
+            if (c == 0) shapePath.moveTo(x, yTop) else shapePath.lineTo(x, yTop)
+        }
+        for (c in cols - 1 downTo 0) {
+            val x = c.toFloat() / (cols - 1) * w
+            val yBot = cy + lifted[c] * amp
+            shapePath.lineTo(x, yBot)
+        }
+        shapePath.close()
+        // Fill: vertical gradient, brighter at the two edges.
         drawPath(
-            linePath,
-            SolidColor(accent.copy(alpha = 0.20f)),
-            style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+            shapePath,
+            brush = Brush.verticalGradient(
+                listOf(accent.copy(alpha = 0.30f), accent.copy(alpha = 0.16f), accent.copy(alpha = 0.30f)),
+                startY = 0f,
+                endY = h
+            )
         )
+        // Soft glow — a wide low-alpha stroke of the same outline.
         drawPath(
-            linePath,
+            shapePath,
+            SolidColor(accent.copy(alpha = 0.22f)),
+            style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round)
+        )
+        // Bright outline — the theme gradient, full alpha, on the
+        // whole silhouette (top edge + bottom edge + end caps).
+        drawPath(
+            shapePath,
             brush = Brush.linearGradient(colors, start = Offset.Zero, end = Offset(w, 0f)),
             style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
         )
@@ -936,18 +994,6 @@ fun VisualizerMirror(levels: FloatArray, playing: Boolean, modifier: Modifier = 
     }
 }
 
-/**
- * Unit-agnostic ferrofluid dome: the y of the liquid surface at
- * horizontal position `x` in a row `w` wide and `h` tall. The pool
- * is `minPool` deep at the edges and domes to `maxPool` at the
- * centre (cosine dome — the 2D read of the concentric Rosensweig
- * rings). Works in dp or px, as long as all five inputs share a unit.
- */
-private fun ferroSurfaceY(x: Float, w: Float, h: Float, minPool: Float, maxPool: Float): Float {
-    val t = ((x / w) - 0.5f) * 2f // -1 at the left edge, +1 at the right
-    val dome = cos(t * PI.toFloat() / 2f) // 1 at the centre, 0 at the edges
-    return h - (minPool + (maxPool - minPool) * dome)
-}
 
 /**
  * Style 5 — Ferrofluid / magnetic liquid.
@@ -1111,6 +1157,26 @@ private fun ferroSurfaceY(x: Float, w: Float, h: Float, minPool: Float, maxPool:
  * and sharp apices, bases sunk into the dome. The frequency
  * chips move out of the canvas entirely (see VisualizerPanel) —
  * the "Tất cả" chip used to cover the tower tip.
+ *
+ * v1.1.21 — WHY 1.1.20 STILL READ AS KNIVES (user's 1.1.20 frames,
+ * landscape 00:30 + portrait 06:51 + video f30–51: "nhìn như dao
+ * đâm chứ từ tính gì"). Measured on the 1.1.20 landscape frame:
+ * the black dome renders at mean brightness 22.5/255 — invisible
+ * against #07181D — and only the 2–3 px white gloss lines on the
+ * spikes show (1.06% of the zone, mean [122, 131, 134]), i.e.
+ * white needles on black. The dome + tall-spike model is the
+ * problem, not the material: the SoulBeat reference is a spiky
+ * DISC, not a dome. So this version does the true SoulBeat model:
+ * a black spiky disc floating in a light glowing chamber (radial
+ * teal glow — the backlit liquid — so the black silhouette reads),
+ * 44 SHORT wide spikes (0.14x the disc radius, base 62% of the
+ * pitch) merged into ONE continuous serrated silhouette (a gear /
+ * sea urchin, not separate needles), the disc BURSTING with the
+ * bass (+55% radius, fast attack / viscous release) and collapsing,
+ * plus 8 small black droplets that detach on bursts. No white
+ * gloss lines on the spikes (that is what made knives), no tip
+ * dots, no tower — the bass bursts the whole disc. The old dome,
+ * its pool constants and ferroSurfaceY are deleted.
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -1121,17 +1187,15 @@ fun VisualizerFerrofluid(
     modifier: Modifier = Modifier,
     heightDp: Float = VIS_ROW_TALL_DP
 ) {
-    // v1.1.20 — no theme colours here any more: the teal sheen /
-    // rim is deleted, the liquid is near-black with white gloss
-    // only, in both themes (that is what ferrofluid looks like).
+    // v1.1.21 — no theme colours on the liquid: it is near-black
+    // with white gloss only, in both themes (that is what ferrofluid
+    // looks like). The chamber glow behind it is light teal.
     val live = isLive(levels)
     val n = levels.size
-    // v1.1.14: 16 thick spikes, not 32 thin ones — the selected band
-    // range is resampled across the slots below, so the blob stays
-    // full whatever the frequency selector says. v1.1.20: 28 thin
-    // spikes (see FERRO_SPIKE_COUNT) — 16 wide ones read as teeth.
-    val spikeCount = FERRO_SPIKE_COUNT
-    // The selected band range, resampled across all spike slots.
+    // 44 spikes around the disc rim; the selected band range is
+    // resampled across them, so the rim stays full whatever the
+    // frequency selector says.
+    val spikeCount = FERRO_DISC_SPIKE_COUNT
     val selStart = when (freq) {
         FerrofluidFreq.BASS -> 0
         FerrofluidFreq.TREBLE -> FERRO_TREBLE_START_BAND
@@ -1144,29 +1208,29 @@ fun VisualizerFerrofluid(
     }
     val displayed = remember(spikeCount) { FloatArray(spikeCount) }
     val norms = remember(spikeCount) { FloatArray(spikeCount) }
-    val blobPath = remember { Path() }
-    val spikePath = remember { Path() }
+    // Disc burst state: 0..1, chased like the spikes (instant
+    // attack, viscous release) so the disc snaps up on a beat and
+    // collapses instead of hovering.
+    val burstState = remember { floatArrayOf(0f) }
+    val discPath = remember { Path() }
     val glossPath = remember { Path() }
-    val highlightPath = remember { Path() }
-    // Bass energy for the centre tower: mean of bands 0..5, raw.
+    // Bass energy for the disc burst: mean of bands 0..5, raw.
+    // (The old centre tower is gone — the bass now bursts the
+    // whole disc, which is the SoulBeat motion.)
     var bassSum = 0f
     val bassCount = minOf(6, n)
     for (i in 0 until bassCount) bassSum += levels[i]
     val bassEnergy = if (bassCount > 0) bassSum / bassCount else 0f
-    val towerNorm = if (live) scaledNorm(bassEnergy) else 0f
-    // v1.1.14: tall row (140 dp) — the demo stages ferrofluid on
-    // ~300 dp; at 88 dp the dome + spikes had no room to read.
+    val burstTarget = if (live) scaledNorm(bassEnergy) else 0f
     // v1.1.17 — uniform scale factor: every structural size below
-    // is multiplied by `s`, so the blob/spikes grow with
-    // the canvas (s = 1.0 on the 140 dp row, ~2.29 on the 320 dp
+    // is multiplied by `s`, so the disc/spikes grow with the
+    // canvas (s = 1.0 on the 140 dp row, ~2.29 on the 320 dp
     // hero, ~5.7 full-screen) while the 140 dp look is unchanged.
     BoxWithConstraints(modifier.height(heightDp.dp).fillMaxWidth()) {
         val wDp = maxWidth.value
         val hDp = heightDp
         val s = hDp / VIS_ROW_TALL_DP
-        val minPoolDp = FERRO_MIN_POOL_DP * s
-        val maxPoolDp = FERRO_MAX_POOL_DP * s
-        // Chase the selected (resampled) levels per slot, then lift.
+        // Chase the selected (resampled) levels per spike slot, then lift.
         if (live) {
             for (i in 0 until spikeCount) {
                 val src = (selStart + (i * selCount / spikeCount.coerceAtLeast(1))).coerceIn(0, (n - 1).coerceAtLeast(0))
@@ -1179,168 +1243,114 @@ fun VisualizerFerrofluid(
             displayed.fill(0f)
             norms.fill(0f)
         }
-        // v1.1.15 — spike heights (dp), computed once so the draw
-        // loop below reads them. Spikes: 6 +
-        // norm*50 (max 56 dp); tower: 12 + towerNorm*48 (max 60 dp)
-        // with a 1.5x prominence floor over the median spike, so the
-        // centre tower always reads as a tower. Each non-tower slot
-        // gets its deterministic unevenness factor. Budget: dome
-        // centre 80 dp + tower 60 dp = 140 dp = the row, so nothing
-        // clips; idle heights stay small (tower 12 dp, spikes 6 dp).
-        val spikeHeights = FloatArray(spikeCount)
-        if (live) {
-            for (i in 0 until spikeCount) {
-                spikeHeights[i] = if (i == spikeCount / 2) {
-                    (12f + towerNorm * 48f) * s
-                } else {
-                    (6f + norms[i] * 50f) * FERRO_SLOT_FACTOR[i % FERRO_SLOT_FACTOR.size] * s
-                }
-            }
-            val sorted = spikeHeights.filterIndexed { i, _ -> i != spikeCount / 2 }.sorted()
-            val median = sorted[sorted.size / 2]
-            val maxOther = sorted.lastOrNull() ?: 0f
-            val towerIdx = spikeCount / 2
-            // v1.1.19 — the tower must be the TALLEST spike, not just
-            // 1.5x the median: on a low-bass intro the median is small
-            // while a few slots are already tall, so the old floor left
-            // the tower shorter than its neighbours (measured on the
-            // user's 1.1.18 video: tower 72 dp, slot 6 81 dp). Floor at
-            // 1.3x the tallest other spike (keeping the 1.5x median
-            // floor), clamped so the tip stays inside the row.
-            // (Plain if/else, not maxOf — no import to get wrong.)
-            var towerFloor = 1.5f * median
-            if (1.3f * maxOther > towerFloor) towerFloor = 1.3f * maxOther
-            if (spikeHeights[towerIdx] < towerFloor) spikeHeights[towerIdx] = towerFloor
-            val towerMax = (hDp - maxPoolDp) * 0.92f
-            if (spikeHeights[towerIdx] > towerMax) spikeHeights[towerIdx] = towerMax
-        } else {
-            for (i in 0 until spikeCount) spikeHeights[i] = if (i == spikeCount / 2) 12f * s else 6f * s
-        }
-        // v1.1.20 — droplets are GONE: the detached beads (grey
-        // #6A6A73 with a white specular dot) were more floating
-        // dots on top of the tip dots the user called candles.
-        // The liquid reads through the dome + spikes + gloss only.
+        // Disc burst: instant attack, viscous release (0.45/frame).
+        burstState[0] = if (burstTarget > burstState[0]) burstTarget
+        else burstState[0] + (burstTarget - burstState[0]) * VIS_FERRO_BURST_RELEASE
+        val burst = burstState[0]
         Canvas(Modifier.fillMaxSize()) {
             val wPx = size.width
             val hPx = size.height
-            val minPoolPx = minPoolDp.dp.toPx()
-            val maxPoolPx = maxPoolDp.dp.toPx()
-            val slotWPx = wPx / spikeCount.coerceAtLeast(1)
-            // v1.1.16 — THE GRADIENT-ANCHOR FIX: the brush is
-            // anchored to the dome itself (startY = centre surface,
-            // endY = row bottom), never to the whole row — an
-            // unanchored gradient renders the dome in the wrong
-            // stops (measured ~#1B1B1F, 1.06:1 on the 1.1.15 video).
-            // v1.1.20 — the 1.1.16 bright stops (#7A7A83 → #2E2E35)
-            // were the wrong MATERIAL: the dome rendered flat grey
-            // #4C4C54–#6D6D75 on the user's 1.1.19 frames. Real
-            // ferrofluid is near-black; it reads ONLY through narrow
-            // white gloss (the SoulBeat reference is lit by white
-            // LEDs). So the body goes back to near-black (#141417
-            // → #050506) and the gloss below does all the work.
-            val bodyBrush = Brush.verticalGradient(
-                listOf(Color(0xFF141417), Color(0xFF0A0A0C), Color(0xFF050506)),
-                startY = hPx - maxPoolPx,
-                endY = hPx
+            val cx = wPx / 2f
+            val cy = hPx / 2f
+            // Disc radius: base 19% of the canvas height, bursting
+            // +55% at full bass. Max extent (radius + spikes) stays
+            // inside the canvas (0.19 * 1.55 * 1.21 < 0.5).
+            val r0 = hPx * FERRO_DISC_BASE_R_FRAC
+            val discR = r0 * (1f + FERRO_DISC_BURST * burst)
+            val glowR = r0 * (1f + FERRO_DISC_BURST) * 2f
+            // (1) The glowing chamber: a soft light-teal radial glow
+            // behind the disc — the SoulBeat backlit liquid. Without
+            // it the black disc sinks into the dark background (the
+            // 1.1.20 failure: dome mean brightness 22.5/255).
+            drawCircle(
+                brush = Brush.radialGradient(
+                    listOf(
+                        Color(0xFF8FF5E0).copy(alpha = 0.30f),
+                        Color(0xFF8FF5E0).copy(alpha = 0.10f),
+                        Color(0xFF8FF5E0).copy(alpha = 0f)
+                    ),
+                    center = Offset(cx, cy),
+                    radius = glowR
+                ),
+                radius = glowR,
+                center = Offset(cx, cy)
             )
-            // The blob: one domed pool across the whole row.
-            blobPath.rewind()
-            blobPath.moveTo(0f, hPx)
-            blobPath.lineTo(0f, ferroSurfaceY(0f, wPx, hPx, minPoolPx, maxPoolPx))
-            val domeSteps = 24
-            for (s in 1..domeSteps) {
-                val x = s.toFloat() / domeSteps * wPx
-                blobPath.lineTo(x, ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx))
+            // (2) The spiky disc: ONE continuous silhouette — a
+            // circle with 44 short, wide spikes around its rim.
+            // Each spike is a triangle from the disc edge, base 62%
+            // of the angular pitch (neighbours nearly touch, so the
+            // rim reads as one serrated edge, not separate needles),
+            // length 0.14x the disc radius at full level (~1/10 of
+            // the disc diameter, the SoulBeat proportion), scaled by
+            // its resampled FFT norm and its slot factor. All the
+            // SAME near-black as the disc — no white gloss lines on
+            // the spikes (that is what made knives in 1.1.20).
+            val pitch = (2f * PI.toFloat()) / spikeCount
+            val baseHalfAngle = pitch * FERRO_SPIKE_BASE_PITCH_FRAC / 2f
+            discPath.rewind()
+            for (i in 0 until spikeCount) {
+                val aMid = -PI.toFloat() / 2f + i * pitch
+                val a0 = aMid - baseHalfAngle
+                val a1 = aMid + baseHalfAngle
+                val len = discR * FERRO_SPIKE_LEN_FRAC *
+                    (0.5f + norms[i]) * FERRO_SLOT_FACTOR[i % FERRO_SLOT_FACTOR.size]
+                val apexR = discR + len
+                val p0 = Offset(cx + cos(a0) * discR, cy + sin(a0) * discR)
+                val pA = Offset(cx + cos(aMid) * apexR, cy + sin(aMid) * apexR)
+                val p1 = Offset(cx + cos(a1) * discR, cy + sin(a1) * discR)
+                if (i == 0) discPath.moveTo(p0.x, p0.y) else discPath.lineTo(p0.x, p0.y)
+                discPath.lineTo(pA.x, pA.y)
+                discPath.lineTo(p1.x, p1.y)
             }
-            blobPath.lineTo(wPx, hPx)
-            blobPath.close()
-            drawPath(blobPath, bodyBrush)
-            // v1.1.20 — the teal rim + glow along the dome surface
-            // are DELETED, not thinned: on the 1.1.19 landscape
-            // frame the 1.5 dp rim still reads as teal diagonal
-            // lines down both sloping sides of the dome (873 teal
-            // px). No coloured edge anywhere on the liquid now.
-            // Specular highlight: ONE narrow white arc on the
-            // upper-left of the dome, just above the surface —
-            // the only light on the dome. Deliberately 2 dp (not
-            // scaled by `s`): the old 4 dp + 12 dp soft band is
-            // what made a grey glossy stripe across the dome.
-            highlightPath.rewind()
-            val hlSteps = 8
-            for (s in 0..hlSteps) {
-                val x = (0.08f + 0.27f * s.toFloat() / hlSteps) * wPx
-                val y = ferroSurfaceY(x, wPx, hPx, minPoolPx, maxPoolPx) - (2f * s).dp.toPx()
-                if (s == 0) highlightPath.moveTo(x, y) else highlightPath.lineTo(x, y)
+            discPath.close()
+            // Near-black radial gradient, slightly lighter toward
+            // the upper-left so the disc has a hint of form (the
+            // gloss arc below does the wet look).
+            drawPath(
+                discPath,
+                brush = Brush.radialGradient(
+                    listOf(Color(0xFF1C1C20), Color(0xFF0A0A0C), Color(0xFF050506)),
+                    center = Offset(cx - discR * 0.3f, cy - discR * 0.3f),
+                    radius = discR * 1.4f
+                )
+            )
+            // (3) Wet gloss: ONE small white arc on the disc's
+            // upper-left, following the disc curvature — the only
+            // white on the liquid. Deliberately narrow (2 dp) and
+            // mid alpha, so it reads as a highlight, not a stripe.
+            glossPath.rewind()
+            val glossR = discR * 0.72f
+            val glossSteps = 6
+            for (k in 0..glossSteps) {
+                // Arc from ~200 deg to ~250 deg (upper-left).
+                val a = (200f + 50f * k.toFloat() / glossSteps) * PI.toFloat() / 180f
+                val x = cx + cos(a) * glossR
+                val y = cy + sin(a) * glossR
+                if (k == 0) glossPath.moveTo(x, y) else glossPath.lineTo(x, y)
             }
             drawPath(
-                highlightPath,
-                SolidColor(Color.White.copy(alpha = 0.55f)),
+                glossPath,
+                SolidColor(Color.White.copy(alpha = 0.45f)),
                 style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
             )
-            // Spikes: thin black needles growing out of the blob.
-            // Base sunk 2 dp into the blob, concave sides (the
-            // control points pull inward), sharp apices — the
-            // SoulBeat reference shape, not triangles.
-            val centreSlot = spikeCount / 2
-            for (i in 0 until spikeCount) {
-                val cx = (i + 0.5f) * slotWPx
-                val surfaceY = ferroSurfaceY(cx, wPx, hPx, minPoolPx, maxPoolPx)
-                val baseY = surfaceY + (2f * s).dp.toPx()
-                val isTower = i == centreSlot
-                // v1.1.15: heights come from spikeHeights (computed
-                // above, with unevenness + tower prominence).
-                val spikeH = spikeHeights[i].dp.toPx()
-                val norm = if (isTower) towerNorm else norms[i]
-                // v1.1.20 — THIN spikes: base 0.30x the slot
-                // (tower 0.45x), was 0.65x / 0.85x in 1.1.19. At
-                // 0.65x the 16 spikes merged at the foot into one
-                // 325 px run and read as a crown; at 0.30x with
-                // 28 slots each needle stands separate with a clear
-                // gap to its neighbours. Sides are concave (control
-                // points at 0.55x the base half-width), so the spike
-                // narrows fast from the base and ends in a sharp
-                // point — no rounded apex bead (deleted: it read as
-                // a candle tip together with the tip dot).
-                val baseHalfW = slotWPx * (if (isTower) 0.45f else 0.30f) * (1f - 0.2f * norm)
-                val apex = Offset(cx, surfaceY - spikeH)
-                spikePath.rewind()
-                spikePath.moveTo(cx - baseHalfW, baseY)
-                spikePath.quadraticBezierTo(
-                    cx - baseHalfW * 0.55f, baseY - spikeH * 0.45f, apex.x, apex.y
-                )
-                spikePath.quadraticBezierTo(
-                    cx + baseHalfW * 0.55f, baseY - spikeH * 0.45f, cx + baseHalfW, baseY
-                )
-                spikePath.close()
-                // v1.1.20 — spike bodies are near-black like the
-                // dome (#232327 tip → #0C0C0E → #08080A base), NOT
-                // the 1.1.16 bright grey (#8A8A93 → #4A4A52) that
-                // made grey mountains on the 1.1.19 frames. The
-                // brush still spans the spike itself so the tip is
-                // always the slightly lighter end.
-                val spikeBrush = Brush.verticalGradient(
-                    listOf(Color(0xFF232327), Color(0xFF0C0C0E), Color(0xFF08080A)),
-                    startY = apex.y,
-                    endY = baseY
-                )
-                drawPath(spikePath, spikeBrush)
-                // v1.1.20 — gloss, not dots: ONE thin white line
-                // down the spike's left edge (from the apex to
-                // ~55% down), 1.2 dp, alpha 0.5 on loud spikes,
-                // 0.25 when quiet. This is how the black needle
-                // reads as glossy liquid in the reference — the
-                // white tip dots of 1.1.19 (418 bright px, the
-                // "birthday candles") are deleted outright.
-                glossPath.rewind()
-                glossPath.moveTo(apex.x, apex.y)
-                glossPath.quadraticBezierTo(
-                    cx - baseHalfW * 0.55f, baseY - spikeH * 0.45f,
-                    cx - baseHalfW * 0.75f, baseY - spikeH * 0.45f
-                )
-                drawPath(
-                    glossPath,
-                    SolidColor(Color.White.copy(alpha = if (live && norm > 0.35f) 0.5f else 0.25f)),
-                    style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
+            // (4) Droplets: small black beads with a tiny white dot,
+            // floating around the disc. They detach when the disc
+            // bursts (distance grows with `burst`) and rejoin when
+            // it collapses — the SoulBeat droplet cycle. Positions
+            // are deterministic (fixed angles), sizes follow their
+            // resampled band so they pulse with the music.
+            for (d in 0 until FERRO_DROPLET_COUNT) {
+                val a = (d * 45f + 22f) * PI.toFloat() / 180f
+                val band = norms[(d * 5) % spikeCount]
+                val dist = discR * (1.55f + 0.35f * burst)
+                val dx = cx + cos(a) * dist
+                val dy = cy + sin(a) * dist
+                val dropR = (2.2f + 1.8f * band) * s.dp.toPx()
+                drawCircle(Color(0xFF0B0B0D), radius = dropR, center = Offset(dx, dy))
+                drawCircle(
+                    Color.White.copy(alpha = 0.55f),
+                    radius = (0.8f * s).dp.toPx(),
+                    center = Offset(dx - dropR * 0.35f, dy - dropR * 0.35f)
                 )
             }
         }
