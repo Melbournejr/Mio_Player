@@ -34,6 +34,7 @@ import com.mio.player.ui.components.formatDuration
 import com.mio.player.ui.components.isLandscape
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
+import com.mio.player.ui.viewmodel.LibraryViewModel
 import com.mio.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
 /**
@@ -90,15 +91,15 @@ import kotlinx.coroutines.delay
  * this screen changes.
  *
  * WIRING (in MainActivity.kt, Routes.NOW_PLAYING destination):
- *   `composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, nav) }`
+ *   `composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, libVm, nav) }`
  * `NowPlayingRoute` picks this screen in landscape and the existing
  * `NowPlayingScreen` in portrait. NowPlaying.kt itself is untouched.
  */
-@Composable fun NowPlayingRoute(vm: PlayerViewModel, nav: NavHostController) {
-    if (isLandscape()) NowPlayingLandscapeScreen(vm, nav) else NowPlayingScreen(vm, nav)
+@Composable fun NowPlayingRoute(vm: PlayerViewModel, libVm: LibraryViewModel, nav: NavHostController) {
+    if (isLandscape()) NowPlayingLandscapeScreen(vm, libVm, nav) else NowPlayingScreen(vm, libVm, nav)
 }
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun NowPlayingLandscapeScreen(vm: PlayerViewModel, nav: NavHostController) {
+@Composable fun NowPlayingLandscapeScreen(vm: PlayerViewModel, libVm: LibraryViewModel, nav: NavHostController) {
     // Same state as the portrait screen (NowPlaying.kt) — same flows,
     // same 250 ms position poll, same lyrics fetch, same state text.
     val queue by vm.queue.collectAsState(); val idx by vm.index.collectAsState(); val playing by vm.isPlaying.collectAsState()
@@ -109,6 +110,10 @@ import kotlinx.coroutines.delay
     val converting by vm.pm.isConvertingDsd.collectAsState()
     val dsdError by vm.pm.dsdError.collectAsState()
     val t = queue.getOrNull(idx)
+    // v1.1.24 — favorite (same as portrait, see NowPlaying.kt).
+    val libTracks by libVm.tracks.collectAsState()
+    val favTrack = t?.let { cur -> libTracks.find { it.id == cur.id } ?: cur }
+    val isFav = favTrack?.isFavorite ?: false
     val playerDuration = vm.pm.player.duration
     val totalMs = if (playerDuration != C.TIME_UNSET && playerDuration > 0) playerDuration else (t?.durationMs ?: 0L)
     val totalF = if (totalMs > 0) totalMs.toFloat() else 1f
@@ -261,6 +266,11 @@ import kotlinx.coroutines.delay
                     Column(Modifier.weight(1f)) {
                         Text(t?.title ?: "No song", color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    // v1.1.24 — favorite heart beside the title (same
+                    // as portrait, see NowPlaying.kt).
+                    IconButton(onClick = { favTrack?.let { libVm.toggleFavorite(it) } }) {
+                        Icon(if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Yêu thích", tint = if (isFav) MioCyan else MioTextSecondary)
                     }
                 }
                 // v1.1.7: same dedupe as portrait NowPlaying — the DSD

@@ -170,6 +170,11 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
         Row(Modifier.fillMaxWidth()) {
             LibraryTab("Songs", selected = tab == 0) { tab = 0; openFolderKey = null }
             LibraryTab("Folders", selected = tab == 1) { tab = 1; openFolderKey = null }
+            // v1.1.24 — Favorites: the list of liked songs. The heart
+            // on Now Playing (and on every TrackRow) adds here; the
+            // DAO already had favorites() / setFavorite() and the
+            // ViewModel toggleFavorite() — only the tab was missing.
+            LibraryTab("Yêu thích", selected = tab == 2) { tab = 2; openFolderKey = null }
         }
         Spacer(Modifier.height(8.dp))
         if (tracks.isEmpty()) {
@@ -178,6 +183,22 @@ val GENRES = listOf("Pop", "Chill", "Lo-Fi", "Rock", "Jazz", "EDM", "Classical",
             LazyColumn(Modifier.weight(1f)) {
                 itemsIndexed(tracks) { i, t ->
                     TrackRow(t, onClick = { playerVm.playQueue(tracks, i); nav.navigate(Routes.NOW_PLAYING) }, onFav = { libVm.toggleFavorite(t) }, isPlaying = t.id == currentId)
+                }
+            }
+        } else if (tab == 2) {
+            // v1.1.24 — Favorites tab: the liked songs, in title order
+            // (same order as the DAO favorites() query). Playing from
+            // here queues only the favorites, so Next stays in the
+            // list. The heart on each row un-favorites (the row leaves
+            // the list on the next load()).
+            val favs = tracks.filter { it.isFavorite }.sortedBy { it.title.lowercase() }
+            if (favs.isEmpty()) {
+                Text("Chưa có bài yêu thích. Bấm tim ở màn Đang phát hoặc trong danh sách để thêm vào đây.", color = MioTextSecondary, fontSize = 14.sp)
+            } else {
+                LazyColumn(Modifier.weight(1f)) {
+                    itemsIndexed(favs) { i, t ->
+                        TrackRow(t, onClick = { playerVm.playQueue(favs, i); nav.navigate(Routes.NOW_PLAYING) }, onFav = { libVm.toggleFavorite(t) }, isPlaying = t.id == currentId)
+                    }
                 }
             }
         } else if (openFolder == null) {

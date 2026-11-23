@@ -36,6 +36,7 @@ import com.mio.player.ui.components.TrackRow
 import com.mio.player.ui.components.formatDuration
 import com.mio.player.ui.navigation.Routes
 import com.mio.player.ui.theme.*
+import com.mio.player.ui.viewmodel.LibraryViewModel
 import com.mio.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
 /**
@@ -96,7 +97,7 @@ import kotlinx.coroutines.delay
  *  vertical room goes to the lyrics list.
  */
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun NowPlayingScreen(vm: PlayerViewModel, nav: NavHostController) {
+@Composable fun NowPlayingScreen(vm: PlayerViewModel, libVm: LibraryViewModel, nav: NavHostController) {
     val queue by vm.queue.collectAsState(); val idx by vm.index.collectAsState(); val playing by vm.isPlaying.collectAsState()
     val levels by vm.pm.waveform.levels.collectAsState()
     val pcmFrame by vm.pm.waveform.pcmFrame.collectAsState()
@@ -105,6 +106,13 @@ import kotlinx.coroutines.delay
     val converting by vm.pm.isConvertingDsd.collectAsState()
     val dsdError by vm.pm.dsdError.collectAsState()
     val t = queue.getOrNull(idx)
+    // v1.1.24 — favorite: the heart reads the LIBRARY's copy of the
+    // track (libVm.tracks reloads after toggleFavorite, so the heart
+    // follows the tap); the queue's copy is the fallback. The toggle
+    // uses the fresh library copy so !isFavorite is always correct.
+    val libTracks by libVm.tracks.collectAsState()
+    val favTrack = t?.let { cur -> libTracks.find { it.id == cur.id } ?: cur }
+    val isFav = favTrack?.isFavorite ?: false
     // FIX 2 (v1.1.1): DSD tracks have durationMs == 0 in the library
     // (MediaStore cannot read DSF duration; SAF tracks get 0), so using
     // t.durationMs as the total clamped the position to 0 forever and
@@ -281,6 +289,13 @@ import kotlinx.coroutines.delay
             Column(Modifier.weight(1f)) {
                 Text(t?.title ?: "No song", color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(t?.artist ?: "", color = MioTextSecondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            // v1.1.24 — favorite heart beside the title (same pattern
+            // as TrackRow's heart: filled cyan when favorite, outline
+            // grey when not). Tapping toggles the library favorite and
+            // the heart follows via libTracks (see above).
+            IconButton(onClick = { favTrack?.let { libVm.toggleFavorite(it) } }) {
+                Icon(if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Yêu thích", tint = if (isFav) MioCyan else MioTextSecondary)
             }
         }
         Spacer(Modifier.height(8.dp))

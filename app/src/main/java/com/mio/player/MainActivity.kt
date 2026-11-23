@@ -164,7 +164,7 @@ suspend fun restoreSoundSettings(ctx: Context) {
         composable(Routes.SEARCH) { MainScaffold(nav, Routes.SEARCH, libVm, playerVm) { SearchScreen(libVm, playerVm, nav) } }
         composable(Routes.LIBRARY) { MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { LibraryScreen(libVm, playerVm, nav) } }
         composable(Routes.PROFILE) { MainScaffold(nav, Routes.PROFILE, libVm, playerVm) { ProfileScreen(libVm, nav) } }
-        composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, nav) }
+        composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, libVm, nav) }
         // Design system (p.8): bottom navigation + mini player are
         // mandatory on every screen. Album / Artist / Lyrics previously
         // had neither — no way back to Home/Search/Library/Profile
