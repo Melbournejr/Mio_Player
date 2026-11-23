@@ -128,6 +128,10 @@ import kotlinx.coroutines.delay
     // portrait (NowPlaying.kt). Reset on track change with the
     // lyrics state below.
     var showMetadataDialog by remember { mutableStateOf(false) }
+    // v1.1.25 — overflow-menu dialogs: sleep timer + track info.
+    var showSleepDialog by remember { mutableStateOf(false) }
+    var showTrackInfo by remember { mutableStateOf(false) }
+    var sleepMin by remember { mutableStateOf(0) }
     var lines by remember { mutableStateOf(listOf<LyricLine>()) }
     var plain by remember { mutableStateOf<String?>(null) }
     var source by remember { mutableStateOf("Đang tìm lời…") }
@@ -229,6 +233,33 @@ import kotlinx.coroutines.delay
                             text = { Text("Tìm metadata") },
                             onClick = { showOverflow = false; showMetadataDialog = true },
                             leadingIcon = { Icon(Icons.Default.Download, null, tint = MioCyan) }
+                        )
+                        // v1.1.25 — the overflow menu gains real actions
+                        // (research consensus: Go to artist / Go to
+                        // album / Sleep timer / Track info). "Thêm vào
+                        // playlist" is NOT here yet: the playlist DAO
+                        // exists but there is no playlist UI at all, so
+                        // adding a track would be a dead end — that is
+                        // a separate feature.
+                        DropdownMenuItem(
+                            text = { Text("Đi tới nghệ sĩ") },
+                            onClick = { showOverflow = false; t?.let { nav.navigate("artist_detail/${Uri.encode(it.artist)}") } },
+                            leadingIcon = { Icon(Icons.Default.Person, null, tint = MioCyan) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Đi tới album") },
+                            onClick = { showOverflow = false; t?.let { nav.navigate(Routes.ALBUM_DETAIL.replace("{album}", Uri.encode(it.album))) } },
+                            leadingIcon = { Icon(Icons.Default.Album, null, tint = MioCyan) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Hẹn giờ ngủ") },
+                            onClick = { showOverflow = false; showSleepDialog = true },
+                            leadingIcon = { Icon(Icons.Default.Bedtime, null, tint = MioCyan) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Thông tin bài hát") },
+                            onClick = { showOverflow = false; showTrackInfo = true },
+                            leadingIcon = { Icon(Icons.Default.Info, null, tint = MioCyan) }
                         )
                     }
                 }
@@ -363,6 +394,21 @@ import kotlinx.coroutines.delay
             onDismissRequest = { showMetadataDialog = false },
             onTrackUpdated = { vm.pm.updateQueueTrack(it) },
         )
+    }
+    // v1.1.25 — sleep timer + track info, opened from the ⋮ menu.
+    if (showSleepDialog) {
+        SleepTimerDialog(
+            currentMin = sleepMin,
+            onPick = { min ->
+                sleepMin = min
+                vm.pm.setSleepTimer(min)
+                showSleepDialog = false
+            },
+            onDismiss = { showSleepDialog = false },
+        )
+    }
+    if (showTrackInfo && trackNow != null) {
+        TrackInfoDialog(track = trackNow, onDismiss = { showTrackInfo = false })
     }
     // Play queue — same bottom sheet as portrait.
     if (showQueue) {

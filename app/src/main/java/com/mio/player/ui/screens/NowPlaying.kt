@@ -28,6 +28,7 @@ import androidx.media3.common.Player
 import androidx.navigation.NavHostController
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.LyricLine
+import com.mio.player.data.model.Track
 import com.mio.player.ui.components.AlbumArt
 import com.mio.player.ui.components.MetadataEditDialog
 import com.mio.player.ui.visualizer.VIS_HERO_HEIGHT_DP
@@ -142,6 +143,10 @@ import kotlinx.coroutines.delay
     // types the search info first. Reset on track change with the
     // lyrics state below.
     var showMetadataDialog by remember { mutableStateOf(false) }
+    // v1.1.25 — overflow-menu dialogs: sleep timer + track info.
+    var showSleepDialog by remember { mutableStateOf(false) }
+    var showTrackInfo by remember { mutableStateOf(false) }
+    var sleepMin by remember { mutableStateOf(0) }
     // Inline synced lyrics — same source and call as LyricsScreen
     // (Detail.kt): LyricsRepository via the app container, LRCLIB /
     // sidecar .lrc / embedded, cached in Room.
@@ -263,6 +268,33 @@ import kotlinx.coroutines.delay
                             text = { Text("Tìm metadata") },
                             onClick = { showOverflow = false; showMetadataDialog = true },
                             leadingIcon = { Icon(Icons.Default.Download, null, tint = MioCyan) }
+                        )
+                        // v1.1.25 — the overflow menu gains real actions
+                        // (research consensus: Go to artist / Go to
+                        // album / Sleep timer / Track info). "Thêm vào
+                        // playlist" is NOT here yet: the playlist DAO
+                        // exists but there is no playlist UI at all, so
+                        // adding a track would be a dead end — that is
+                        // a separate feature.
+                        DropdownMenuItem(
+                            text = { Text("Đi tới nghệ sĩ") },
+                            onClick = { showOverflow = false; t?.let { nav.navigate("artist_detail/${Uri.encode(it.artist)}") } },
+                            leadingIcon = { Icon(Icons.Default.Person, null, tint = MioCyan) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Đi tới album") },
+                            onClick = { showOverflow = false; t?.let { nav.navigate(Routes.ALBUM_DETAIL.replace("{album}", Uri.encode(it.album))) } },
+                            leadingIcon = { Icon(Icons.Default.Album, null, tint = MioCyan) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Hẹn giờ ngủ") },
+                            onClick = { showOverflow = false; showSleepDialog = true },
+                            leadingIcon = { Icon(Icons.Default.Bedtime, null, tint = MioCyan) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Thông tin bài hát") },
+                            onClick = { showOverflow = false; showTrackInfo = true },
+                            leadingIcon = { Icon(Icons.Default.Info, null, tint = MioCyan) }
                         )
                     }
                 }
@@ -442,6 +474,21 @@ import kotlinx.coroutines.delay
             onTrackUpdated = { vm.pm.updateQueueTrack(it) },
         )
     }
+    // v1.1.25 — sleep timer + track info, opened from the ⋮ menu.
+    if (showSleepDialog) {
+        SleepTimerDialog(
+            currentMin = sleepMin,
+            onPick = { min ->
+                sleepMin = min
+                vm.pm.setSleepTimer(min)
+                showSleepDialog = false
+            },
+            onDismiss = { showSleepDialog = false },
+        )
+    }
+    if (showTrackInfo && trackNow != null) {
+        TrackInfoDialog(track = trackNow, onDismiss = { showTrackInfo = false })
+    }
     // Play queue (Fix 4): bottom sheet listing the current queue with
     // the playing track highlighted; tapping a row plays it from there.
     if (showQueue) {
@@ -457,5 +504,64 @@ import kotlinx.coroutines.delay
                 }
             }
         }
+    }
+}
+
+/** Sleep timer dialog (v1.1.25): pick a duration; the player pauses
+ *  when it elapses. The engine (PlayerManager.setSleepTimer) existed
+ *  since v1.0 but had no UI — the Profile footer claimed it lived on
+ *  Now Playing, but it did not. It now lives in the ⋮ menu on both
+ *  orientations. Shared by NowPlayingScreen and
+ *  NowPlayingLandscapeScreen (same package). */
+@Composable fun SleepTimerDialog(currentMin: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = CardLarge,
+        title = { Text("Hẹn giờ ngủ", color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text(if (currentMin > 0) "Đang bật: dừng phát sau $currentMin phút." else "Chưa bật hẹn giờ.", color = MioTextSecondary, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+                listOf(0 to "Tắt", 15 to "15 phút", 30 to "30 phút", 45 to "45 phút", 60 to "60 phút", 90 to "90 phút").forEach { (min, label) ->
+                    Row(Modifier.fillMaxWidth().clickable { onPick(min) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (currentMin == min) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked, null, tint = MioCyan)
+                        Text(label, color = MioText, modifier = Modifier.padding(start = 12.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Đóng", color = MioCyan) } }
+    )
+}
+
+/** Track info dialog (v1.1.25): the playing track's metadata and
+ *  file details, straight from the Track model (no network). Shared
+ *  by both Now Playing orientations. */
+@Composable fun TrackInfoDialog(track: Track, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = CardLarge,
+        title = { Text("Thông tin bài hát", color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                TrackInfoRow("Tên bài", track.title)
+                TrackInfoRow("Nghệ sĩ", track.artist)
+                TrackInfoRow("Album", track.album)
+                TrackInfoRow("Định dạng", track.displayFormat)
+                TrackInfoRow("Thời lượng", formatDuration(track.durationMs))
+                if (track.sampleRateHz > 0) TrackInfoRow("Tần số mẫu", "${track.sampleRateHz / 1000.0} kHz")
+                if (track.bitDepth > 0) TrackInfoRow("Độ sâu bit", "${track.bitDepth}-bit")
+                if (track.bitrateKbps > 0) TrackInfoRow("Bitrate", "${track.bitrateKbps} kbps")
+                TrackInfoRow("Đường dẫn", track.path)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Đóng", color = MioCyan) } }
+    )
+}
+
+@Composable private fun TrackInfoRow(label: String, value: String) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text(label, color = MioTextSecondary, fontSize = 12.sp)
+        Text(value, color = MioText, fontSize = 14.sp)
     }
 }

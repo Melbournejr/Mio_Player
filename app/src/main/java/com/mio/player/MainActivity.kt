@@ -163,7 +163,15 @@ suspend fun restoreSoundSettings(ctx: Context) {
         composable(Routes.HOME) { MainScaffold(nav, Routes.HOME, libVm, playerVm) { HomeScreen(libVm, playerVm, nav) } }
         composable(Routes.SEARCH) { MainScaffold(nav, Routes.SEARCH, libVm, playerVm) { SearchScreen(libVm, playerVm, nav) } }
         composable(Routes.LIBRARY) { MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { LibraryScreen(libVm, playerVm, nav) } }
-        composable(Routes.PROFILE) { MainScaffold(nav, Routes.PROFILE, libVm, playerVm) { ProfileScreen(libVm, nav) } }
+        composable(Routes.PROFILE) { MainScaffold(nav, Routes.PROFILE, libVm, playerVm) { SettingsScreen(libVm, nav) } }
+        // v1.1.25 — Settings sub-screens (grouped, not one long scroll).
+        // MainScaffold with current="" so no tab is marked selected —
+        // these are detail screens, not tabs (same as Lyrics).
+        composable(Routes.SETTINGS_SOUND) { MainScaffold(nav, "", libVm, playerVm) { SettingsSoundScreen(nav) } }
+        composable(Routes.SETTINGS_DISPLAY) { MainScaffold(nav, "", libVm, playerVm) { SettingsDisplayScreen(nav) } }
+        composable(Routes.SETTINGS_LIBRARY) { MainScaffold(nav, "", libVm, playerVm) { SettingsLibraryScreen(libVm, nav) } }
+        composable(Routes.SETTINGS_PLAYBACK) { MainScaffold(nav, "", libVm, playerVm) { SettingsPlaybackScreen(nav) } }
+        composable(Routes.SETTINGS_ABOUT) { MainScaffold(nav, "", libVm, playerVm) { SettingsAboutScreen(nav) } }
         composable(Routes.NOW_PLAYING) { NowPlayingRoute(playerVm, libVm, nav) }
         // Design system (p.8): bottom navigation + mini player are
         // mandatory on every screen. Album / Artist / Lyrics previously
@@ -180,12 +188,22 @@ suspend fun restoreSoundSettings(ctx: Context) {
             val name = backStackEntry.arguments?.getString("name") ?: ""
             MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { ArtistDetailScreen(name, libVm, playerVm, nav) }
         }
+        // v1.1.25 — album detail by name (for "Đi tới album" in the
+        // Now Playing overflow menu). The old Routes.ALBUM screen shows
+        // the first album in the library, not a chosen one.
+        composable(Routes.ALBUM_DETAIL) { backStackEntry ->
+            val album = backStackEntry.arguments?.getString("album") ?: ""
+            MainScaffold(nav, Routes.LIBRARY, libVm, playerVm) { AlbumDetailByNameScreen(album, libVm, playerVm, nav) }
+        }
     }
 }
 @Composable fun MainScaffold(nav: NavHostController, current: String, libVm: LibraryViewModel, playerVm: PlayerViewModel, content: @Composable () -> Unit) {
     val queue by playerVm.queue.collectAsState(); val idx by playerVm.index.collectAsState(); val playing by playerVm.isPlaying.collectAsState()
+    // v1.1.25 — the tab is "Cài đặt" now, not "Hồ sơ": the app has no
+    // account, so there is no profile — Settings is the destination
+    // (all 6 offline apps in the research have no profile screen).
     val tabs = listOf(Triple(Routes.HOME, "Trang chủ", Icons.Default.Home), Triple(Routes.SEARCH, "Tìm kiếm", Icons.Default.Search),
-        Triple(Routes.LIBRARY, "Thư viện", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Hồ sơ", Icons.Default.Person))
+        Triple(Routes.LIBRARY, "Thư viện", Icons.Default.LibraryMusic), Triple(Routes.PROFILE, "Cài đặt", Icons.Default.Settings))
     // v1.1.9 TASK 1 — black screen on rapid tab taps. The old goTab did
     // nav.navigate(r) { popUpTo(Routes.HOME) } with NO launchSingleTop /
     // restoreState / saveState: every tap pushed a NEW destination

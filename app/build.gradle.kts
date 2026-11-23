@@ -8,8 +8,8 @@ android {
         applicationId = "com.mio.player"
         minSdk = 26
         targetSdk = 34
-        versionCode = 38
-        versionName = "1.1.24"
+        versionCode = 39
+        versionName = "1.1.25"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {

@@ -7,11 +7,20 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -198,153 +207,254 @@ import kotlinx.coroutines.launch
         }
     }
 }
-/** v1.1.13 — Profile / Settings, reorganized into grouped sections
- *  (Âm thanh / Hiển thị / Thư viện / Phát lại / Giới thiệu), each with
- *  a short description under its header. The playback controls
- *  (Gapless / Crossfade / ReplayGain / speed) moved here from
- *  EqualizerScreen — same DataStore keys, ranges and labels, same
- *  player calls. The sleep timer stays in Now Playing. */
-@Composable fun ProfileScreen(libVm: LibraryViewModel, nav: NavHostController) {
+/** v1.1.25 — Settings (was "Profile"), split into sub-screens.
+ *  The research (top-music-apps-menu-settings, 2026-11-23) found
+ *  7/9 top apps put Settings in grouped sub-screens, never one long
+ *  scroll, and all 6 offline apps have NO profile/account screen —
+ *  Settings IS the top-level destination. So the old single-scroll
+ *  ProfileScreen (5 sections, ~30 controls) becomes:
+ *   - SettingsScreen: the tab destination, a header (avatar + name +
+ *     library stats) + 5 navigation rows (icon + title + supporting
+ *     text + chevron), each opening a sub-screen.
+ *   - SettingsSoundScreen / SettingsDisplayScreen /
+ *     SettingsLibraryScreen / SettingsPlaybackScreen /
+ *     SettingsAboutScreen: one section each, with a back button +
+ *     title and the section's existing controls.
+ *  Every control, DataStore key, range, label and player call is
+ *  unchanged — only the navigation changed. The bottom-nav tab is
+ *  renamed "Hồ sơ" -> "Cài đặt" (MainActivity) and the route stays
+ *  Routes.PROFILE so saved navigation state keeps working. */
+@Composable fun SettingsScreen(libVm: LibraryViewModel, nav: NavHostController) {
     val tracks by libVm.tracks.collectAsState()
-    val update = rememberUpdateState()
+    val ctx = LocalContext.current
+    val settings = (ctx.applicationContext as com.mio.player.MioApp).container.settings
+    val userName by settings.flow(SettingsStore.KEY_USER_NAME, "").collectAsState(initial = "")
+    val favCount = tracks.count { it.isFavorite }
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
+        SectionTitle("Cài đặt")
+        // Header: avatar + name + library stats (the stats used to
+        // live buried in the Thư viện section).
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(56.dp).background(MioSurfaceRaised, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Person, null, tint = MioCyan, modifier = Modifier.size(28.dp))
+            }
+            Column(Modifier.padding(start = 16.dp)) {
+                Text(if (userName.isBlank()) "Local listener" else userName, color = MioText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("${tracks.size} bài hát • $favCount yêu thích", color = MioTextSecondary, fontSize = 13.sp)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        SettingsNavRow(Icons.Default.Tune, "Âm thanh", "Equalizer, hiệu ứng, chất lượng nhạc") { nav.navigate(Routes.SETTINGS_SOUND) }
+        SettingsNavRow(Icons.Default.Palette, "Hiển thị", "Giao diện sáng hay tối") { nav.navigate(Routes.SETTINGS_DISPLAY) }
+        SettingsNavRow(Icons.Default.LibraryMusic, "Thư viện", "Nhạc trên máy, metadata, quét lại") { nav.navigate(Routes.SETTINGS_LIBRARY) }
+        SettingsNavRow(Icons.Default.PlayArrow, "Phát lại", "ReplayGain, crossfade, tốc độ, gapless") { nav.navigate(Routes.SETTINGS_PLAYBACK) }
+        SettingsNavRow(Icons.Default.Info, "Giới thiệu", "Phiên bản, cập nhật, nhật ký lỗi") { nav.navigate(Routes.SETTINGS_ABOUT) }
+    }
+}
+
+/** One navigation row on the main Settings screen: leading icon,
+ *  title + supporting text, trailing chevron. */
+@Composable private fun SettingsNavRow(icon: ImageVector, title: String, supporting: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = MioCyan, modifier = Modifier.size(24.dp))
+        Column(Modifier.weight(1f).padding(start = 16.dp)) {
+            Text(title, color = MioText, fontSize = 16.sp)
+            Text(supporting, color = MioTextSecondary, fontSize = 13.sp)
+        }
+        Icon(Icons.Default.ChevronRight, null, tint = MioTextSecondary)
+    }
+}
+
+/** Sub-screen shell: back button + title (same pattern as
+ *  EqualizerScreen / LogScreen), then the section content. */
+@Composable private fun SettingsSubScreen(nav: NavHostController, title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, null, tint = MioText) }
+            Text(title, color = MioText, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(8.dp))
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            content()
+        }
+    }
+}
+
+/** Âm thanh sub-screen: EQ entry, headphone correction link, music
+ *  quality note, DSD fallback cache. Same content as the old
+ *  ProfileScreen Âm thanh section, unchanged. */
+@Composable fun SettingsSoundScreen(nav: NavHostController) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    SettingsSubScreen(nav, "Âm thanh") {
+        Text("Chỉnh EQ, hiệu ứng và chất lượng phát nhạc.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        GradientButton("Equalizer & sound") { nav.navigate(Routes.EQ) }
+        Spacer(Modifier.height(12.dp))
+        androidx.compose.material3.TextButton(onClick = { nav.navigate(Routes.EQ) }) { Text("Chỉnh âm tai nghe (Harman target)", color = MioCyan) }
+        Spacer(Modifier.height(16.dp))
+        Text("Chất lượng nhạc", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("Original files play as-is. DSD (.dsf/.dff) plays natively; only files the native decoder can't handle (e.g. DST-compressed .dff) are decoded once to a 176.4 kHz PCM WAV cache as a fallback, then played from cache.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(16.dp))
+        val cacheSizeMb = remember {
+            val dir = java.io.File(ctx.cacheDir, "dsd-cache")
+            (dir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
+        }
+        Text("DSD fallback decode cache: $cacheSizeMb MB. Clear it to free space — fallback files will re-decode on next play.", color = MioTextSecondary, fontSize = 13.sp)
+        androidx.compose.material3.TextButton(onClick = {
+            scope.launch {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    java.io.File(ctx.cacheDir, "dsd-cache").listFiles()?.forEach { it.delete() }
+                }
+            }
+        }) { Text("Clear DSD cache", color = MioCyan) }
+    }
+}
+
+/** Hiển thị sub-screen: theme choice (Deep Wave / Sunset / system).
+ *  Same radio rows as the old ProfileScreen Hiển thị section. */
+@Composable fun SettingsDisplayScreen(nav: NavHostController) {
+    val ctx = LocalContext.current
+    val settings = (ctx.applicationContext as com.mio.player.MioApp).container.settings
+    val scope = rememberCoroutineScope()
+    SettingsSubScreen(nav, "Hiển thị") {
+        Text("Giao diện sáng hay tối, theo ý bạn.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        val themeMode by settings.themeMode.collectAsState(initial = "deep_wave")
+        listOf("deep_wave" to "Deep Wave (tối)", "sunset" to "Sunset (sáng)", "system" to "Theo hệ thống").forEach { (value, label) ->
+            Row(Modifier.fillMaxWidth().clickable { scope.launch { settings.setThemeMode(value) } }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (themeMode == value) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked, null, tint = MioCyan)
+                Text(label, color = MioText, modifier = Modifier.padding(start = 12.dp))
+            }
+        }
+    }
+}
+
+/** Thư viện sub-screen: song count, auto-metadata toggle, rescan.
+ *  Same content as the old ProfileScreen Thư viện section. */
+@Composable fun SettingsLibraryScreen(libVm: LibraryViewModel, nav: NavHostController) {
+    val tracks by libVm.tracks.collectAsState()
+    val ctx = LocalContext.current
+    val settings = (ctx.applicationContext as com.mio.player.MioApp).container.settings
+    val scope = rememberCoroutineScope()
+    SettingsSubScreen(nav, "Thư viện") {
+        Text("Nhạc trên máy và thông tin bài hát.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        Text("${tracks.size} songs • ${tracks.count { it.isFavorite }} favorites", color = MioTextSecondary)
+        Spacer(Modifier.height(12.dp))
+        Text("Metadata bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        val autoMetadata by settings.flow(SettingsStore.KEY_AUTO_METADATA, true).collectAsState(initial = true)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Tự tải metadata", color = MioText, fontSize = 16.sp)
+                Text("Tự tìm nghệ sĩ, album và bìa cho bài thiếu thông tin, lưu vào máy để nghe offline.", color = MioTextSecondary, fontSize = 13.sp)
+            }
+            androidx.compose.material3.Switch(checked = autoMetadata, onCheckedChange = { scope.launch { settings.set(SettingsStore.KEY_AUTO_METADATA, it) } })
+        }
+        Spacer(Modifier.height(16.dp))
+        androidx.compose.material3.TextButton(onClick = { libVm.scan() }) { Text("Rescan library", color = MioCyan) }
+    }
+}
+
+/** Phát lại sub-screen: ReplayGain, crossfade, speed, gapless.
+ *  Same keys, ranges and player calls as the old ProfileScreen
+ *  Phát lại section (moved there from EqualizerScreen in v1.1.13). */
+@Composable fun SettingsPlaybackScreen(nav: NavHostController) {
     val ctx = LocalContext.current
     val settings = (ctx.applicationContext as com.mio.player.MioApp).container.settings
     val pm = (ctx.applicationContext as com.mio.player.MioApp).container.playerManager
-    val userName by settings.flow(SettingsStore.KEY_USER_NAME, "").collectAsState(initial = "")
     val scope = rememberCoroutineScope()
-    // v1.1.13 — playback settings, moved from EqualizerScreen.
-    // Same keys and defaults as before: gapless = true, crossfade 0 ms,
-    // ReplayGain "track", speed 1x. MainActivity.restoreSoundSettings
-    // reads KEY_CROSSFADE_MS, KEY_REPLAYGAIN and KEY_SPEED at startup;
-    // KEY_GAPLESS is stored but has no player call to restore —
-    // ExoPlayer handles gapless natively, and EqualizerScreen never
-    // applied it either.
     val gapless by settings.flow(SettingsStore.KEY_GAPLESS, true).collectAsState(initial = true)
     val crossfadeMs by settings.flow(SettingsStore.KEY_CROSSFADE_MS, 0).collectAsState(initial = 0)
     val replayGain by settings.flow(SettingsStore.KEY_REPLAYGAIN, "track").collectAsState(initial = "track")
     val speed by settings.flow(SettingsStore.KEY_SPEED, 1f).collectAsState(initial = 1f)
-    // v1.1.13 — apply the playback values to the player whenever they
-    // change (the same calls EqualizerScreen.apply() used to make).
     LaunchedEffect(crossfadeMs, replayGain, speed) {
         pm.crossfadeMs = crossfadeMs.toLong()
         pm.replayGainMode = replayGain
         pm.setSpeed(speed)
     }
-    // 1.0.9: the old plain Column cut off the bottom on small phones.
-    // LazyColumn scrolls — keep it one list, one section per item.
-    LazyColumn(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
-        item {
-            SectionTitle("Profile")
-            Text(if (userName.isBlank()) "Local listener" else userName, color = MioText, fontSize = 20.sp)
-            Spacer(Modifier.height(16.dp))
-        }
-        item {
-            SectionTitle("Âm thanh")
-            Text("Chỉnh EQ, hiệu ứng và chất lượng phát nhạc.", color = MioTextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(12.dp))
-            GradientButton("Equalizer & sound") { nav.navigate(Routes.EQ) }
-            Spacer(Modifier.height(12.dp))
-            androidx.compose.material3.TextButton(onClick = { nav.navigate(Routes.EQ) }) { Text("Chỉnh âm tai nghe (Harman target)", color = MioCyan) }
-            Spacer(Modifier.height(16.dp))
-            Text("Chất lượng nhạc", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text("Original files play as-is. DSD (.dsf/.dff) plays natively; only files the native decoder can't handle (e.g. DST-compressed .dff) are decoded once to a 176.4 kHz PCM WAV cache as a fallback, then played from cache.", color = MioTextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(16.dp))
-            val cacheSizeMb = remember {
-                val dir = java.io.File(ctx.cacheDir, "dsd-cache")
-                (dir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
+    SettingsSubScreen(nav, "Phát lại") {
+        Text("Cách các bài nối tiếp nhau, chuẩn hoá âm lượng và tốc độ phát.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        Text("ReplayGain: $replayGain", color = MioText)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("off", "track", "album").forEach { m ->
+                FilterChip(selected = replayGain == m, onClick = { scope.launch { settings.set(SettingsStore.KEY_REPLAYGAIN, m) } }, label = { Text(m) })
             }
-            Text("DSD fallback decode cache: $cacheSizeMb MB. Clear it to free space — fallback files will re-decode on next play.", color = MioTextSecondary, fontSize = 13.sp)
-            androidx.compose.material3.TextButton(onClick = {
-                scope.launch {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        java.io.File(ctx.cacheDir, "dsd-cache").listFiles()?.forEach { it.delete() }
-                    }
-                }
-            }) { Text("Clear DSD cache", color = MioCyan) }
-            Spacer(Modifier.height(16.dp))
         }
-        item {
-            // Design system: theme switch lives in Profile / Settings >
-            // Interface — Deep Wave / Sunset / Follow system. Deep Wave is
-            // the first-install default.
-            SectionTitle("Hiển thị")
-            Text("Giao diện sáng hay tối, theo ý bạn.", color = MioTextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(8.dp))
-            val themeMode by settings.themeMode.collectAsState(initial = "deep_wave")
-            listOf("deep_wave" to "Deep Wave (tối)", "sunset" to "Sunset (sáng)", "system" to "Theo hệ thống").forEach { (value, label) ->
-                Row(Modifier.fillMaxWidth().clickable { scope.launch { settings.setThemeMode(value) } }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (themeMode == value) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked, null, tint = MioCyan)
-                    Text(label, color = MioText, modifier = Modifier.padding(start = 12.dp))
-                }
-            }
-            Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
+        val crossfadeSec = crossfadeMs / 1000f
+        Text("Crossfade: ${crossfadeSec.toInt()}s", color = MioText)
+        Slider(value = crossfadeSec, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_CROSSFADE_MS, (it * 1000).toInt()) } }, valueRange = 0f..12f)
+        Spacer(Modifier.height(8.dp))
+        Text("Playback speed: ${speed}x", color = MioText)
+        Slider(value = speed, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_SPEED, it) } }, valueRange = 0.5f..2f)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Gapless playback", color = MioText, modifier = Modifier.weight(1f))
+            Switch(checked = gapless, onCheckedChange = { scope.launch { settings.set(SettingsStore.KEY_GAPLESS, it) } })
         }
-        item {
-            SectionTitle("Thư viện")
-            Text("Nhạc trên máy và thông tin bài hát.", color = MioTextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(12.dp))
-            Text("${tracks.size} songs • ${tracks.count { it.isFavorite }} favorites", color = MioTextSecondary)
-            Spacer(Modifier.height(12.dp))
-            // v1.1.10: auto metadata — fetch missing artist/album/cover
-            // in the background (iTunes / MusicBrainz, free, no key)
-            // and save it on the device. Off = no network lookup at all.
-            Text("Metadata bài hát", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            val autoMetadata by settings.flow(SettingsStore.KEY_AUTO_METADATA, true).collectAsState(initial = true)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Tự tải metadata", color = MioText, fontSize = 16.sp)
-                    Text("Tự tìm nghệ sĩ, album và bìa cho bài thiếu thông tin, lưu vào máy để nghe offline.", color = MioTextSecondary, fontSize = 13.sp)
-                }
-                androidx.compose.material3.Switch(checked = autoMetadata, onCheckedChange = { scope.launch { settings.set(SettingsStore.KEY_AUTO_METADATA, it) } })
-            }
-            Spacer(Modifier.height(16.dp))
-            androidx.compose.material3.TextButton(onClick = { libVm.scan() }) { Text("Rescan library", color = MioCyan) }
-            Spacer(Modifier.height(16.dp))
+    }
+}
+
+/** Giới thiệu sub-screen: version, update check, error log.
+ *  Same content as the old ProfileScreen Giới thiệu section. */
+@Composable fun SettingsAboutScreen(nav: NavHostController) {
+    val update = rememberUpdateState()
+    SettingsSubScreen(nav, "Giới thiệu") {
+        Text("Phiên bản, cập nhật và nhật ký lỗi.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        Text(OtaUpdateChecker.currentVersionLabel(), color = MioTextSecondary, fontSize = 13.sp)
+        Text("Updates come from GitHub Releases — no Play Store needed. A new release is published when a tag v* is pushed.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        GradientButton(if (update.checking) "Checking…" else "Check for updates") { update.check(true) }
+        update.available?.let { info -> UpdateDialog(info) { update.available = null } }
+        Spacer(Modifier.height(16.dp))
+        Text("Nhật ký lỗi", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("Nếu app tự thoát đột ngột, mở đây xem log rồi chụp màn hình gửi lại — trong này ghi rõ app crash vì sao và đang làm gì lúc chết.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        GradientButton("Xem nhật ký lỗi") { nav.navigate(Routes.LOG) }
+        Spacer(Modifier.height(16.dp))
+        Text("Local profile only — no server, no account. Your library stays on your device.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(16.dp))
+        Text("Hẹn giờ ngủ (sleep timer) nằm ở menu ⋮ trên màn Đang phát. Không tài khoản, không cloud — mọi thứ đều lưu trên máy.", color = MioTextSecondary, fontSize = 13.sp)
+    }
+}
+
+/** Album detail by name (v1.1.25): the "Đi tới album" target for the
+ *  Now Playing overflow menu. The old Routes.ALBUM screen shows the
+ *  FIRST album in the library, not a chosen one — navigating there
+ *  from Now Playing would show the wrong album. This one filters by
+ *  the album name (same pattern as ArtistDetailScreen). */
+@Composable fun AlbumDetailByNameScreen(album: String, libVm: LibraryViewModel, playerVm: PlayerViewModel, nav: NavHostController) {
+    val tracks by libVm.tracks.collectAsState()
+    val queue by playerVm.queue.collectAsState(); val idx by playerVm.index.collectAsState()
+    val currentId = queue.getOrNull(idx)?.id
+    val list = tracks.filter { it.album == album }
+    val first = list.firstOrNull()
+    Column(Modifier.fillMaxSize().background(MioBg).padding(horizontal = screenHorizontalPadding(), vertical = 20.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, null, tint = MioText) }
+            Text("Album", color = MioTextSecondary, fontSize = 14.sp)
         }
-        item {
-            SectionTitle("Phát lại")
-            Text("Cách các bài nối tiếp nhau, chuẩn hoá âm lượng và tốc độ phát.", color = MioTextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(12.dp))
-            Text("ReplayGain: $replayGain", color = MioText)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("off", "track", "album").forEach { m ->
-                    FilterChip(selected = replayGain == m, onClick = { scope.launch { settings.set(SettingsStore.KEY_REPLAYGAIN, m) } }, label = { Text(m) })
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            val crossfadeSec = crossfadeMs / 1000f
-            Text("Crossfade: ${crossfadeSec.toInt()}s", color = MioText)
-            Slider(value = crossfadeSec, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_CROSSFADE_MS, (it * 1000).toInt()) } }, valueRange = 0f..12f)
-            Spacer(Modifier.height(8.dp))
-            Text("Playback speed: ${speed}x", color = MioText)
-            Slider(value = speed, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_SPEED, it) } }, valueRange = 0.5f..2f)
-            Spacer(Modifier.height(8.dp))
+        if (first != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Gapless playback", color = MioText, modifier = Modifier.weight(1f))
-                Switch(checked = gapless, onCheckedChange = { scope.launch { settings.set(SettingsStore.KEY_GAPLESS, it) } })
+                AlbumArt(first.albumId, Modifier.size(120.dp), CardLarge, coverPath = first.coverPath)
+                Column(Modifier.padding(start = 16.dp)) {
+                    Text(album, color = MioText, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                    Text(first.artist, color = MioTextSecondary, fontSize = 14.sp)
+                    Text("${list.size} songs", color = MioTextSecondary, fontSize = 12.sp)
+                }
             }
             Spacer(Modifier.height(16.dp))
-        }
-        item {
-            SectionTitle("Giới thiệu")
-            Text("Phiên bản, cập nhật và nhật ký lỗi.", color = MioTextSecondary, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                GradientButton("Play all", modifier = Modifier.weight(1f)) { if (list.isNotEmpty()) { playerVm.playQueue(list, 0); nav.navigate(Routes.NOW_PLAYING) } }
+                GradientButton("Shuffle", modifier = Modifier.weight(1f)) { if (list.isNotEmpty()) { playerVm.pm.setShuffle(true); playerVm.playQueue(list.shuffled(), 0); nav.navigate(Routes.NOW_PLAYING) } }
+            }
             Spacer(Modifier.height(12.dp))
-            Text(OtaUpdateChecker.currentVersionLabel(), color = MioTextSecondary, fontSize = 13.sp)
-            Text("Updates come from GitHub Releases — no Play Store needed. A new release is published when a tag v* is pushed.", color = MioTextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(8.dp))
-            GradientButton(if (update.checking) "Checking…" else "Check for updates") { update.check(true) }
-            update.available?.let { info -> UpdateDialog(info) { update.available = null } }
-            Spacer(Modifier.height(16.dp))
-            Text("Nhật ký lỗi", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text("Nếu app tự thoát đột ngột, mở đây xem log rồi chụp màn hình gửi lại — trong này ghi rõ app crash vì sao và đang làm gì lúc chết.", color = MioTextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(8.dp))
-            GradientButton("Xem nhật ký lỗi") { nav.navigate(Routes.LOG) }
-            Spacer(Modifier.height(16.dp))
-            Text("Local profile only — no server, no account. Your library stays on your device.", color = MioTextSecondary, fontSize = 13.sp)
-        }
-        item {
-            Spacer(Modifier.height(16.dp))
-            Text("Hẹn giờ ngủ (sleep timer) nằm ở màn Đang phát. Không tài khoản, không cloud — mọi thứ đều lưu trên máy.", color = MioTextSecondary, fontSize = 13.sp)
+            LazyColumn { items(list) { t -> TrackRow(t, onClick = { playerVm.playQueue(list, list.indexOf(t)); nav.navigate(Routes.NOW_PLAYING) }, isPlaying = t.id == currentId) } }
+        } else {
+            Text("Không tìm thấy album \"$album\".", color = MioTextSecondary)
         }
     }
 }
