@@ -273,8 +273,29 @@ private const val FERRO_TREBLE_START_BAND = 23
 private const val FERRO_DISC_SPIKE_COUNT = 44
 private const val FERRO_DISC_BASE_R_FRAC = 0.19f
 private const val FERRO_DISC_BURST = 0.55f
-private const val FERRO_SPIKE_LEN_FRAC = 0.14f
-private const val FERRO_SPIKE_BASE_PITCH_FRAC = 0.62f
+// v1.1.22 — PLAYFUL ferrofluid (the 1.1.21 spiky disc was a static
+// emblem: fixed centre, perfect circle, fixed droplet ring, only
+// scaling with bass — user: "cố định rồi chỉ phóng to thu nhỏ,
+// không thực tế"). Spike range widened so each spike visibly grows
+// and shrinks on its own band (floor 0.5 -> 0.15, length 0.14x ->
+// 0.22x discR) and the base narrowed (62% -> 40% of pitch) so the
+// spikes are distinguishable instead of merging into one even gear
+// rim. New: angular deformation (disc edge follows its band),
+// teardrop bias (pear shape on strong bass), per-spike tilt,
+// centre spring (the disc jumps/wobbles), squash & stretch,
+// wandering droplets (audio-driven angle drift + fast-out/slow-back
+// distance). All motion is real FFT data + frame-kept state — no
+// clock, no time-based animation.
+private const val FERRO_SPIKE_LEN_FRAC = 0.22f
+private const val FERRO_SPIKE_FLOOR = 0.15f
+private const val FERRO_SPIKE_BASE_PITCH_FRAC = 0.40f
+private const val FERRO_DEFORM = 0.35f
+private const val FERRO_TEARDROP = 0.30f
+private const val FERRO_TILT_MAX = 0.15f
+private const val FERRO_SWAY_MAX = 0.06f
+private const val FERRO_STRETCH = 0.18f
+private const val FERRO_DROP_DRIFT = 0.02f
+private const val FERRO_DROP_FALL = 0.08f
 private const val FERRO_DROPLET_COUNT = 8
 private const val VIS_FERRO_BURST_RELEASE = 0.45f
 // v1.1.15 — deterministic per-slot height factors: the sqrt lift
@@ -1187,9 +1208,17 @@ fun VisualizerFerrofluid(
     modifier: Modifier = Modifier,
     heightDp: Float = VIS_ROW_TALL_DP
 ) {
-    // v1.1.21 — no theme colours on the liquid: it is near-black
-    // with white gloss only, in both themes (that is what ferrofluid
-    // looks like). The chamber glow behind it is light teal.
+    // v1.1.22 — PLAYFUL ferrofluid. The 1.1.21 spiky disc was a static
+    // emblem (fixed centre, perfect circle, fixed droplet ring) that
+    // only scaled with bass — the user: "cố định rồi chỉ phóng to thu
+    // nhỏ, không thực tế". Now the liquid is a living, playful blob:
+    // the disc deforms by angle (radius follows the FFT band for that
+    // angle), the centre jumps/wobbles on a spring, the disc squashes
+    // and stretches (teardrop on strong bass), each spike grows/tilts
+    // on its own, and the droplets wander (detach, drift, fall back).
+    // All motion is real FFT audio data + frame-kept spring state —
+    // no clock, no time-based animation (the "audio data only" rule).
+    // Near-black liquid + light teal glow chamber, as in 1.1.21.
     val live = isLive(levels)
     val n = levels.size
     // 44 spikes around the disc rim; the selected band range is
@@ -1214,14 +1243,36 @@ fun VisualizerFerrofluid(
     val burstState = remember { floatArrayOf(0f) }
     val discPath = remember { Path() }
     val glossPath = remember { Path() }
-    // Bass energy for the disc burst: mean of bands 0..5, raw.
-    // (The old centre tower is gone — the bass now bursts the
-    // whole disc, which is the SoulBeat motion.)
+    // Disc centre physics: offset (fraction of canvas height) +
+    // velocity, spring toward an audio-driven target. Frame-kept,
+    // no clock — the disc wobbles like jelly instead of snapping.
+    val centerOff = remember { floatArrayOf(0f, 0f) }
+    val centerVel = remember { floatArrayOf(0f, 0f) }
+    // Droplet state: angle (radians) + distance factor. Angle drift
+    // is audio-driven (advances when the droplet's band is strong);
+    // distance flies out fast on burst, falls back slowly.
+    val dropAngle = remember(FERRO_DROPLET_COUNT) {
+        FloatArray(FERRO_DROPLET_COUNT) { (it * 45f + 22f) * PI.toFloat() / 180f }
+    }
+    val dropDist = remember(FERRO_DROPLET_COUNT) { FloatArray(FERRO_DROPLET_COUNT) { 1.55f } }
+    // Band energies (raw means) for the centre/glow/droplet targets.
+    // Bass = bands 0..5, mid = 6..17, treble = 18..31.
     var bassSum = 0f
     val bassCount = minOf(6, n)
     for (i in 0 until bassCount) bassSum += levels[i]
     val bassEnergy = if (bassCount > 0) bassSum / bassCount else 0f
+    var midSum = 0f
+    val midEnd = minOf(18, n)
+    for (i in 6 until midEnd) midSum += levels[i]
+    val midCount = (midEnd - 6).coerceAtLeast(0)
+    val midEnergy = if (midCount > 0) midSum / midCount else 0f
+    var trebleSum = 0f
+    for (i in 18 until n) trebleSum += levels[i]
+    val trebleCount = (n - 18).coerceAtLeast(0)
+    val trebleEnergy = if (trebleCount > 0) trebleSum / trebleCount else 0f
     val burstTarget = if (live) scaledNorm(bassEnergy) else 0f
+    val midNorm = if (live) scaledNorm(midEnergy) else 0f
+    val trebleNorm = if (live) scaledNorm(trebleEnergy) else 0f
     // v1.1.17 — uniform scale factor: every structural size below
     // is multiplied by `s`, so the disc/spikes grow with the
     // canvas (s = 1.0 on the 140 dp row, ~2.29 on the 320 dp
@@ -1247,26 +1298,53 @@ fun VisualizerFerrofluid(
         burstState[0] = if (burstTarget > burstState[0]) burstTarget
         else burstState[0] + (burstTarget - burstState[0]) * VIS_FERRO_BURST_RELEASE
         val burst = burstState[0]
+        // Centre spring: target X sways with (mid - treble) energy,
+        // target Y bounces up on bass. Spring (k = 0.25, damping
+        // 0.82) makes the disc wobble like jelly. Offsets are
+        // fractions of the canvas height (±6% X, −9% Y at full bass).
+        val targetOffX = if (live) (midNorm - trebleNorm) * FERRO_SWAY_MAX else 0f
+        val targetOffY = if (live) -burst * FERRO_SWAY_MAX * 1.5f else 0f
+        centerVel[0] += (targetOffX - centerOff[0]) * 0.25f
+        centerVel[1] += (targetOffY - centerOff[1]) * 0.25f
+        centerVel[0] *= 0.82f
+        centerVel[1] *= 0.82f
+        centerOff[0] += centerVel[0]
+        centerOff[1] += centerVel[1]
+        // Droplets: angle drifts when their band is strong
+        // (audio-driven, not a clock); distance flies out fast on
+        // burst, falls back slowly (like gravity).
+        if (live) {
+            for (d in 0 until FERRO_DROPLET_COUNT) {
+                val band = norms[(d * 5) % spikeCount]
+                dropAngle[d] += (band - 0.3f) * FERRO_DROP_DRIFT
+                val targetDist = 1.55f + 0.35f * burst + 0.25f * band
+                dropDist[d] = if (targetDist > dropDist[d]) targetDist
+                else dropDist[d] + (targetDist - dropDist[d]) * FERRO_DROP_FALL
+            }
+        } else {
+            for (d in 0 until FERRO_DROPLET_COUNT) {
+                dropDist[d] = 1.55f
+            }
+        }
         Canvas(Modifier.fillMaxSize()) {
             val wPx = size.width
             val hPx = size.height
-            val cx = wPx / 2f
-            val cy = hPx / 2f
+            val cx = wPx / 2f + centerOff[0] * hPx
+            val cy = hPx / 2f + centerOff[1] * hPx
             // Disc radius: base 19% of the canvas height, bursting
             // +55% at full bass. Max extent (radius + spikes) stays
             // inside the canvas (0.19 * 1.55 * 1.21 < 0.5).
             val r0 = hPx * FERRO_DISC_BASE_R_FRAC
             val discR = r0 * (1f + FERRO_DISC_BURST * burst)
-            val glowR = r0 * (1f + FERRO_DISC_BURST) * 2f
-            // (1) The glowing chamber: a soft light-teal radial glow
-            // behind the disc — the SoulBeat backlit liquid. Without
-            // it the black disc sinks into the dark background (the
-            // 1.1.20 failure: dome mean brightness 22.5/255).
+            // The glowing chamber breathes with the bass (it was
+            // static in 1.1.21): radius + alpha both pulse.
+            val glowR = r0 * (1f + FERRO_DISC_BURST + 0.5f * burst) * 2f
+            val glowAlpha = 0.25f + 0.20f * burst
             drawCircle(
                 brush = Brush.radialGradient(
                     listOf(
-                        Color(0xFF8FF5E0).copy(alpha = 0.30f),
-                        Color(0xFF8FF5E0).copy(alpha = 0.10f),
+                        Color(0xFF8FF5E0).copy(alpha = glowAlpha),
+                        Color(0xFF8FF5E0).copy(alpha = glowAlpha * 0.33f),
                         Color(0xFF8FF5E0).copy(alpha = 0f)
                     ),
                     center = Offset(cx, cy),
@@ -1275,16 +1353,20 @@ fun VisualizerFerrofluid(
                 radius = glowR,
                 center = Offset(cx, cy)
             )
-            // (2) The spiky disc: ONE continuous silhouette — a
-            // circle with 44 short, wide spikes around its rim.
-            // Each spike is a triangle from the disc edge, base 62%
-            // of the angular pitch (neighbours nearly touch, so the
-            // rim reads as one serrated edge, not separate needles),
-            // length 0.14x the disc radius at full level (~1/10 of
-            // the disc diameter, the SoulBeat proportion), scaled by
-            // its resampled FFT norm and its slot factor. All the
-            // SAME near-black as the disc — no white gloss lines on
-            // the spikes (that is what made knives in 1.1.20).
+            // Squash & stretch: vertical elongation on bass
+            // (teardrop), horizontal compensation so the area is
+            // preserved.
+            val stretchY = 1f + FERRO_STRETCH * burst
+            val stretchX = 1f / sqrt(stretchY)
+            // (2) The spiky disc: ONE continuous silhouette, but now
+            // the radius at each angle follows its FFT band (the disc
+            // is a wobbly blob, never a perfect circle), plus a
+            // teardrop bias (bottom bulges on strong bass) and
+            // per-spike tilt. Spikes are longer, narrower-based and
+            // lower-floored than 1.1.21, so each one visibly grows
+            // and shrinks on its own band. All the SAME near-black
+            // as the disc — no white gloss lines on the spikes (that
+            // is what made knives in 1.1.20).
             val pitch = (2f * PI.toFloat()) / spikeCount
             val baseHalfAngle = pitch * FERRO_SPIKE_BASE_PITCH_FRAC / 2f
             discPath.rewind()
@@ -1292,12 +1374,24 @@ fun VisualizerFerrofluid(
                 val aMid = -PI.toFloat() / 2f + i * pitch
                 val a0 = aMid - baseHalfAngle
                 val a1 = aMid + baseHalfAngle
+                // Base radius at this angle: bulges where its band is
+                // strong, dents where it is quiet (angular
+                // deformation), plus a teardrop bias (sin = +1 at the
+                // bottom, so the bottom bulges on strong bass).
+                val baseR = discR * (1f + FERRO_DEFORM * (norms[i] - 0.5f)) *
+                    (1f + FERRO_TEARDROP * burst * sin(aMid))
+                // Spike: wider range and lower floor than 1.1.21 so
+                // each spike visibly grows/shrinks on its own band;
+                // narrower base so spikes are distinguishable.
                 val len = discR * FERRO_SPIKE_LEN_FRAC *
-                    (0.5f + norms[i]) * FERRO_SLOT_FACTOR[i % FERRO_SLOT_FACTOR.size]
-                val apexR = discR + len
-                val p0 = Offset(cx + cos(a0) * discR, cy + sin(a0) * discR)
-                val pA = Offset(cx + cos(aMid) * apexR, cy + sin(aMid) * apexR)
-                val p1 = Offset(cx + cos(a1) * discR, cy + sin(a1) * discR)
+                    (FERRO_SPIKE_FLOOR + norms[i] * 1.2f) * FERRO_SLOT_FACTOR[i % FERRO_SLOT_FACTOR.size]
+                val apexR = baseR + len
+                // Tilt: each spike leans by its band deviation.
+                val tilt = (norms[i] - 0.5f) * FERRO_TILT_MAX
+                val aApex = aMid + tilt
+                val p0 = Offset(cx + cos(a0) * baseR * stretchX, cy + sin(a0) * baseR * stretchY)
+                val pA = Offset(cx + cos(aApex) * apexR * stretchX, cy + sin(aApex) * apexR * stretchY)
+                val p1 = Offset(cx + cos(a1) * baseR * stretchX, cy + sin(a1) * baseR * stretchY)
                 if (i == 0) discPath.moveTo(p0.x, p0.y) else discPath.lineTo(p0.x, p0.y)
                 discPath.lineTo(pA.x, pA.y)
                 discPath.lineTo(p1.x, p1.y)
@@ -1318,14 +1412,16 @@ fun VisualizerFerrofluid(
             // upper-left, following the disc curvature — the only
             // white on the liquid. Deliberately narrow (2 dp) and
             // mid alpha, so it reads as a highlight, not a stripe.
+            // It follows the disc centre (so it moves when the disc
+            // jumps) but keeps its fixed angle.
             glossPath.rewind()
             val glossR = discR * 0.72f
             val glossSteps = 6
             for (k in 0..glossSteps) {
                 // Arc from ~200 deg to ~250 deg (upper-left).
                 val a = (200f + 50f * k.toFloat() / glossSteps) * PI.toFloat() / 180f
-                val x = cx + cos(a) * glossR
-                val y = cy + sin(a) * glossR
+                val x = cx + cos(a) * glossR * stretchX
+                val y = cy + sin(a) * glossR * stretchY
                 if (k == 0) glossPath.moveTo(x, y) else glossPath.lineTo(x, y)
             }
             drawPath(
@@ -1333,16 +1429,15 @@ fun VisualizerFerrofluid(
                 SolidColor(Color.White.copy(alpha = 0.45f)),
                 style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
             )
-            // (4) Droplets: small black beads with a tiny white dot,
-            // floating around the disc. They detach when the disc
-            // bursts (distance grows with `burst`) and rejoin when
-            // it collapses — the SoulBeat droplet cycle. Positions
-            // are deterministic (fixed angles), sizes follow their
-            // resampled band so they pulse with the music.
+            // (4) Droplets: small black beads with a tiny white dot.
+            // Each has its own wandering angle and distance (state
+            // kept across frames) — they detach, drift, and fall
+            // back, instead of sitting on a fixed ring. Sizes follow
+            // their resampled band so they pulse with the music.
             for (d in 0 until FERRO_DROPLET_COUNT) {
-                val a = (d * 45f + 22f) * PI.toFloat() / 180f
+                val a = dropAngle[d]
                 val band = norms[(d * 5) % spikeCount]
-                val dist = discR * (1.55f + 0.35f * burst)
+                val dist = discR * dropDist[d]
                 val dx = cx + cos(a) * dist
                 val dy = cy + sin(a) * dist
                 val dropR = (2.2f + 1.8f * band) * s.dp.toPx()
