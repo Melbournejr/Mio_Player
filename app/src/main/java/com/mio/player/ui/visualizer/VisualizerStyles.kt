@@ -39,11 +39,11 @@ import kotlin.math.sqrt
 /**
  * v1.1.5 — the five visualizer styles, each a self-contained
  * @Composable driven ONLY by real audio data:
- *  - Bars / Circular / Mirror / Ferrofluid read `levels` (the 32
- *    log-spaced FFT band magnitudes, 20 Hz–12 kHz, from WaveformTap).
- *  - Wave reads `pcmFrame` (the newest 1024 mono PCM samples, also from
- *    WaveformTap, published with each FFT frame at ~60 Hz, v1.1.18 —
- *    was ~30 Hz, v1.1.6).
+ *  - All five read `levels` (the 32 log-spaced FFT band magnitudes,
+ *    20 Hz–12 kHz, from WaveformTap). Since v1.1.23 the Spectrum
+ *    curve (ex-Wave) reads `levels` too — the raw mono PCM frame
+ *    (`pcmFrame`) is no longer used by any style (the Wave was the
+ *    only PCM consumer; the tap still publishes it).
  * Nothing here depends on time, playback position, duration or
  * progress. When there is no live signal (paused / silence) every
  * style sits still at a low, fixed, index-determined shape.
@@ -181,35 +181,12 @@ private const val VIS_LIVE_THRESHOLD = 0.005f
 private const val VIS_MIRROR_GAIN = 2f
 private const val VIS_MIRROR_MIN_HALF_DP = 12f
 
-// v1.1.8 — Wave lift: the v1.1.7 screenshot showed Wave as a thin,
-// nearly-flat line because raw PCM is linear — a typical passage at
-// |x| ~ 0.1 only reached 10% of the half-height. The lift is a
-// signed perceptual curve, sign(x) * sqrt(min(|x| * GAIN, 1)):
-// quiet passages are boosted hard (|x| 0.05 -> 0.35, 0.10 -> 0.50,
-// 0.20 -> 0.71) while loud peaks saturate gracefully at full height
-// instead of hard-clipping into a flat-topped block. Zero crossings
-// and sample order are preserved — the shape is still exactly the
-// real PCM frame, only its visible amplitude is expanded.
-// v1.1.14 — gain 2.5 -> 3.5: on a soft ballad the line was still
-// faint (|x| 0.05 -> 0.42, 0.10 -> 0.59, 0.20 -> 0.84), and the
-// stroke thickens 3 dp -> 4.5 dp with a stronger glow (see
-// VisualizerWave).
-// v1.1.16 — gain 3.5 -> 2.5: gain 3.5 saturates at |x| 0.29, so on
-// loud pop the whole waveform clipped into a flat-topped block
-// (|x| 0.30 -> 1.0). At 2.5 the peaks still reach full height
-// (|x| 0.40 -> 1.0) but the body keeps its shape (|x| 0.05 ->
-// 0.35, 0.10 -> 0.50, 0.20 -> 0.71); the 4.5 dp stroke + glow
-// from 1.1.14 stay, so soft ballads stay visible.
-// v1.1.20 — gain 2.5 -> 1.5 + only 128 plotted points (was ~500):
-// measured on the user's 1.1.19 video (f22), Wave filled 39.6% of
-// its bbox — a solid comb, not a line — because ~500 samples 2 px
-// apart, each jumping near full height, overlapped under a 4.5 dp
-// stroke + 12 dp glow + 0.30 fill. At 128 points the vertical runs
-// are ~8 px apart on a phone and cannot merge into a solid mass;
-// gain 1.5 keeps dynamics (|x| 0.05 -> 0.27, 0.10 -> 0.39,
-// 0.20 -> 0.55, 0.40 -> 0.77, 0.67 -> 1.0) instead of saturating
-// quiet passages to half height. Stroke 2.5 dp, glow 6 dp, fill 0.08.
-private const val VIS_WAVE_GAIN = 1.5f
+// v1.1.23 — Wave lift (VIS_WAVE_GAIN / waveLift) removed: the Wave
+// style is now a spectrum curve (FFT bands, not PCM), so the PCM
+// lift is dead code. History: v1.1.8–1.1.21 the Wave was a PCM
+// oscilloscope/envelope with a signed sqrt lift (gain 2.5 -> 3.5 ->
+// 2.5 -> 1.5); the user rejected it three times and chose the
+// spectrum curve instead.
 
 // v1.1.13 — peak caps (Bars / Mirror / Ferrofluid): a cap holds its
 // height for ~12 published frames (~0.2 s at ~60 Hz, v1.1.18 — was
@@ -311,11 +288,6 @@ private val FERRO_SLOT_FACTOR = floatArrayOf(
     1.2f, 0.7f, 1.05f, 1.3f, 0.85f, 1.15f, 0.75f, 1.0f,
     1.2f, 0.9f, 1.25f, 0.8f
 )
-
-private fun waveLift(sample: Float): Float {
-    val s = (sample * VIS_WAVE_GAIN).coerceIn(-1f, 1f)
-    return if (s >= 0f) sqrt(s) else -sqrt(-s)
-}
 
 /** Perceptual lift of one raw FFT band level, 0..1. */
 private fun scaledNorm(level: Float): Float =
@@ -428,7 +400,7 @@ fun MioVisualizer(
 ) {
     when (style) {
         VisualizerStyle.BARS -> VisualizerBars(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
-        VisualizerStyle.WAVE -> VisualizerWave(pcmFrame, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
+        VisualizerStyle.WAVE -> VisualizerWave(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
         VisualizerStyle.CIRCULAR -> VisualizerCircular(levels, playing, albumId, coverPath, modifier, heightDp ?: VIS_ROW_TALL_DP)
         VisualizerStyle.MIRROR -> VisualizerMirror(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
         VisualizerStyle.FERROFLUID -> VisualizerFerrofluid(levels, playing, ferrofluidFreq, modifier, heightDp ?: VIS_ROW_TALL_DP)
@@ -508,151 +480,124 @@ fun VisualizerBars(levels: FloatArray, playing: Boolean, modifier: Modifier = Mo
 }
 
 /**
- * Style 2 — Wave / oscilloscope line. Draws the raw mono PCM frame
- * (1024 samples) as one continuous polyline, stroked with the theme
- * gradient and a faint fill underneath. The frame refreshes at the
- * FFT cadence (~60 Hz, v1.1.18 — was ~30 Hz); between frames the line
- * is simply redrawn from the same real samples — nothing is
- * interpolated or animated, deliberately: interpolation would invent
- * samples that were never played, and at ~60 Hz fresh real samples
- * arrive every 16 ms, so the higher rate alone makes the line move
- * smoothly. With no signal the line is a flat, still centre line.
+ * Style 2 — Spectrum curve ("Đường cong phổ"). A smooth mountain
+ * of the 32 FFT bands: x = log frequency (left = bass, right =
+ * treble), y = band magnitude, drawn as one continuous curve with a
+ * gradient fill below it, a soft glow and a bright theme-gradient
+ * outline. The curve is a Catmull-Rom spline through the 32 band
+ * peaks (4 samples per segment), so it is smooth with no kinks at
+ * the band positions. Each band keeps a chased displayed value
+ * (instant attack / 0.30 release, like Bars) and the shared
+ * scaledNorm() lift, so the mountain moves smoothly and reads the
+ * real spectrum. This is the foobar2000 Spectrum Analyzer "Curve"
+ * mode, and it answers the user's audit question directly: unlike
+ * the old Wave (time-domain PCM amplitude), this style SHOWS the
+ * frequency content.
  *
- * v1.1.8 — amplitude rework (the v1.1.7 screenshot showed a thin,
- * nearly-flat line: linear mapping put a typical |x| ~ 0.1 passage
- * at 10% of the half-height). The samples now go through the signed
- * perceptual lift waveLift() — sign(x) * sqrt(min(|x| * 2.5, 1)) —
- * so |x| 0.05 reads at 35% of half-height, 0.10 at 50%, 0.20 at 71%,
- * and loud peaks saturate at full height. The stroke also thickened
- * 2 dp -> 3 dp and the fill 0.10 -> 0.16 alpha, so the wave is
- * clearly visible and lively at any normal listening level.
- * Still real samples only: no smoothing, no fake motion.
- *
- * v1.1.13 — glow polish (foobar2000 Oscilloscope / Wallpaper Engine
- * Blue Waveform style): the same real-PCM line, now drawn as a soft
- * glow — a wide low-alpha accent stroke underneath (9 dp, 0.22
- * alpha) with the thin full-alpha gradient stroke on top — and a
- * slightly brighter fill (0.16 -> 0.22 alpha), so it reads as one
- * clean glowing waveform on the background instead of a thin faint
- * line. No new data, no smoothing: the glow is only paint.
- *
- * v1.1.14 — still too faint on a soft ballad (the user's video:
- * "Anh Mo" barely moves the line): stroke 3 dp -> 4.5 dp, glow
- * 9 dp / 0.22 -> 12 dp / 0.35 alpha, fill 0.22 -> 0.30 alpha, and
- * the lift gain 2.5 -> 3.5 (see VIS_WAVE_GAIN). Same real samples.
- *
- * v1.1.20 — the 1.1.14 thickening overshot: the user's 1.1.19 video
- * (f22) measures Wave as a solid comb filling 39.6% of its bbox,
- * not a line. Cause: ~500 plotted points + 4.5 dp stroke + 12 dp
- * glow + 0.30 fill. Fix: 128 points, 2.5 dp stroke, 6 dp glow,
- * 0.08 fill, gain 2.5 -> 1.5 (see VIS_WAVE_GAIN).
- *
- * v1.1.21 — 1.1.20 STILL reads as a dim jagged scribble (user's
- * 1.1.20 video, 0–11 s: "Sóng cũng vẫn quá xấu"). Measured on a
- * frame at t=5 s: the wave zone renders at max brightness ~71/255
- * (zone mean 10.2/255) — nearly invisible — and the 128 single
- * samples zigzag near full height in opposite directions, so the
- * polyline is a scribble, not a wave. Fix: each of the 128 columns
- * now takes the PEAK |sample| over its window of the 1024-sample
- * frame (DAW / "Blue Waveform" envelope), smoothed 3-tap, and is
- * drawn as a symmetric FILLED shape (top + bottom) with a bright
- * gradient outline and a soft glow. Same lift (waveLift), same
- * 128 columns, same no-signal flat line.
+ * v1.1.23 — REPLACES Wave. The user rejected the Wave style three
+ * times (1.1.19 "quá kinh tởm", 1.1.20 "vẫn quá xấu", 1.1.21 "vẫn
+ * không đạt") and chose "Đường cong phổ" from the three options
+ * offered. The mirrored-envelope shape was the problem, not the
+ * brightness: measured on the user's 1.1.21 frame, the envelope was
+ * bright (outline mean 197/255) but read as two jagged combs facing
+ * each other with a ~68% dead dark gap in the middle (the peak-per-
+ * column envelope catches the waveform's own oscillation, not just
+ * its envelope, and mirroring doubles the jaggedness). The spectrum
+ * curve has no dead gap (the mountain fills from the bottom) and no
+ * PCM zigzag (the 32 bands are already smoothed). Same 88 dp slot,
+ * same no-signal flat line (now at the bottom), same glow/outline
+ * paint. The style id stays "wave" so a stored preference keeps
+ * working; only the label changes ("Sóng" -> "Đường cong phổ").
  */
 @Composable
-fun VisualizerWave(pcmFrame: FloatArray, playing: Boolean, modifier: Modifier = Modifier, heightDp: Float = VIS_ROW_HEIGHT_DP) {
+fun VisualizerWave(levels: FloatArray, playing: Boolean, modifier: Modifier = Modifier, heightDp: Float = VIS_ROW_HEIGHT_DP) {
     val colors = LocalMioColors.current.gradientColors
     val accent = LocalMioColors.current.accent
-    val divider = LocalMioColors.current.divider
-    // |x| > 0.02 anywhere in the frame counts as signal; a frame of
-    // near-silence (leading/trailing) is a flat line, not noise.
-    val hasSignal = playing && pcmFrame.any { it * it > 0.0004f }
-    // v1.1.17: amplitude is a fraction of the half-height, so a
-    // taller hero/full-screen canvas makes the wave taller for free.
+    val live = isLive(levels)
+    val n = levels.size
+    val displayed = remember(n) { FloatArray(n) }
+    val norms = remember(n) { FloatArray(n) }
+    // Chase per band (like Bars) so the mountain moves smoothly
+    // instead of jumping with each published frame.
+    chaseDisplayed(displayed, levels, live, VIS_BARS_RELEASE)
+    for (i in 0 until n) norms[i] = if (live) scaledNorm(displayed[i]) else 0f
     Canvas(modifier.height(heightDp.dp).fillMaxWidth()) {
         val w = size.width
         val h = size.height
-        val cy = h / 2f
-        // Faint centre line, always on (the oscilloscope baseline).
-        drawLine(divider, Offset(0f, cy), Offset(w, cy), strokeWidth = 1.dp.toPx())
-        if (!hasSignal) {
+        val bottom = h
+        val minH = VIS_MIN_HEIGHT_DP.dp.toPx()
+        val amp = (h - 2f * minH).coerceAtLeast(0f)
+        if (!live) {
+            // Flat low line at the bottom when idle.
             drawLine(
                 accent.copy(alpha = 0.4f),
-                Offset(0f, cy), Offset(w, cy),
+                Offset(0f, bottom - minH), Offset(w, bottom - minH),
                 strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round
             )
             return@Canvas
         }
-        // v1.1.21 — MIRRORED ENVELOPE, not raw samples. The 1.1.20
-        // line plotted 128 single PCM samples: at audio frequencies
-        // adjacent samples swing near full height in opposite
-        // directions, so the polyline is a jagged scribble — and it
-        // renders at max brightness ~71/255 (measured on the user's
-        // 1.1.20 video frame at t=5s, zone mean 10.2/255), i.e.
-        // nearly invisible. Now each of the 128 columns takes the
-        // PEAK |sample| over its window of the 1024-sample frame
-        // (the DAW / "Blue Waveform" look), smoothed with a 3-tap
-        // moving average, and is drawn as a symmetric filled shape
-        // (top and bottom) with a bright outline and a soft glow —
-        // a clean, bright, readable waveform, not a scribble.
-        val cols = 128
-        val n = pcmFrame.size
-        val amp = h / 2f - 4.dp.toPx()
-        val peaks = FloatArray(cols)
-        for (c in 0 until cols) {
-            val start = c * n / cols
-            val end = ((c + 1) * n / cols).coerceAtMost(n)
-            var peak = 0f
-            for (i in start until end) {
-                val v = kotlin.math.abs(pcmFrame[i])
-                if (v > peak) peak = v
+        // Control points: x = log-frequency position (the 32 bands
+        // are already log-spaced), y = band height from the bottom.
+        val px = FloatArray(n) { it.toFloat() / (n - 1).coerceAtLeast(1) * w }
+        val py = FloatArray(n) { bottom - minH - norms[it] * amp }
+        // Catmull-Rom spline through the band peaks (4 samples per
+        // segment) — smooth, no kinks at the band positions.
+        val samplesPerSeg = 4
+        val curvePts = ArrayList<Offset>((n - 1) * samplesPerSeg + 1)
+        for (i in 0 until n - 1) {
+            val p0x = px[(i - 1).coerceAtLeast(0)]
+            val p0y = py[(i - 1).coerceAtLeast(0)]
+            val p1x = px[i]
+            val p1y = py[i]
+            val p2x = px[i + 1]
+            val p2y = py[i + 1]
+            val p3x = px[(i + 2).coerceAtMost(n - 1)]
+            val p3y = py[(i + 2).coerceAtMost(n - 1)]
+            for (k in 0 until samplesPerSeg) {
+                val t = k.toFloat() / samplesPerSeg
+                val t2 = t * t
+                val t3 = t2 * t
+                val x = 0.5f * ((2f * p1x) + (-p0x + p2x) * t + (2f * p0x - 5f * p1x + 4f * p2x - p3x) * t2 + (-p0x + 3f * p1x - 3f * p2x + p3x) * t3)
+                val y = 0.5f * ((2f * p1y) + (-p0y + p2y) * t + (2f * p0y - 5f * p1y + 4f * p2y - p3y) * t2 + (-p0y + 3f * p1y - 3f * p2y + p3y) * t3)
+                curvePts.add(Offset(x, y))
             }
-            peaks[c] = peak
         }
-        // 3-tap smoothing (0.25 / 0.5 / 0.25) so neighbouring
-        // columns step instead of jumping.
-        val smooth = FloatArray(cols)
-        for (c in 0 until cols) {
-            val prev = peaks[(c - 1).coerceAtLeast(0)]
-            val next = peaks[(c + 1).coerceAtMost(cols - 1)]
-            smooth[c] = prev * 0.25f + peaks[c] * 0.5f + next * 0.25f
+        curvePts.add(Offset(px[n - 1], py[n - 1]))
+        // Curve path (the outline) + fill path (curve down to the
+        // bottom corners, closed) — one continuous mountain.
+        val curvePath = Path()
+        val fillPath = Path()
+        for ((idx, pt) in curvePts.withIndex()) {
+            if (idx == 0) {
+                curvePath.moveTo(pt.x, pt.y)
+                fillPath.moveTo(pt.x, pt.y)
+            } else {
+                curvePath.lineTo(pt.x, pt.y)
+                fillPath.lineTo(pt.x, pt.y)
+            }
         }
-        // Lift the envelope (the same perceptual curve as before)
-        // so quiet passages still read.
-        val lifted = FloatArray(cols) { waveLift(smooth[it]) }
-        // Filled symmetric shape: top edge left->right, bottom edge
-        // right->left, closed.
-        val shapePath = Path()
-        for (c in 0 until cols) {
-            val x = c.toFloat() / (cols - 1) * w
-            val yTop = cy - lifted[c] * amp
-            if (c == 0) shapePath.moveTo(x, yTop) else shapePath.lineTo(x, yTop)
-        }
-        for (c in cols - 1 downTo 0) {
-            val x = c.toFloat() / (cols - 1) * w
-            val yBot = cy + lifted[c] * amp
-            shapePath.lineTo(x, yBot)
-        }
-        shapePath.close()
-        // Fill: vertical gradient, brighter at the two edges.
+        fillPath.lineTo(w, bottom)
+        fillPath.lineTo(0f, bottom)
+        fillPath.close()
+        // Fill: vertical gradient, brighter at the curve (top),
+        // fading toward the bottom.
         drawPath(
-            shapePath,
+            fillPath,
             brush = Brush.verticalGradient(
-                listOf(accent.copy(alpha = 0.30f), accent.copy(alpha = 0.16f), accent.copy(alpha = 0.30f)),
+                listOf(accent.copy(alpha = 0.28f), accent.copy(alpha = 0.04f)),
                 startY = 0f,
                 endY = h
             )
         )
-        // Soft glow — a wide low-alpha stroke of the same outline.
+        // Soft glow — a wide low-alpha stroke of the same curve.
         drawPath(
-            shapePath,
+            curvePath,
             SolidColor(accent.copy(alpha = 0.22f)),
             style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round)
         )
-        // Bright outline — the theme gradient, full alpha, on the
-        // whole silhouette (top edge + bottom edge + end caps).
+        // Bright outline — the theme gradient, full alpha.
         drawPath(
-            shapePath,
+            curvePath,
             brush = Brush.linearGradient(colors, start = Offset.Zero, end = Offset(w, 0f)),
             style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
         )

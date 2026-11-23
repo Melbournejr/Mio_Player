@@ -9,9 +9,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
  * Ferrofluid took the fifth slot in v1.1.12).
  * All five are driven ONLY by real audio data from
  * [com.mio.player.data.audio.WaveformTap] (FFT band magnitudes for
- * Bars / Circular / Mirror / Ferrofluid, the raw mono PCM frame for
- * Wave); there is no time-based animation and no progress colouring
- * in any style.
+ * Bars / Circular / Mirror / Ferrofluid / Spectrum curve); there is
+ * no time-based animation and no progress colouring in any style.
  *
  * Persistence uses the app's existing mechanism — DataStore via
  * [com.mio.player.data.prefs.SettingsStore]'s generic `set` / `flow`
@@ -25,8 +24,10 @@ enum class VisualizerStyle(val id: String, val label: String) {
     /** The current Now Playing wave (native Canvas bars with peak caps): 32 vertical bars. */
     BARS("bars", "Cột"),
 
-    /** Oscilloscope line from the tap's raw mono PCM frame. */
-    WAVE("wave", "Sóng"),
+    /** Spectrum curve ("Đường cong phổ", v1.1.23 — replaced the
+     *  Wave / oscilloscope line; the style id stays "wave" so a
+     *  stored preference keeps working). */
+    WAVE("wave", "Đường cong phổ"),
 
     /** The 32 FFT bands arranged as bars radiating from a circle. */
     CIRCULAR("circular", "Tròn"),
