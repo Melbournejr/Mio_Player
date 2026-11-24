@@ -135,5 +135,30 @@ class AudioEffectsManager {
     fun setVirtualizer(strength: Int) { virtStrength = strength.coerceIn(0, 1000); try { virt?.setStrength(virtStrength.toShort()) } catch (e: Exception) {} }
     /** LoudnessEnhancer target is in milliBel, 0 = off. */
     fun setLoudness(targetMb: Int) { loudnessMb = targetMb.coerceIn(0, 2000); try { loud?.setTargetGain(loudnessMb) } catch (e: Exception) {} }
+    /** v1.1.37 — bit-perfect bypass. While a bit-perfect output is
+     *  active the signal must reach the DAC untouched, so the biquad
+     *  processor is forced to passthrough (enabled=false) and every
+     *  Android effect is disabled. Restoring re-applies the stored
+     *  values via applyCurrent() (parametric) and the remembered
+     *  strengths (bass/virtualizer/loudness). The Graphic Equalizer
+     *  effect itself is disabled here; applyCurrent() only writes band
+     *  levels, it does not re-enable the effect, so restore must
+     *  re-enable it explicitly. */
+    fun setBitPerfectBypass(bypass: Boolean) {
+        if (bypass) {
+            pushParametricBypass()
+            listOf(eq, bass, virt, loud).forEach { try { it?.enabled = false } catch (_: Exception) {} }
+        } else {
+            listOf(eq, bass, virt, loud).forEach { try { it?.enabled = true } catch (_: Exception) {} }
+            applyCurrent(); setBassBoost(bassStrength); setVirtualizer(virtStrength); setLoudness(loudnessMb)
+        }
+    }
+    private fun pushParametricBypass() {
+        parametricProcessor?.config = ParametricEqConfig(
+            bands = parametricBands.map { it.copy() },
+            preampDb = preampDb,
+            enabled = false
+        )
+    }
     fun release() { listOf(eq, bass, virt, loud).forEach { try { it?.release() } catch (_: Exception) {} }; eq=null; bass=null; virt=null; loud=null }
 }

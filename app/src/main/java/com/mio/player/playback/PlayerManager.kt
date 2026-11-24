@@ -24,6 +24,7 @@ import androidx.media3.extractor.ExtractorsFactory
 import com.mio.player.playback.dsd.DsdExtractor
 import com.mio.player.data.audio.AudioEffectsManager
 import com.mio.player.data.audio.ParametricEqAudioProcessor
+import com.mio.player.data.audio.UsbBitPerfectManager
 import com.mio.player.data.audio.WaveformTap
 import com.mio.player.data.audio.DsdDecoder
 import com.mio.player.data.audio.DsdSupport
@@ -318,6 +319,63 @@ class PlayerManager(private val ctx: Context) {
         (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
             .getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48000
     val currentTrack: Track? get() = queue.value.getOrNull(index.value)
+    /** v1.1.37 — USB bit-perfect (step 2 of the hi-res plan). The
+     *  manager wraps Android 14's preferred mixer attributes API;
+     *  [bitPerfectState] is the framework's own report of what is
+     *  actually active, so the UI never claims bit-perfect it did not
+     *  get. [bitPerfectEnabled] is the user's Settings toggle. */
+    val bitPerfect = UsbBitPerfectManager(ctx.applicationContext)
+    val bitPerfectState: StateFlow<UsbBitPerfectManager.State> = bitPerfect.state
+    var bitPerfectEnabled: Boolean = false
+    /** Re-evaluate the bit-perfect output for the current track. Called
+     *  on track change, on play start, on the Settings toggle, and when
+     *  a USB audio device connects/disconnects. DSD is decoded to
+     *  176.4 kHz 16-bit PCM by the decimator, so its output rate is
+     *  176400, not the DSD rate. While bit-perfect is active the EQ
+     *  chain and ReplayGain are bypassed (the signal must be
+     *  untouched); they are restored when it stops. */
+    fun updateBitPerfect() {
+        if (!bitPerfectEnabled || !UsbBitPerfectManager.isApiSupported) {
+            if (bitPerfect.state.value.active) {
+                bitPerfect.clearPreferred()
+                fx.setBitPerfectBypass(false)
+                applyReplayGain()
+            }
+            return
+        }
+        val device = bitPerfect.findUsbDevice()
+        val track = currentTrack
+        if (device == null || track == null) {
+            if (bitPerfect.state.value.active) {
+                bitPerfect.clearPreferred()
+                fx.setBitPerfectBypass(false)
+                applyReplayGain()
+            }
+            return
+        }
+        val isDsd = DsdSupport.isDsd(track.path)
+        val outRate = if (isDsd) DsdSupport.CACHED_PCM_SAMPLE_RATE_HZ else track.sampleRateHz
+        val outBits = if (isDsd) 16 else track.bitDepth
+        val attrs = bitPerfect.findBitPerfect(device, outRate, UsbBitPerfectManager.encodingForBitDepth(outBits))
+        if (attrs == null) {
+            if (bitPerfect.state.value.active) {
+                bitPerfect.clearPreferred()
+                fx.setBitPerfectBypass(false)
+                applyReplayGain()
+            }
+            android.util.Log.i("MioBitPerfect", "no BIT_PERFECT attribute for ${outRate}Hz/${outBits}bit on ${device.productName}")
+            return
+        }
+        if (bitPerfect.setPreferred(device, attrs)) {
+            fx.setBitPerfectBypass(true)
+            player.volume = 1.0f
+        }
+    }
+    fun setBitPerfectEnabled(enabled: Boolean) {
+        bitPerfectEnabled = enabled
+        scope.launch { runCatching { settings.set(SettingsStore.KEY_BIT_PERFECT_USB, enabled) } }
+        updateBitPerfect()
+    }
     private var consecutiveErrors = 0
     private var recoveringDsd = false
     private val failedDsd = mutableSetOf<String>()
@@ -336,6 +394,24 @@ class PlayerManager(private val ctx: Context) {
         // v1.1.32 — wire the parametric EQ processor to the effects
         // manager so mode/band/preamp changes reach the sink chain.
         fx.bindParametricProcessor(parametricEqProcessor)
+        // v1.1.37 — restore the bit-perfect toggle and re-evaluate
+        // whenever a USB audio device connects/disconnects (the DAC
+        // can appear or vanish at any time).
+        scope.launch {
+            bitPerfectEnabled = settings.flow(SettingsStore.KEY_BIT_PERFECT_USB, false).first()
+            updateBitPerfect()
+        }
+        try {
+            val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.registerAudioDeviceCallback(object : AudioManager.AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<android.media.AudioDeviceInfo>) {
+                    if (addedDevices.any { it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE || it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET }) updateBitPerfect()
+                }
+                override fun onAudioDevicesRemoved(removedDevices: Array<android.media.AudioDeviceInfo>) {
+                    if (removedDevices.any { it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE || it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET }) updateBitPerfect()
+                }
+            }, android.os.Handler(android.os.Looper.getMainLooper()))
+        } catch (e: Exception) { android.util.Log.w("MioBitPerfect", "registerAudioDeviceCallback failed", e) }
         // v1.1.5 native-DSD diagnostics (see logNativeDsdProbe /
         // runDsdDecodeProbe below): the probe proves the wiring AND the
         // decoder itself, and the decode listener records what real DSD
@@ -412,6 +488,10 @@ class PlayerManager(private val ctx: Context) {
                 // harder on top of an EQ boost), a negative one made
                 // everything after it too quiet.
                 applyReplayGain()
+                // v1.1.37 — the next track may need a different mixer
+                // rate (e.g. 44.1k -> 96k), so re-pick the bit-perfect
+                // attributes for it.
+                updateBitPerfect()
             }
             override fun onShuffleModeEnabledChanged(v: Boolean) {
                 _shuffleEnabled.value = v
@@ -597,6 +677,10 @@ class PlayerManager(private val ctx: Context) {
             logDsdHeap("start '${tracks[startIndex].title}'")
         }
         applyReplayGain()
+        // v1.1.37 — set the bit-perfect mixer attributes for the first
+        // track before its AudioTrack is opened (the framework reopens
+        // the output with the new attributes).
+        updateBitPerfect()
     }
     /** v1.1.10: replace one queue item (by id) with a newer copy — used
      *  when the background metadata fetch fills in a track that is
@@ -640,6 +724,10 @@ class PlayerManager(private val ctx: Context) {
         sleepHandler.postDelayed(r, minutes * 60_000L)
     }
     private fun applyReplayGain() {
+        // v1.1.37 — bit-perfect means untouched: no ReplayGain volume
+        // scaling while it is active (the mixer ignores it anyway, and
+        // the setting is restored by updateBitPerfect when it stops).
+        if (bitPerfect.state.value.active) { player.volume = 1.0f; return }
         val t = currentTrack ?: return
         val gainDb = when (replayGainMode) { "album" -> t.replayGainAlbum; "track" -> t.replayGainTrack; else -> null } ?: 0f
         player.volume = Math.pow(10.0, (gainDb / 20.0).toDouble()).toFloat().coerceIn(0f, 1.5f)

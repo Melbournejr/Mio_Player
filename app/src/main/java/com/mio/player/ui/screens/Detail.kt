@@ -285,6 +285,7 @@ import kotlinx.coroutines.launch
  *  ProfileScreen Âm thanh section, unchanged. */
 @Composable fun SettingsSoundScreen(nav: NavHostController) {
     val ctx = LocalContext.current
+    val settings = (ctx.applicationContext as com.mio.player.MioApp).container.settings
     val scope = rememberCoroutineScope()
     SettingsSubScreen(nav, "Âm thanh") {
         Text("Chỉnh EQ, hiệu ứng và chất lượng phát nhạc.", color = MioTextSecondary, fontSize = 13.sp)
@@ -295,6 +296,33 @@ import kotlinx.coroutines.launch
         Spacer(Modifier.height(16.dp))
         Text("Chất lượng nhạc", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         Text("Original files play as-is. DSD (.dsf/.dff) plays natively; only files the native decoder can't handle (e.g. DST-compressed .dff) are decoded once to a 176.4 kHz PCM WAV cache as a fallback, then played from cache.", color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(16.dp))
+        // v1.1.37 — USB bit-perfect (Android 14+): when a USB DAC is
+        // connected, the mixer runs bit-perfect at the track's native
+        // rate instead of resampling to 48 kHz. While it is active the
+        // EQ and ReplayGain are bypassed (the signal must be untouched).
+        // The status line reports what the framework really engaged.
+        val pm = (ctx.applicationContext as com.mio.player.MioApp).container.playerManager
+        val bpOn by settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_BIT_PERFECT_USB, false).collectAsState(initial = false)
+        val bpState by pm.bitPerfectState.collectAsState()
+        Text("Bit-perfect USB (Android 14+)", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("Cắm USB DAC rồi bật: nhạc ra đúng tần số gốc của file, không qua bộ trộn 48 kHz. Khi bật, EQ và ReplayGain tạm tắt vì tín hiệu phải nguyên bản.", color = MioTextSecondary, fontSize = 13.sp)
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (bpOn) "Đang bật" else "Đang tắt", color = MioText, modifier = Modifier.weight(1f))
+            androidx.compose.material3.Switch(
+                checked = bpOn,
+                onCheckedChange = { v -> scope.launch { pm.setBitPerfectEnabled(v) } },
+                enabled = com.mio.player.data.audio.UsbBitPerfectManager.isApiSupported
+            )
+        }
+        val bpStatus = when {
+            !com.mio.player.data.audio.UsbBitPerfectManager.isApiSupported -> "Máy này chưa có Android 14, không dùng được."
+            bpState.active -> "Đang chạy bit-perfect: ${bpState.deviceName} · ${bpState.sampleRateHz / 1000} kHz"
+            bpOn && pm.bitPerfect.findUsbDevice() == null -> "Đã bật — cắm USB DAC vào để dùng."
+            bpOn -> "Đã bật — DAC này không hỗ trợ bit-perfect ở tần số của bài đang phát, đang phát thường."
+            else -> "Tắt — đang phát qua bộ trộn thường (48 kHz)."
+        }
+        Text(bpStatus, color = MioTextSecondary, fontSize = 13.sp)
         Spacer(Modifier.height(16.dp))
         val cacheSizeMb = remember {
             val dir = java.io.File(ctx.cacheDir, "dsd-cache")

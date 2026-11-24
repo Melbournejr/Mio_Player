@@ -102,6 +102,7 @@ import kotlinx.coroutines.delay
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun NowPlayingScreen(vm: PlayerViewModel, libVm: LibraryViewModel, nav: NavHostController) {
     val queue by vm.queue.collectAsState(); val idx by vm.index.collectAsState(); val playing by vm.isPlaying.collectAsState()
+    val bpState by vm.pm.bitPerfectState.collectAsState()
     val levels by vm.pm.waveform.levels.collectAsState()
     val pcmFrame by vm.pm.waveform.pcmFrame.collectAsState()
     val shuffleOn by vm.pm.shuffleEnabled.collectAsState()
@@ -210,8 +211,12 @@ import kotlinx.coroutines.delay
     val stateText = when {
         converting -> "Đang chuyển đổi DSD sang WAV…"
         isFallback -> "Đang phát bản đổi (WAV 176.4 kHz)"
-        isDsd && isNativeProven -> "${t?.dsdRate ?: "DSD"} · Native decode"
+        isDsd && isNativeProven -> "${t?.dsdRate ?: "DSD"} · Native decode" + if (bpState.active) " · Bit-perfect" else ""
         isDsd -> "DSD · Đang tải…"
+        // v1.1.37 — bit-perfect: the output rate is the file's own
+        // rate (already shown in displayFormat), so the state just
+        // says Bit-perfect instead of the mixer rate.
+        bpState.active -> "Bit-perfect"
         // v1.1.21 — concise: just the rate ("48 kHz"), not the
         // sentence ("Thiết bị phát tối đa 48 kHz") — the user wants
         // the track-info tail short to save space, and the portrait
@@ -535,7 +540,12 @@ import kotlinx.coroutines.delay
         )
     }
     if (showTrackInfo && trackNow != null) {
-        TrackInfoDialog(track = trackNow, onDismiss = { showTrackInfo = false })
+        TrackInfoDialog(
+            track = trackNow,
+            onDismiss = { showTrackInfo = false },
+            outputLabel = if (bpState.active) "USB · ${bpState.sampleRateHz / 1000} kHz · Bit-perfect"
+            else "${vm.pm.deviceSampleRateHz / 1000} kHz · Mixer"
+        )
     }
     // Play queue (Fix 4): bottom sheet listing the current queue with
     // the playing track highlighted; tapping a row plays it from there.
@@ -585,7 +595,7 @@ import kotlinx.coroutines.delay
 /** Track info dialog (v1.1.25): the playing track's metadata and
  *  file details, straight from the Track model (no network). Shared
  *  by both Now Playing orientations. */
-@Composable fun TrackInfoDialog(track: Track, onDismiss: () -> Unit) {
+@Composable fun TrackInfoDialog(track: Track, onDismiss: () -> Unit, outputLabel: String? = null) {
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = CardLarge,
@@ -600,6 +610,9 @@ import kotlinx.coroutines.delay
                 if (track.sampleRateHz > 0) TrackInfoRow("Tần số mẫu", "${track.sampleRateHz / 1000.0} kHz")
                 if (track.bitDepth > 0) TrackInfoRow("Độ sâu bit", "${track.bitDepth}-bit")
                 if (track.bitrateKbps > 0) TrackInfoRow("Bitrate", "${track.bitrateKbps} kbps")
+                // v1.1.37 — the real output path (bit-perfect or mixer),
+                // so the user can see what the phone is actually doing.
+                if (outputLabel != null) TrackInfoRow("Đầu ra", outputLabel)
                 TrackInfoRow("Đường dẫn", track.path)
             }
         },
