@@ -73,10 +73,27 @@ class MusicScanner(private val ctx: Context) {
                         MioLog.event(ctx, "DSD header unreadable (label falls back to DSD): $path")
                     }
                 }
+                // v1.1.36 — the real file specs (sample rate / bit depth
+                // / bitrate) for FLAC/WAV/MP3. The scan never read them,
+                // so Track.sampleRateHz stayed 0 and the UI could only
+                // show the DEVICE output rate ("48 kHz") next to the
+                // format — the user read that as the file being "only
+                // 48kHz". An unreadable header leaves the specs 0 and
+                // the UI falls back to the plain format name, as before.
+                var sampleRateHz = 0; var bitDepth = 0; var bitrateKbps = 0
+                if (!isDsd) {
+                    val specs = specsForFile(path, durationMs)
+                        ?: specsForUri(contentUri, ext, File(path).length(), durationMs)
+                    if (specs != null) {
+                        sampleRateHz = specs.sampleRateHz; bitDepth = specs.bitDepth; bitrateKbps = specs.bitrateKbps
+                        if (durationMs <= 0L && specs.durationMs > 0L) durationMs = specs.durationMs
+                    }
+                }
                 out += TrackEntity(id = id, title = c.getString(tI) ?: path.substringAfterLast('/'),
                     artist = c.getString(aI) ?: "Unknown Artist", album = c.getString(alI) ?: "Unknown Album",
                     uri = contentUri.toString(), path = path,
                     durationMs = durationMs, format = formatFor(path).name,
+                    sampleRateHz = sampleRateHz, bitDepth = bitDepth, bitrateKbps = bitrateKbps,
                     dsdRate = dsdRate, dateAdded = System.currentTimeMillis())
             }
         }
@@ -114,9 +131,22 @@ class MusicScanner(private val ctx: Context) {
                             MioLog.event(ctx, "DSD header unreadable (label falls back to DSD): $relPath")
                         }
                     }
+                    // v1.1.36 — same real file specs as scanMediaStore
+                    // (FLAC/WAV/MP3 header). Also fills the duration for
+                    // SAF FLAC/WAV, which was 0 before (the lyrics lookup
+                    // uses it).
+                    var sampleRateHz = 0; var bitDepth = 0; var bitrateKbps = 0
+                    if (!isDsd) {
+                        val specs = specsForUri(f.uri, name.substringAfterLast('.', "").lowercase(), f.length(), durationMs)
+                        if (specs != null) {
+                            sampleRateHz = specs.sampleRateHz; bitDepth = specs.bitDepth; bitrateKbps = specs.bitrateKbps
+                            if (durationMs <= 0L && specs.durationMs > 0L) durationMs = specs.durationMs
+                        }
+                    }
                     out += TrackEntity(id = (f.uri.toString().hashCode().toLong() and 0xffffffffL) or (1L shl 40),
                         title = name.substringBeforeLast('.'), artist = "Unknown Artist", album = "Unknown Album",
                         uri = f.uri.toString(), path = relPath, durationMs = durationMs,
+                        sampleRateHz = sampleRateHz, bitDepth = bitDepth, bitrateKbps = bitrateKbps,
                         format = formatFor(name).name, dsdRate = dsdRate)
                 }
             }
@@ -282,6 +312,209 @@ class MusicScanner(private val ctx: Context) {
                     scannedBytes += size
                 }
             }
+        }
+        null
+    }.getOrNull()
+
+    // --- File specs for FLAC / WAV / MP3 (v1.1.36) ---
+    // The scan never read the sample rate of a non-DSD file, so
+    // Track.sampleRateHz stayed 0 and the UI could only show the
+    // DEVICE output rate ("48 kHz") next to the format — the user
+    // read that as the file being "only 48kHz". These parsers read
+    // the real rate / bit depth from the file header (STREAMINFO for
+    // FLAC, fmt chunk for WAV, first frame for MP3), following the
+    // same runCatching -> null pattern as the DSD parsers: an
+    // unreadable header leaves the specs 0 and the scan never breaks.
+    // durationMs is filled when the header can derive it (FLAC total
+    // samples, WAV data size) — the SAF scan had 0 for those.
+    // bitrateKbps is the true average (file size / duration) when
+    // both are known, else the header bitrate (MP3 frame, WAV byteRate).
+    data class AudioSpecs(val sampleRateHz: Int, val bitDepth: Int, val bitrateKbps: Int, val durationMs: Long = 0L)
+
+    private fun specsForStream(stream: InputStream, ext: String, fileSizeBytes: Long, durationMs: Long): AudioSpecs? = when (ext) {
+        "flac" -> flacSpecs(stream, fileSizeBytes)
+        "wav" -> wavSpecs(stream, fileSizeBytes)
+        "mp3" -> mp3Specs(stream, fileSizeBytes, durationMs)
+        else -> null
+    }
+
+    private fun specsForFile(path: String, durationMs: Long): AudioSpecs? = runCatching {
+        val f = File(path)
+        if (!f.isFile || !f.canRead()) return@runCatching null
+        f.inputStream().use { specsForStream(it, path.substringAfterLast('.', "").lowercase(), f.length(), durationMs) }
+    }.getOrNull()
+
+    private fun specsForUri(uri: Uri, ext: String, fileSizeBytes: Long, durationMs: Long): AudioSpecs? = runCatching {
+        ctx.contentResolver.openInputStream(uri)?.use { specsForStream(it, ext, fileSizeBytes, durationMs) }
+    }.getOrNull()
+
+    /** FLAC: "fLaC" + block header (type 0 = STREAMINFO, length 34)
+     *  + STREAMINFO. Rate / channels / bit depth / total samples are
+     *  packed big-endian in STREAMINFO bytes 10..17 (20 + 3 + 5 + 36
+     *  bits). */
+    private fun flacSpecs(stream: InputStream, fileSizeBytes: Long): AudioSpecs? = runCatching {
+        val h = ByteArray(42)
+        var read = 0
+        while (read < h.size) {
+            val n = stream.read(h, read, h.size - read)
+            if (n < 0) return@runCatching null
+            read += n
+        }
+        if (String(h, 0, 4, Charsets.US_ASCII) != "fLaC") return@runCatching null
+        if ((h[4].toInt() and 0x7f) != 0) return@runCatching null // first block must be STREAMINFO
+        val blockLen = ((h[5].toInt() and 0xff) shl 16) or ((h[6].toInt() and 0xff) shl 8) or (h[7].toInt() and 0xff)
+        if (blockLen != 34) return@runCatching null
+        // STREAMINFO data starts at file offset 8; packed field at +10.
+        val b10 = h[18].toLong() and 0xff; val b11 = h[19].toLong() and 0xff; val b12 = h[20].toLong() and 0xff
+        val b13 = h[21].toLong() and 0xff; val b14 = h[22].toLong() and 0xff; val b15 = h[23].toLong() and 0xff
+        val b16 = h[24].toLong() and 0xff; val b17 = h[25].toLong() and 0xff
+        val sampleRate = ((b10 shl 12) or (b11 shl 4) or (b12 shr 4)).toInt()
+        val bitDepth = (((b12 and 0x1) shl 4) or (b13 shr 4)).toInt() + 1
+        val totalSamples = ((b13 and 0xf) shl 32) or (b14 shl 24) or (b15 shl 16) or (b16 shl 8) or b17
+        if (sampleRate <= 0 || bitDepth <= 0) return@runCatching null
+        val durMs = if (totalSamples > 0) totalSamples * 1000L / sampleRate else 0L
+        val bitrate = if (fileSizeBytes > 0 && durMs > 0) (fileSizeBytes * 8L / durMs).toInt() else 0
+        AudioSpecs(sampleRate, bitDepth, bitrate, durMs)
+    }.getOrNull()
+
+    /** WAV: "RIFF" + "WAVE", then chunks (id + u32 LE size + payload,
+     *  word-aligned). The "fmt " chunk carries sampleRate / byteRate /
+     *  bitsPerSample; the "data" chunk size gives the duration. */
+    private fun wavSpecs(stream: InputStream, fileSizeBytes: Long): AudioSpecs? = runCatching {
+        fun readExact(buf: ByteArray): Boolean {
+            var read = 0
+            while (read < buf.size) {
+                val n = stream.read(buf, read, buf.size - read)
+                if (n < 0) return false
+                read += n
+            }
+            return true
+        }
+        fun u16LE(b: ByteArray, off: Int): Int = (b[off].toInt() and 0xff) or ((b[off + 1].toInt() and 0xff) shl 8)
+        fun u32LE(b: ByteArray, off: Int): Long =
+            (b[off].toLong() and 0xff) or ((b[off + 1].toLong() and 0xff) shl 8) or
+            ((b[off + 2].toLong() and 0xff) shl 16) or ((b[off + 3].toLong() and 0xff) shl 24)
+        fun skipFully(n: Long): Boolean {
+            var remaining = n
+            while (remaining > 0) {
+                val skipped = stream.skip(remaining)
+                if (skipped <= 0) {
+                    if (stream.read() < 0) return false
+                    remaining--
+                } else remaining -= skipped
+            }
+            return true
+        }
+        val head = ByteArray(12)
+        if (!readExact(head)) return@runCatching null
+        if (String(head, 0, 4, Charsets.US_ASCII) != "RIFF") return@runCatching null
+        if (String(head, 8, 4, Charsets.US_ASCII) != "WAVE") return@runCatching null
+        var sampleRate = 0; var bitDepth = 0; var byteRate = 0L; var dataSize = 0L
+        var scanned = 0L
+        val chunkHead = ByteArray(8)
+        while (scanned <= 8192L) {
+            if (!readExact(chunkHead)) return@runCatching null
+            scanned += 8
+            val id = String(chunkHead, 0, 4, Charsets.US_ASCII)
+            val size = u32LE(chunkHead, 4)
+            if (size < 0 || size > (1L shl 31)) return@runCatching null
+            if (id == "fmt ") {
+                if (size < 16) return@runCatching null
+                val fmt = ByteArray(16)
+                if (!readExact(fmt)) return@runCatching null
+                sampleRate = u32LE(fmt, 4).toInt()
+                byteRate = u32LE(fmt, 8)
+                bitDepth = u16LE(fmt, 14)
+                // Skip the rest of the fmt payload (+1 pad byte if odd).
+                if (!skipFully((size - 16) + (size and 1L))) return@runCatching null
+                scanned += size + (size and 1L)
+            } else if (id == "data") {
+                dataSize = size
+                break
+            } else {
+                if (!skipFully(size + (size and 1L))) return@runCatching null
+                scanned += size + (size and 1L)
+            }
+            if (sampleRate > 0 && dataSize > 0) break
+        }
+        if (sampleRate <= 0 || byteRate <= 0) return@runCatching null
+        val durMs = if (dataSize > 0) dataSize * 1000L / byteRate else 0L
+        val bitrate = (byteRate * 8L / 1000L).toInt()
+        AudioSpecs(sampleRate, bitDepth, bitrate, durMs)
+    }.getOrNull()
+
+    /** MP3: skip an ID3v2 tag if present (its size is syncsafe and
+     *  the tag can hold large embedded art, so it is skipped via the
+     *  stream, never buffered), then scan for the first frame sync
+     *  (0xFF + top 3 bits set). Layer III only — the music case.
+     *  Bitrate prefers file size + duration (true average, VBR-safe);
+     *  the frame header bitrate is the fallback. No bit depth for
+     *  lossy MP3. */
+    private fun mp3Specs(stream: InputStream, fileSizeBytes: Long, durationMs: Long): AudioSpecs? = runCatching {
+        fun skipFully(n: Long): Boolean {
+            var remaining = n
+            while (remaining > 0) {
+                val skipped = stream.skip(remaining)
+                if (skipped <= 0) {
+                    if (stream.read() < 0) return false
+                    remaining--
+                } else remaining -= skipped
+            }
+            return true
+        }
+        fun readExact(buf: ByteArray): Boolean {
+            var read = 0
+            while (read < buf.size) {
+                val n = stream.read(buf, read, buf.size - read)
+                if (n < 0) return false
+                read += n
+            }
+            return true
+        }
+        val head = ByteArray(10)
+        if (!readExact(head)) return@runCatching null
+        var prefix = head
+        if (String(head, 0, 3, Charsets.US_ASCII) == "ID3") {
+            val size = ((head[6].toInt() and 0x7f) shl 21) or ((head[7].toInt() and 0x7f) shl 14) or
+                ((head[8].toInt() and 0x7f) shl 7) or (head[9].toInt() and 0x7f)
+            if (size < 0) return@runCatching null
+            if (!skipFully(size.toLong())) return@runCatching null
+            prefix = ByteArray(0)
+        }
+        val buf = ByteArray(4096 + prefix.size)
+        System.arraycopy(prefix, 0, buf, 0, prefix.size)
+        var r = prefix.size
+        while (r < buf.size) {
+            val n = stream.read(buf, r, buf.size - r)
+            if (n < 0) break
+            r += n
+        }
+        val mpeg1Rates = intArrayOf(44100, 48000, 32000)
+        val mpeg2Rates = intArrayOf(22050, 24000, 16000)
+        val mpeg25Rates = intArrayOf(11025, 12000, 8000)
+        val mpeg1Br = intArrayOf(32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
+        val mpeg2Br = intArrayOf(8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)
+        var i = 0
+        while (i + 4 <= r) {
+            if ((buf[i].toInt() and 0xff) == 0xFF && (buf[i + 1].toInt() and 0xe0) == 0xe0) {
+                val b1 = buf[i + 1].toInt() and 0xff
+                val b2 = buf[i + 2].toInt() and 0xff
+                val versionBits = (b1 shr 3) and 0x3 // 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5, 1 = reserved
+                val layerBits = (b1 shr 1) and 0x3 // 1 = Layer III
+                val brIdx = (b2 shr 4) and 0xf
+                val srIdx = (b2 shr 2) and 0x3
+                if (versionBits != 1 && layerBits == 1 && brIdx in 1..14 && srIdx != 3) {
+                    val rates = when (versionBits) { 3 -> mpeg1Rates; 2 -> mpeg2Rates; 0 -> mpeg25Rates; else -> null }
+                    val brTab = if (versionBits == 3) mpeg1Br else mpeg2Br
+                    val sr = rates?.getOrNull(srIdx) ?: 0
+                    val br = brTab.getOrNull(brIdx - 1) ?: 0
+                    if (sr > 0 && br > 0) {
+                        val avgBr = if (fileSizeBytes > 0 && durationMs > 0) (fileSizeBytes * 8L / durationMs).toInt() else 0
+                        return@runCatching AudioSpecs(sr, 0, if (avgBr > 0) avgBr else br, 0L)
+                    }
+                }
+            }
+            i++
         }
         null
     }.getOrNull()
