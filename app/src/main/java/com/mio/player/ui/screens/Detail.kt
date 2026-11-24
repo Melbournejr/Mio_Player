@@ -311,7 +311,7 @@ import kotlinx.coroutines.launch
             Text(if (bpOn) "Đang bật" else "Đang tắt", color = MioText, modifier = Modifier.weight(1f))
             androidx.compose.material3.Switch(
                 checked = bpOn,
-                onCheckedChange = { v -> scope.launch { pm.setBitPerfectEnabled(v) } },
+                onCheckedChange = { v -> scope.launch { pm.applyBitPerfectEnabled(v) } },
                 enabled = com.mio.player.data.audio.UsbBitPerfectManager.isApiSupported
             )
         }

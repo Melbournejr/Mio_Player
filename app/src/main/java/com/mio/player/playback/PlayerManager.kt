@@ -372,7 +372,12 @@ class PlayerManager(private val ctx: Context) {
             player.volume = 1.0f
         }
     }
-    fun setBitPerfectEnabled(enabled: Boolean) {
+    /** Named applyBitPerfectEnabled, not setBitPerfectEnabled: `var
+     *  bitPerfectEnabled` already generates a JVM
+     *  setBitPerfectEnabled(Z) setter, and a fun with the same
+     *  signature is a platform declaration clash — the same bug as
+     *  v1.1.32's setEqMode. */
+    fun applyBitPerfectEnabled(enabled: Boolean) {
         bitPerfectEnabled = enabled
         scope.launch { runCatching { settings.set(SettingsStore.KEY_BIT_PERFECT_USB, enabled) } }
         updateBitPerfect()
