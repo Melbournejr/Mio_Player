@@ -24,6 +24,7 @@ import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorsFactory
 import com.mio.player.playback.dsd.DsdExtractor
 import com.mio.player.data.audio.AudioEffectsManager
+import com.mio.player.data.audio.AaudioProbe
 import com.mio.player.data.audio.ParametricEqAudioProcessor
 import com.mio.player.data.audio.UsbBitPerfectManager
 import com.mio.player.data.audio.WaveformTap
@@ -418,6 +419,10 @@ class PlayerManager(private val ctx: Context) {
                 }
             }, android.os.Handler(android.os.Looper.getMainLooper()))
         } catch (e: Exception) { android.util.Log.w("MioBitPerfect", "registerAudioDeviceCallback failed", e) }
+        // v1.1.38 Step 3 scaffold — AAudio NDK probe: proves the
+        // mio_aaudio .so is packaged and JNI loads. Result goes to
+        // mio-log.txt; the full AAudio output engine comes next.
+        MioLog.event(ctx, "AAudio probe: loaded=${AaudioProbe.isLoaded} available=${AaudioProbe.probe()}")
         // v1.1.5 native-DSD diagnostics (see logNativeDsdProbe /
         // runDsdDecodeProbe below): the probe proves the wiring AND the
         // decoder itself, and the decode listener records what real DSD

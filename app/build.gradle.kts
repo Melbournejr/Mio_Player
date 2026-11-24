@@ -8,8 +8,8 @@ android {
         applicationId = "com.mio.player"
         minSdk = 26
         targetSdk = 34
-        versionCode = 50
-        versionName = "1.1.37"
+        versionCode = 51
+        versionName = "1.1.38"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -25,6 +25,18 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
             storeType = "PKCS12"
+        }
+    }
+    // Step 3 (AAudio Exclusive, v1.1.38 scaffold): NDK r26d, the same
+    // version the ffmpeg workflow uses to build libffmpegJNI.so. The
+    // CMake version is the one r26d ships. externalNativeBuild wires
+    // app/src/main/cpp/CMakeLists.txt (mio_aaudio .so, raw AAudio NDK
+    // API — no Oboe dependency, Oboe is NOT on Maven Central).
+    ndkVersion = "26.3.115792071"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
     buildTypes {
