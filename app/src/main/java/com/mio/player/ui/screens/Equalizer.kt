@@ -1,7 +1,5 @@
 package com.mio.player.ui.screens
-import android.app.Activity
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -26,7 +24,6 @@ import androidx.navigation.NavHostController
 import com.mio.player.data.audio.AudioEffectsManager
 import com.mio.player.data.audio.EqPresets
 import com.mio.player.data.prefs.SettingsStore
-import com.mio.player.ui.components.isLandscape
 import com.mio.player.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -62,21 +59,6 @@ import java.util.Locale
     var headphoneModel by remember { mutableStateOf("") }
     var customPresets by remember { mutableStateOf<Map<String, FloatArray>>(emptyMap()) }
     var statusMsg by remember { mutableStateOf("") }
-    // v1.1.27 — the EQ screen is LANDSCAPE-only: the user asked for
-    // the bands to be horizontal for easy viewing/adjusting, and the
-    // screen kept opening in portrait (the phone is held upright when
-    // they tap into it). Forcing landscape here rotates the display
-    // even with system auto-rotate off; leaving the screen restores
-    // the previous behaviour (sensor / system setting).
-    val activity = ctx as? Activity
-    DisposableEffect(Unit) {
-        val previous = activity?.requestedOrientation
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        onDispose { activity?.requestedOrientation = previous ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
-    }
-    // v1.1.26 — the bands section lays out differently in landscape
-    // (vertical faders side by side); read the orientation once here.
-    val landscape = isLandscape()
     /** v1.1.13 — preampDb is set on pm.fx BEFORE applyBands, because
      *  applyBands writes (band + preamp) per band. */
     fun apply() { pm.fx.preampDb = preamp; pm.fx.applyBands(bands); pm.fx.setBassBoost((bass*1000).toInt()); pm.fx.setVirtualizer((virt*1000).toInt()); pm.fx.setLoudness((loud*1000).toInt()); pm.fx.balance = balance }
@@ -211,28 +193,24 @@ import java.util.Locale
             }
         }
         // --- Dải tần ---
-        // v1.1.26 — in landscape the 10 bands become vertical faders
-        // side by side (the classic graphic-EQ layout: up = boost),
-        // so the whole EQ fits the wide screen instead of a long
-        // vertical scroll of horizontal sliders. Portrait keeps the
-        // stacked horizontal sliders.
-        if (landscape) {
-            item {
-                SectionTitle("Dải tần")
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    AudioEffectsManager.BAND_FREQS_HZ.forEachIndexed { i, freq ->
-                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("${if (bands[i] > 0) "+" else ""}${bands[i].toInt()} dB", color = MioText, fontSize = 11.sp)
-                            VerticalBandSlider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() })
-                            Text(if (freq >= 1000) "${freq / 1000}k" else "$freq", color = MioTextSecondary, fontSize = 11.sp)
-                        }
+        // v1.1.29 — the bands are ALWAYS one row of vertical faders
+        // (1 hàng × 10 cột), in portrait AND landscape. The user
+        // corrected v1.1.27/28: they never asked the screen to rotate
+        // — they asked for the bands themselves to be a horizontal
+        // row of faders, so the whole EQ is visible and adjustable
+        // while the phone stays upright. (v1.1.26 only did this in
+        // landscape and v1.1.27/28 forced the screen to rotate, both
+        // wrong.) The old stacked horizontal sliders are gone.
+        item {
+            SectionTitle("Dải tần")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                AudioEffectsManager.BAND_FREQS_HZ.forEachIndexed { i, freq ->
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("${if (bands[i] > 0) "+" else ""}${bands[i].toInt()} dB", color = MioText, fontSize = 11.sp)
+                        VerticalBandSlider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() })
+                        Text(if (freq >= 1000) "${freq / 1000}k" else "$freq", color = MioTextSecondary, fontSize = 11.sp)
                     }
                 }
-            }
-        } else {
-            item { SectionTitle("Dải tần") }
-            items(AudioEffectsManager.BAND_FREQS_HZ.size) { i ->
-                Column { Text("${AudioEffectsManager.BAND_FREQS_HZ[i]} Hz — ${bands[i].toInt()} dB", color = MioText); Slider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() }, valueRange = -15f..15f) }
             }
         }
         // --- Preamp ---
@@ -294,19 +272,19 @@ import java.util.Locale
     Text(text, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
 }
 
-/** A vertical fader for one EQ band (v1.1.26, landscape only): a
- *  Material3 Slider rotated -90°, so min (-15 dB) is at the bottom
- *  and max (+15 dB) at the top — drag up to boost, like a hardware
- *  graphic EQ. The Box is 200 dp tall; the Slider inside is laid
- *  out 200 dp wide (its rotated height) and rotated around its
- *  centre, so its drawn content fills the Box exactly. Touch is
- *  transformed by the same rotation, so dragging vertically on the
- *  fader changes the value.
- *  v1.1.27 — requiredWidth, not width: the parent Column is only
- *  ~1/10 of the screen wide (~75 dp), and plain width() is clamped
- *  by that constraint, so the fader rendered as a ~75 dp stub with
- *  the thumb bunched at one end. requiredWidth ignores the parent
- *  max constraint, giving the full 200 dp of travel. */
+/** A vertical fader for one EQ band (v1.1.26, made the only layout
+ *  in v1.1.29): a Material3 Slider rotated -90°, so min (-15 dB) is
+ *  at the bottom and max (+15 dB) at the top — drag up to boost,
+ *  like a hardware graphic EQ. The Box is 200 dp tall; the Slider
+ *  inside is laid out 200 dp wide (its rotated height) and rotated
+ *  around its centre, so its drawn content fills the Box exactly.
+ *  Touch is transformed by the same rotation, so dragging vertically
+ *  on the fader changes the value.
+ *  v1.1.28 — requiredWidth, not width: the parent Column is only
+ *  ~1/10 of the screen wide, and plain width() is clamped by that
+ *  constraint, so the fader rendered as a short stub with the thumb
+ *  bunched at one end. requiredWidth ignores the parent max
+ *  constraint, giving the full 200 dp of travel. */
 @Composable private fun VerticalBandSlider(value: Float, onValueChange: (Float) -> Unit) {
     Box(Modifier.height(200.dp), contentAlignment = Alignment.Center) {
         Slider(
