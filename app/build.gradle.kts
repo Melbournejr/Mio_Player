@@ -28,11 +28,12 @@ android {
         }
     }
     // Step 3 (AAudio Exclusive, v1.1.38 scaffold): NDK r26d, the same
-    // version the ffmpeg workflow uses to build libffmpegJNI.so. The
-    // CMake version is the one r26d ships. externalNativeBuild wires
+    // version the ffmpeg workflow uses to build libffmpegJNI.so
+    // (26.3.11579264 — NOT 115792071, which sdkmanager cannot find).
+    // The CMake version is the one r26d ships. externalNativeBuild wires
     // app/src/main/cpp/CMakeLists.txt (mio_aaudio .so, raw AAudio NDK
     // API — no Oboe dependency, Oboe is NOT on Maven Central).
-    ndkVersion = "26.3.115792071"
+    ndkVersion = "26.3.11579264"
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")

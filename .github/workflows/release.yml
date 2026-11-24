@@ -29,7 +29,7 @@ jobs:
           echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
           yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses || true
-          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools" "ndk;26.3.115792071" "cmake;3.22.1"
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools" "ndk;26.3.11579264" "cmake;3.22.1"
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with: { gradle-version: '8.7' }

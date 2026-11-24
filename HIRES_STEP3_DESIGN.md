@@ -30,12 +30,14 @@ is USB-only, so the internal DAC needs the AAudio path.
 
 ## Build changes needed
 
-- `app/build.gradle.kts`: `ndkVersion = "26.3.115792071"` (matches the
-  ffmpeg workflow's NDK r26d) + `externalNativeBuild { cmake { ... } }`,
-  `minSdk 26` already satisfies AAudio (API 26+).
-- `.github/workflows/release.yml`: add `"ndk;26.3.115792071"` to the
-  sdkmanager install list (the ffmpeg workflow already proves NDK r26d
-  works on this runner).
+- `app/build.gradle.kts`: `ndkVersion = "26.3.11579264"` (NDK r26d, the
+  exact version the ffmpeg workflow uses — `26.3.115792071` does NOT exist
+  and makes sdkmanager fail the whole release job, proven 2026-11-24) +
+  `externalNativeBuild { cmake { ... } }`, `minSdk 26` already satisfies
+  AAudio (API 26+).
+- `.github/workflows/release.yml`: add `"ndk;26.3.11579264"` +
+  `"cmake;3.22.1"` to the sdkmanager install list (the ffmpeg workflow
+  already proves NDK r26d works on this runner).
 - `app/src/main/cpp/CMakeLists.txt` + `mio_aaudio.cpp` (JNI): open stream
   at rate/format, write PCM frames, close, report actual rate/mode.
 - Kotlin: `AaudioOutputProvider` / `AaudioAudioOutput` implementing
