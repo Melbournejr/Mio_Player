@@ -48,7 +48,16 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
-    packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+    packaging {
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        // v1.1.38 Step 3: adding NDK/CMake to the app module enabled
+        // :app:stripDebugDebugSymbols, which strips the PREBUILT
+        // libffmpegJNI.so (5,970,720 B -> 1,489,784 B) and breaks the
+        // release gate's SHA-256 check (59245f9c... -> 919a023d...).
+        // keepDebugSymbols exempts it so it reaches the APK
+        // byte-identical. (AGP 8.0.2+, ours is 8.5.2.)
+        jniLibs { keepDebugSymbols += "**/libffmpegJNI.so" }
+    }
 }
 dependencies {
     val media3 = "1.9.0"
