@@ -229,7 +229,7 @@ class AaudioAudioOutput(
  */
 @UnstableApi
 class AaudioOutputProvider(
-    context: Context,
+    private val context: Context,
     /** True when the user enabled Hi-Res (AAudio) in Settings. */
     @Volatile var hiResEnabled: Boolean
 ) : AudioOutputProvider {
@@ -273,13 +273,19 @@ class AaudioOutputProvider(
             val engine = AaudioEngine.open(config.sampleRate, 2)
             if (engine != null) {
                 lastAaudioState = AaudioState.Active(engine.sampleRate, engine.isExclusive, engine.isLowLatency)
+                // v1.1.40 — log the real outcome to mio-log.txt so the
+                // next user log proves whether exclusive engaged and at
+                // what rate, instead of the UI guessing.
+                com.mio.player.data.log.MioLog.event(context, "AAudio ACTIVE: ${engine.sampleRate} Hz exclusive=${engine.isExclusive} lowLatency=${engine.isLowLatency}")
                 return AaudioAudioOutput(engine, config.sampleRate)
             }
             lastAaudioState = AaudioState.Fallback(
                 "AAudio không mở được ${config.sampleRate} Hz exclusive trên máy này — đã về mixer"
             )
+            com.mio.player.data.log.MioLog.event(context, "AAudio FALLBACK: open failed for ${config.sampleRate} Hz (exclusive refused or rate unsupported) — using mixer")
         } else if (hiResEnabled) {
             lastAaudioState = AaudioState.Fallback("Định dạng không phải PCM 16-bit stereo — đã về mixer")
+            com.mio.player.data.log.MioLog.event(context, "AAudio FALLBACK: format not PCM16 stereo (encoding=${config.encoding}) — using mixer")
         }
         return delegate.getAudioOutput(config)
     }

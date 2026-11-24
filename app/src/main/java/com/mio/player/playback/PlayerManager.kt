@@ -416,22 +416,36 @@ class PlayerManager(private val ctx: Context) {
      *  creates (next track, or a restart of the current one): the
      *  provider varies the OutputConfig buffer size while Hi-Res is
      *  on, so the sink does not reuse the old AudioTrack output for a
-     *  same-format track. If a track is playing, restart it at the
-     *  current position so the switch happens immediately. */
+     *  same-format track.
+     *  v1.1.40 — the v1.1.39 restart was a same-position seekTo, which
+     *  does NOT force the sink to reconfigure: DefaultAudioSink only
+     *  calls configure() when the input format changes, and a seek to
+     *  the same position keeps the same format (ExoPlayer may even
+     *  treat it as a no-op), so getAudioOutput was never called and
+     *  the output stayed on the mixer while the UI showed Idle. A
+     *  real restart (stop + prepare) re-initializes the renderers, so
+     *  configure() runs again and getAudioOutput() is called with the
+     *  new mode. Brief audio gap on toggle is expected. */
     fun applyHiResAaudioEnabled(enabled: Boolean) {
         hiResAaudioEnabled = enabled
         aaudioProvider.hiResEnabled = enabled
         scope.launch { runCatching { settings.set(SettingsStore.KEY_HIRES_AAUDIO, enabled) } }
-        refreshHiResState()
         val track = currentTrack
         if (track != null && player.playbackState != Player.STATE_IDLE) {
+            val wasPlaying = player.isPlaying
             val pos = player.currentPosition
             val idx = player.currentMediaItemIndex
             if (idx >= 0) {
+                player.stop()
+                player.prepare()
                 player.seekTo(idx, pos)
-                player.play()
+                if (wasPlaying) player.play()
             }
         }
+        // The output is (re)created asynchronously during prepare, so
+        // refresh now (Idle until then) and again when playback turns
+        // READY (see onPlaybackStateChanged) once the real state lands.
+        refreshHiResState()
     }
     private var consecutiveErrors = 0
     private var recoveringDsd = false
@@ -583,6 +597,13 @@ class PlayerManager(private val ctx: Context) {
                     stopDsdStallWatch()
                     maybePruneStaleDsdCache()
                     maybeLogDsdHeapOnReady()
+                    // v1.1.40 — the AAudio output is (re)created
+                    // asynchronously when the sink configures, so the
+                    // Hi-Res status only becomes true once playback is
+                    // READY. Refresh here so the Settings / Now Playing
+                    // status shows the real output (Active / Fallback),
+                    // not the stale Idle from before the switch.
+                    refreshHiResState()
                 } else if (state == Player.STATE_BUFFERING) {
                     // v1.1.6: start the stall watchdog for DSD — see
                     // startDsdStallWatch(). It logs the live stall state
