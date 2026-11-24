@@ -106,6 +106,8 @@ import kotlinx.coroutines.delay
     // same 250 ms position poll, same lyrics fetch, same state text.
     val queue by vm.queue.collectAsState(); val idx by vm.index.collectAsState(); val playing by vm.isPlaying.collectAsState()
     val bpState by vm.pm.bitPerfectState.collectAsState()
+    // v1.1.39 — Hi-Res AAudio state (Active / Fallback / Idle).
+    val hiResState by vm.pm.hiResState.collectAsState()
     val levels by vm.pm.waveform.levels.collectAsState()
     val pcmFrame by vm.pm.waveform.pcmFrame.collectAsState()
     val shuffleOn by vm.pm.shuffleEnabled.collectAsState()
@@ -185,10 +187,13 @@ import kotlinx.coroutines.delay
     val stateText = when {
         converting -> "Đang chuyển đổi DSD sang WAV…"
         isFallback -> "Đang phát bản đổi (WAV 176.4 kHz)"
-        isDsd && isNativeProven -> "${t?.dsdRate ?: "DSD"} · Native decode" + if (bpState.active) " · Bit-perfect" else ""
+        isDsd && isNativeProven -> "${t?.dsdRate ?: "DSD"} · Native decode" + if (bpState.active) " · Bit-perfect" else "" +
+            if (hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active) " · Hi-Res" else ""
         isDsd -> "DSD · Đang tải…"
         // v1.1.37 — bit-perfect: output rate is the file's own rate.
         bpState.active -> "Bit-perfect"
+        // v1.1.39 — Hi-Res AAudio: output rate is the file's own rate.
+        hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active -> "Hi-Res · ${(hiResState as com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active).sampleRate / 1000} kHz"
         // v1.1.21 — concise, same as portrait: just the rate
         // ("48 kHz"), not the sentence ("Thiết bị phát tối đa
         // 48 kHz") — the user wants the track-info tail short.
@@ -447,8 +452,12 @@ import kotlinx.coroutines.delay
         TrackInfoDialog(
             track = trackNow,
             onDismiss = { showTrackInfo = false },
-            outputLabel = if (bpState.active) "USB · ${bpState.sampleRateHz / 1000} kHz · Bit-perfect"
-            else "${vm.pm.deviceSampleRateHz / 1000} kHz · Mixer"
+            outputLabel = when {
+                bpState.active -> "USB · ${bpState.sampleRateHz / 1000} kHz · Bit-perfect"
+                hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active ->
+                    "AAudio · ${(hiResState as com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active).sampleRate / 1000} kHz · Exclusive"
+                else -> "${vm.pm.deviceSampleRateHz / 1000} kHz · Mixer"
+            }
         )
     }
     // Play queue — same bottom sheet as portrait.

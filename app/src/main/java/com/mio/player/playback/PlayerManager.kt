@@ -24,6 +24,7 @@ import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorsFactory
 import com.mio.player.playback.dsd.DsdExtractor
 import com.mio.player.data.audio.AudioEffectsManager
+import com.mio.player.data.audio.AaudioOutputProvider
 import com.mio.player.data.audio.AaudioProbe
 import com.mio.player.data.audio.ParametricEqAudioProcessor
 import com.mio.player.data.audio.UsbBitPerfectManager
@@ -246,6 +247,7 @@ class PlayerManager(private val ctx: Context) {
                     return DefaultAudioSink.Builder(context)
                         .setEnableFloatOutput(enableFloatOutput)
                         .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParameters)
+                        .setAudioOutputProvider(aaudioProvider)
                         .setAudioProcessors(
                             arrayOf(
                                 DsdDecimationAudioProcessor(ctx.applicationContext),
@@ -329,6 +331,29 @@ class PlayerManager(private val ctx: Context) {
     val bitPerfect = UsbBitPerfectManager(ctx.applicationContext)
     val bitPerfectState: StateFlow<UsbBitPerfectManager.State> = bitPerfect.state
     var bitPerfectEnabled: Boolean = false
+    /** v1.1.39 — Hi-Res AAudio (step 3 of the hi-res plan). The provider
+     *  serves an AAudio exclusive (MMAP) output at the file's native
+     *  rate when the toggle is on and the stream is actually granted
+     *  that rate + exclusive sharing; otherwise it falls back to the
+     *  standard AudioTrack mixer output, so playback never fails
+     *  because of AAudio. [hiResAaudioEnabled] is the user's Settings
+     *  toggle; [aaudioState] is the provider's own report of what the
+     *  last output actually was (Active / Fallback with reason), so
+     *  the UI never claims hi-res it did not get. There is no audio
+     *  session in AAudio mode, so the AudioEffect-based effects
+     *  (Graphic EQ, Bass, Virtualizer, Loudness) cannot attach — only
+     *  the Parametric EQ (a processor in the sink chain) applies. */
+    val aaudioProvider = AaudioOutputProvider(ctx.applicationContext, false)
+    private val _aaudioStateFlow = MutableStateFlow<AaudioOutputProvider.AaudioState>(AaudioOutputProvider.AaudioState.Idle)
+    /** Live AAudio state for the UI. Refreshed on track change and on
+     *  the Hi-Res toggle; the provider sets lastAaudioState inside
+     *  getAudioOutput, which runs on the sink's thread. */
+    val hiResState: StateFlow<AaudioOutputProvider.AaudioState> = _aaudioStateFlow.asStateFlow()
+    var hiResAaudioEnabled: Boolean = false
+    /** Refresh [hiResState] from the provider's last reported state. */
+    fun refreshHiResState() {
+        _aaudioStateFlow.value = aaudioProvider.lastAaudioState
+    }
     /** Re-evaluate the bit-perfect output for the current track. Called
      *  on track change, on play start, on the Settings toggle, and when
      *  a USB audio device connects/disconnects. DSD is decoded to
@@ -383,6 +408,31 @@ class PlayerManager(private val ctx: Context) {
         scope.launch { runCatching { settings.set(SettingsStore.KEY_BIT_PERFECT_USB, enabled) } }
         updateBitPerfect()
     }
+    /** v1.1.39 — Hi-Res AAudio toggle. Named applyHiResAaudioEnabled,
+     *  not setHiResAaudioEnabled, for the same platform-declaration
+     *  clash reason as applyBitPerfectEnabled (var
+     *  hiResAaudioEnabled generates setHiResAaudioEnabled). Flipping
+     *  the provider flag takes effect on the next output the sink
+     *  creates (next track, or a restart of the current one): the
+     *  provider varies the OutputConfig buffer size while Hi-Res is
+     *  on, so the sink does not reuse the old AudioTrack output for a
+     *  same-format track. If a track is playing, restart it at the
+     *  current position so the switch happens immediately. */
+    fun applyHiResAaudioEnabled(enabled: Boolean) {
+        hiResAaudioEnabled = enabled
+        aaudioProvider.hiResEnabled = enabled
+        scope.launch { runCatching { settings.set(SettingsStore.KEY_HIRES_AAUDIO, enabled) } }
+        refreshHiResState()
+        val track = currentTrack
+        if (track != null && player.playbackState != Player.STATE_IDLE) {
+            val pos = player.currentPosition
+            val idx = player.currentMediaItemIndex
+            if (idx >= 0) {
+                player.seekTo(idx, pos)
+                player.play()
+            }
+        }
+    }
     private var consecutiveErrors = 0
     private var recoveringDsd = false
     private val failedDsd = mutableSetOf<String>()
@@ -407,6 +457,14 @@ class PlayerManager(private val ctx: Context) {
         scope.launch {
             bitPerfectEnabled = settings.flow(SettingsStore.KEY_BIT_PERFECT_USB, false).first()
             updateBitPerfect()
+            // v1.1.39 — restore the Hi-Res AAudio toggle into the
+            // provider. The player (and its sink) is built before this
+            // coroutine completes, so the provider starts with
+            // hiResEnabled=false and is flipped here; the flag takes
+            // effect on the next output the sink creates.
+            hiResAaudioEnabled = settings.flow(SettingsStore.KEY_HIRES_AAUDIO, false).first()
+            aaudioProvider.hiResEnabled = hiResAaudioEnabled
+            refreshHiResState()
         }
         try {
             val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -503,6 +561,13 @@ class PlayerManager(private val ctx: Context) {
                 // rate (e.g. 44.1k -> 96k), so re-pick the bit-perfect
                 // attributes for it.
                 updateBitPerfect()
+                // v1.1.39 — the sink may have created a new AAudio /
+                // AudioTrack output for this track; refresh the Hi-Res
+                // status the UI shows. The state is set inside
+                // getAudioOutput, which can run slightly after this
+                // callback, so the Settings screen also re-reads the
+                // provider directly when it recomposes.
+                refreshHiResState()
             }
             override fun onShuffleModeEnabledChanged(v: Boolean) {
                 _shuffleEnabled.value = v

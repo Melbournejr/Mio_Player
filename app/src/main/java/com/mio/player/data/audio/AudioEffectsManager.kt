@@ -102,7 +102,10 @@ class AudioEffectsManager {
     val presets: Map<String, FloatArray> = EqPresets.BUILT_IN
     fun attach(audioSessionId: Int) {
         release()
-        if (audioSessionId == 0) return
+        // v1.1.39 — AAudio mode has no audio session (UNSET = -1), so
+        // there is nothing to attach the Android effects to. Return
+        // early instead of throwing (and logging) for every effect.
+        if (audioSessionId <= 0) return
         try { eq = Equalizer(0, audioSessionId).apply { enabled = true } } catch (e: Exception) { Log.w("MioFx", "EQ unavailable", e) }
         try { bass = BassBoost(0, audioSessionId).apply { enabled = true } } catch (e: Exception) { Log.w("MioFx", "BassBoost unavailable", e) }
         try { virt = Virtualizer(0, audioSessionId).apply { enabled = true } } catch (e: Exception) { Log.w("MioFx", "Virtualizer unavailable", e) }

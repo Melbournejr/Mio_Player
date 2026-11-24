@@ -34,6 +34,7 @@ class SettingsStore(private val ctx: Context) {
         val KEY_THEME = stringPreferencesKey("theme") // deep_wave | sunset | system
         val KEY_AUTO_METADATA = booleanPreferencesKey("auto_metadata") // v1.1.10: auto-fetch missing artist/album/cover
         val KEY_BIT_PERFECT_USB = booleanPreferencesKey("bit_perfect_usb") // v1.1.37: Android 14+ mixer BIT_PERFECT for a USB DAC; EQ/ReplayGain bypassed while active
+        val KEY_HIRES_AAUDIO = booleanPreferencesKey("hires_aaudio") // v1.1.39: AAudio exclusive (MMAP) output at the file's native rate for the internal DAC; only Parametric EQ applies (no AudioTrack session for the Graphic/AudioEffect path)
     }
     val onboarded: Flow<Boolean> = ctx.dataStore.data.map { it[KEY_ONBOARDED] ?: false }
     val eqPreset: Flow<String> = ctx.dataStore.data.map { it[KEY_EQ_PRESET] ?: "Flat" }

@@ -324,6 +324,36 @@ import kotlinx.coroutines.launch
         }
         Text(bpStatus, color = MioTextSecondary, fontSize = 13.sp)
         Spacer(Modifier.height(16.dp))
+        // v1.1.39 — Hi-Res AAudio (internal DAC): bypasses the 48 kHz
+        // mixer with an exclusive AAudio stream at the file's native
+        // rate, so a 96/192 kHz FLAC reaches the internal DAC without
+        // resampling. Only the Parametric EQ still applies (it runs in
+        // the sink chain); the Graphic EQ / Bass / Virtualizer /
+        // Loudness need an AudioTrack session, which AAudio has none
+        // of, so they do not apply while this is active. If the phone
+        // refuses exclusive mode or the requested rate, the app falls
+        // back to the mixer and says so — it never claims hi-res it
+        // did not get.
+        val hiResOn by settings.flow(com.mio.player.data.prefs.SettingsStore.KEY_HIRES_AAUDIO, false).collectAsState(initial = false)
+        val hiResState by pm.hiResState.collectAsState()
+        Text("Hi-Res (AAudio, DAC trong máy)", color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("Bật để nhạc ra đúng tần số gốc của file qua DAC trong máy, không qua bộ trộn 48 kHz. Chỉ EQ Parametric còn tác dụng; EQ Graphic, Bass, Virtualizer, Loudness tạm không áp dụng ở chế độ này. Nếu máy không cho mở luồng exclusive ở tần số đó, app tự về mixer.", color = MioTextSecondary, fontSize = 13.sp)
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (hiResOn) "Đang bật" else "Đang tắt", color = MioText, modifier = Modifier.weight(1f))
+            androidx.compose.material3.Switch(
+                checked = hiResOn,
+                onCheckedChange = { v -> scope.launch { pm.applyHiResAaudioEnabled(v) } }
+            )
+        }
+        val hiResStatus = when (val s = hiResState) {
+            is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active ->
+                "Đang chạy AAudio exclusive: ${s.sampleRate / 1000} kHz${if (s.lowLatency) " · low-latency" else ""}"
+            is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Fallback -> s.reason
+            is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Idle ->
+                if (hiResOn) "Đã bật — phát một bài để mở luồng AAudio." else "Tắt — đang phát qua bộ trộn thường (48 kHz)."
+        }
+        Text(hiResStatus, color = MioTextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(16.dp))
         val cacheSizeMb = remember {
             val dir = java.io.File(ctx.cacheDir, "dsd-cache")
             (dir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
