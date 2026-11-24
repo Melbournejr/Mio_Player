@@ -89,7 +89,16 @@ suspend fun restoreSoundSettings(ctx: Context) {
     val bands = FloatArray(10) { 0f }
     bandsCsv.split(",").mapNotNull { it.toFloatOrNull() }.forEachIndexed { i, v -> if (i < 10) bands[i] = v }
     pm.fx.preampDb = settings.flow(SettingsStore.KEY_PREAMP, 0f).first()
-    pm.fx.applyBands(bands)
+    // v1.1.32 — restore the EQ mode + parametric bands BEFORE applying:
+    // restoreState() sets both representations exactly as stored and
+    // applies once, in the stored mode.
+    pm.fx.restoreState(
+        settings.flow(SettingsStore.KEY_EQ_MODE, "graphic").first(),
+        bands,
+        com.mio.player.data.audio.ParametricEqDefaults.decode(
+            settings.flow(SettingsStore.KEY_EQ_PARAMETRIC, "").first()
+        )
+    )
     pm.fx.setBassBoost(settings.flow(SettingsStore.KEY_BASS, 0).first())
     pm.fx.setVirtualizer(settings.flow(SettingsStore.KEY_VIRTUALIZER, 0).first())
     pm.fx.setLoudness(settings.flow(SettingsStore.KEY_LOUDNESS, 0).first())

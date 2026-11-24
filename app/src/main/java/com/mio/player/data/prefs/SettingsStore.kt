@@ -14,6 +14,8 @@ class SettingsStore(private val ctx: Context) {
         val KEY_REPLAYGAIN = stringPreferencesKey("replaygain") // off/track/album
         val KEY_EQ_PRESET = stringPreferencesKey("eq_preset")
         val KEY_EQ_BANDS = stringPreferencesKey("eq_bands") // csv dB -15..15
+        val KEY_EQ_MODE = stringPreferencesKey("eq_mode") // v1.1.32: "graphic" (default) | "parametric"
+        val KEY_EQ_PARAMETRIC = stringPreferencesKey("eq_parametric") // v1.1.32: "PEAK,31,0.0,1.41;..." (see ParametricEqDefaults.encode)
         val KEY_PREAMP = floatPreferencesKey("preamp_db")
         val KEY_HEADPHONE_MODEL = stringPreferencesKey("headphone_model") // v1.1.13: active headphone-correction model, "" = none
         val KEY_CUSTOM_PRESETS = stringPreferencesKey("eq_custom_presets") // v1.1.13: JSON {"name": [10 band dB]} — bands only, no preamp

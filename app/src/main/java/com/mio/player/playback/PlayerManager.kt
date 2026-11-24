@@ -23,6 +23,7 @@ import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorsFactory
 import com.mio.player.playback.dsd.DsdExtractor
 import com.mio.player.data.audio.AudioEffectsManager
+import com.mio.player.data.audio.ParametricEqAudioProcessor
 import com.mio.player.data.audio.WaveformTap
 import com.mio.player.data.audio.DsdDecoder
 import com.mio.player.data.audio.DsdSupport
@@ -167,6 +168,12 @@ class PlayerManager(private val ctx: Context) {
     }
     val fx = AudioEffectsManager()
     val waveform = WaveformTap(context = ctx)
+    /** v1.1.32 — Parametric EQ biquad processor, in the sink chain
+     *  between the DSD decimator and the FFT tap. It is always present
+     *  in the chain (the sink is built once) and is a clean passthrough
+     *  whenever Graphic mode is active, so Graphic playback is
+     *  byte-identical to v1.1.31. */
+    val parametricEqProcessor = ParametricEqAudioProcessor()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val player: ExoPlayer = ExoPlayer.Builder(ctx)
         .setRenderersFactory(
@@ -239,6 +246,7 @@ class PlayerManager(private val ctx: Context) {
                         .setAudioProcessors(
                             arrayOf(
                                 DsdDecimationAudioProcessor(ctx.applicationContext),
+                                parametricEqProcessor,
                                 waveform.fftProcessor
                             )
                         )
@@ -325,6 +333,9 @@ class PlayerManager(private val ctx: Context) {
     private val _shuffleEnabled = MutableStateFlow(false); val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF); val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
     init {
+        // v1.1.32 — wire the parametric EQ processor to the effects
+        // manager so mode/band/preamp changes reach the sink chain.
+        fx.bindParametricProcessor(parametricEqProcessor)
         // v1.1.5 native-DSD diagnostics (see logNativeDsdProbe /
         // runDsdDecodeProbe below): the probe proves the wiring AND the
         // decoder itself, and the decode listener records what real DSD

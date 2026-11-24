@@ -29,6 +29,9 @@ import androidx.core.content.FileProvider
 import androidx.navigation.NavHostController
 import com.mio.player.data.audio.AudioEffectsManager
 import com.mio.player.data.audio.EqPresets
+import com.mio.player.data.audio.ParametricBand
+import com.mio.player.data.audio.ParametricBandType
+import com.mio.player.data.audio.ParametricEqDefaults
 import com.mio.player.data.prefs.SettingsStore
 import com.mio.player.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +40,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import kotlin.math.log10
+import kotlin.math.pow
 /** Equalizer & Sound. Every change is saved to SettingsStore (DataStore)
  *  immediately, and MainActivity restores the saved values at startup —
  *  before this screen only kept the values in memory, so reopening it
@@ -65,14 +70,35 @@ import java.util.Locale
     var headphoneModel by remember { mutableStateOf("") }
     var customPresets by remember { mutableStateOf<Map<String, FloatArray>>(emptyMap()) }
     var statusMsg by remember { mutableStateOf("") }
+    /** v1.1.32 — Parametric EQ mode + bands. Graphic (default) is the
+     *  old 10 fixed bands; Parametric keeps its own freq/type/Q per
+     *  band, with gains kept in step with [bands] on every edit. */
+    var eqMode by remember { mutableStateOf("graphic") }
+    var paramBands by remember { mutableStateOf(ParametricEqDefaults.bands()) }
+    var selectedBand by remember { mutableStateOf(0) }
+    fun formatFreq(hz: Float): String = if (hz >= 1000f) String.format(Locale.US, "%.1f kHz", hz / 1000f) else "${hz.toInt()} Hz"
+    /** Log-scale frequency slider: 0..1 maps to 20 Hz..20 kHz. */
+    fun freqToSlider(hz: Float): Float = ((log10(hz.coerceIn(20f, 20000f).toDouble()) - log10(20.0)) / (log10(20000.0) - log10(20.0))).toFloat()
+    fun sliderToFreq(v: Float): Float = 10.0.pow(log10(20.0) + v.coerceIn(0f, 1f) * (log10(20000.0) - log10(20.0))).toFloat()
     /** v1.1.13 — preampDb is set on pm.fx BEFORE applyBands, because
      *  applyBands writes (band + preamp) per band. */
-    fun apply() { pm.fx.preampDb = preamp; pm.fx.applyBands(bands); pm.fx.setBassBoost((bass*1000).toInt()); pm.fx.setVirtualizer((virt*1000).toInt()); pm.fx.setLoudness((loud*1000).toInt()); pm.fx.balance = balance }
+    fun apply() {
+        pm.fx.preampDb = preamp
+        pm.fx.eqMode = eqMode
+        if (eqMode == "parametric") pm.fx.applyParametricBands(paramBands) else pm.fx.applyBands(bands)
+        pm.fx.setBassBoost((bass*1000).toInt()); pm.fx.setVirtualizer((virt*1000).toInt()); pm.fx.setLoudness((loud*1000).toInt()); pm.fx.balance = balance
+    }
     fun save() {
         if (!loaded) return
         scope.launch {
             settings.set(SettingsStore.KEY_EQ_PRESET, preset)
-            settings.set(SettingsStore.KEY_EQ_BANDS, bands.joinToString(","))
+            // v1.1.32 — in Parametric mode the gains live in paramBands;
+            // store the effective gains so the graphic representation
+            // never goes stale.
+            val effectiveBands = if (eqMode == "parametric") ParametricEqDefaults.gainsFromBands(paramBands) else bands
+            settings.set(SettingsStore.KEY_EQ_BANDS, effectiveBands.joinToString(","))
+            settings.set(SettingsStore.KEY_EQ_MODE, eqMode)
+            settings.set(SettingsStore.KEY_EQ_PARAMETRIC, ParametricEqDefaults.encode(paramBands))
             settings.set(SettingsStore.KEY_PREAMP, preamp)
             settings.set(SettingsStore.KEY_HEADPHONE_MODEL, headphoneModel)
             settings.set(SettingsStore.KEY_CUSTOM_PRESETS, EqPresets.buildCustomPresetsJson(customPresets))
@@ -88,6 +114,7 @@ import java.util.Locale
     fun applyHeadphone(model: String) {
         val profile = EqPresets.HEADPHONE_PROFILES[model] ?: return
         bands = profile.bands.copyOf()
+        paramBands = ParametricEqDefaults.bandsFromGains(profile.bands)
         preamp = profile.preampDb
         headphoneModel = model
         preset = "Tai nghe: $model"
@@ -95,9 +122,27 @@ import java.util.Locale
     }
     fun clearHeadphone() {
         bands = FloatArray(10) { 0f }
+        paramBands = ParametricEqDefaults.bands()
         preamp = 0f
         headphoneModel = ""
         preset = "Flat"
+        applyAndSave()
+    }
+    /** v1.1.32 — switch EQ mode, preserving gains: parametric takes
+     *  the graphic gains (keeping any custom freq/type/Q), graphic
+     *  takes the parametric gains. */
+    fun switchMode(mode: String) {
+        if (mode == "parametric") {
+            paramBands = paramBands.mapIndexed { i, b -> b.copy(gainDb = bands.getOrElse(i) { 0f }) }
+        } else {
+            bands = ParametricEqDefaults.gainsFromBands(paramBands)
+        }
+        eqMode = mode
+        applyAndSave()
+    }
+    fun updateParamBand(newBand: ParametricBand) {
+        paramBands = paramBands.mapIndexed { i, old -> if (i == selectedBand) newBand else old }
+        headphoneModel = ""
         applyAndSave()
     }
     fun deleteCustom(name: String) {
@@ -112,8 +157,12 @@ import java.util.Locale
             val file = withContext(Dispatchers.IO) {
                 try {
                     val dir = File(ctx.cacheDir, "eq-presets").apply { mkdirs() }
+                    // v1.1.32 — in Parametric mode the gains live in
+                    // paramBands (bands is only kept in step on a mode
+                    // switch), so export the effective gains.
+                    val exportBands = if (eqMode == "parametric") ParametricEqDefaults.gainsFromBands(paramBands) else bands
                     File(dir, "${EqPresets.safeFileName(preset)}-eq.json").apply {
-                        writeText(EqPresets.buildPresetJson(preset, bands, preamp))
+                        writeText(EqPresets.buildPresetJson(preset, exportBands, preamp))
                     }
                 } catch (_: Exception) { null }
             } ?: run { statusMsg = "Không xuất được preset"; return@launch }
@@ -147,6 +196,7 @@ import java.util.Locale
             customPresets = customPresets + (name to parsed.bands.copyOf())
             preset = name
             bands = parsed.bands.copyOf()
+            paramBands = ParametricEqDefaults.bandsFromGains(parsed.bands)
             preamp = parsed.preampDb
             headphoneModel = ""
             applyAndSave()
@@ -159,6 +209,8 @@ import java.util.Locale
         val parsed = FloatArray(10) { 0f }
         csv.split(",").mapNotNull { it.toFloatOrNull() }.forEachIndexed { i, v -> if (i < 10) parsed[i] = v }
         bands = parsed
+        eqMode = settings.flow(SettingsStore.KEY_EQ_MODE, "graphic").first().let { if (it == "parametric") "parametric" else "graphic" }
+        paramBands = ParametricEqDefaults.decode(settings.flow(SettingsStore.KEY_EQ_PARAMETRIC, "").first())
         preamp = settings.flow(SettingsStore.KEY_PREAMP, 0f).first()
         headphoneModel = settings.flow(SettingsStore.KEY_HEADPHONE_MODEL, "").first()
         customPresets = EqPresets.parseCustomPresets(settings.flow(SettingsStore.KEY_CUSTOM_PRESETS, "").first())
@@ -182,7 +234,10 @@ import java.util.Locale
             Spacer(Modifier.height(8.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(pm.fx.presets.keys.toList()) { p ->
-                    FilterChip(selected = preset == p, onClick = { preset = p; bands = (pm.fx.presets[p] ?: bands).copyOf(); headphoneModel = ""; applyAndSave() }, label = { Text(p) })
+                    // v1.1.32 — a preset in Parametric mode resets each
+                    // band to its standard frequency, Peak, Q 1.41
+                    // (bandsFromGains), so the preset sounds as defined.
+                    FilterChip(selected = preset == p, onClick = { preset = p; bands = (pm.fx.presets[p] ?: bands).copyOf(); paramBands = ParametricEqDefaults.bandsFromGains(bands); headphoneModel = ""; applyAndSave() }, label = { Text(p) })
                 }
             }
             if (customPresets.isNotEmpty()) {
@@ -191,11 +246,23 @@ import java.util.Locale
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(customPresets.keys.toList()) { name ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            FilterChip(selected = preset == name, onClick = { preset = name; bands = (customPresets[name] ?: bands).copyOf(); headphoneModel = ""; applyAndSave() }, label = { Text(name) })
+                            FilterChip(selected = preset == name, onClick = { preset = name; bands = (customPresets[name] ?: bands).copyOf(); paramBands = ParametricEqDefaults.bandsFromGains(bands); headphoneModel = ""; applyAndSave() }, label = { Text(name) })
                             IconButton(onClick = { deleteCustom(name) }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "Xóa preset $name", tint = MioTextSecondary, modifier = Modifier.size(16.dp)) }
                         }
                     }
                 }
+            }
+        }
+        // --- Chế độ EQ (v1.1.32) ---
+        item {
+            SectionTitle("Chế độ EQ")
+            Text("Graphic: 10 dải cố định như trước, qua Android Equalizer. Parametric: chỉnh tần số, loại dải và Q cho từng band, qua bộ lọc biquad trong ExoPlayer — chỉ 1 chế độ chạy tại 1 thời điểm.", color = MioTextSecondary, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = eqMode == "graphic", onClick = { if (eqMode != "graphic") switchMode("graphic") })
+                Text("Graphic", color = MioText, modifier = Modifier.padding(end = 24.dp))
+                RadioButton(selected = eqMode == "parametric", onClick = { if (eqMode != "parametric") switchMode("parametric") })
+                Text("Parametric", color = MioText)
             }
         }
         // --- Dải tần ---
@@ -208,15 +275,58 @@ import java.util.Locale
         // landscape and v1.1.27/28 forced the screen to rotate, both
         // wrong.) The old stacked horizontal sliders are gone.
         item {
-            SectionTitle("Dải tần")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                AudioEffectsManager.BAND_FREQS_HZ.forEachIndexed { i, freq ->
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("${if (bands[i] > 0) "+" else ""}${bands[i].toInt()} dB", color = MioText, fontSize = 11.sp)
-                        VerticalBandSlider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() })
-                        Text(if (freq >= 1000) "${freq / 1000}k" else "$freq", color = MioTextSecondary, fontSize = 11.sp)
+            if (eqMode == "graphic") {
+                SectionTitle("Dải tần")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    AudioEffectsManager.BAND_FREQS_HZ.forEachIndexed { i, freq ->
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("${if (bands[i] > 0) "+" else ""}${bands[i].toInt()} dB", color = MioText, fontSize = 11.sp)
+                            VerticalBandSlider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() })
+                            Text(if (freq >= 1000) "${freq / 1000}k" else "$freq", color = MioTextSecondary, fontSize = 11.sp)
+                        }
                     }
                 }
+            } else {
+                // v1.1.32 — Parametric editor: pick one band, then edit
+                // its type / frequency / gain / Q. Standard Material 3
+                // controls (FilterChip / RadioButton / Slider) throughout.
+                SectionTitle("Parametric — Dải tần")
+                val sel = paramBands.getOrElse(selectedBand) { ParametricBand() }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(10) { i ->
+                        val b = paramBands[i]
+                        FilterChip(
+                            selected = selectedBand == i,
+                            onClick = { selectedBand = i },
+                            label = { Text("${i + 1}: ${formatFreq(b.freqHz)}") }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Band ${selectedBand + 1} — ${sel.type.name} · ${formatFreq(sel.freqHz)} · ${if (sel.gainDb > 0) "+" else ""}${String.format(Locale.US, "%.1f", sel.gainDb)} dB · Q ${String.format(Locale.US, "%.2f", sel.q)}", color = MioText, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Text("Loại dải", color = MioText)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = sel.type == ParametricBandType.PEAK, onClick = { updateParamBand(sel.copy(type = ParametricBandType.PEAK)) })
+                    Text("Peak", color = MioText, modifier = Modifier.padding(end = 16.dp))
+                    RadioButton(selected = sel.type == ParametricBandType.LOW_SHELF, onClick = { updateParamBand(sel.copy(type = ParametricBandType.LOW_SHELF)) })
+                    Text("Low Shelf", color = MioText, modifier = Modifier.padding(end = 16.dp))
+                    RadioButton(selected = sel.type == ParametricBandType.HIGH_SHELF, onClick = { updateParamBand(sel.copy(type = ParametricBandType.HIGH_SHELF)) })
+                    Text("High Shelf", color = MioText)
+                }
+                Text("Tần số: ${formatFreq(sel.freqHz)}", color = MioText)
+                Slider(value = freqToSlider(sel.freqHz), onValueChange = { v -> updateParamBand(sel.copy(freqHz = sliderToFreq(v))) })
+                Text("Gain: ${String.format(Locale.US, "%.1f", sel.gainDb)} dB", color = MioText)
+                Slider(value = sel.gainDb, onValueChange = { v -> updateParamBand(sel.copy(gainDb = v)) }, valueRange = -15f..15f)
+                Text(if (sel.type == ParametricBandType.PEAK) "Q: ${String.format(Locale.US, "%.2f", sel.q)}" else "Q: chỉ áp dụng cho Peak — Shelf dùng độ dốc cố định", color = MioText)
+                Slider(value = sel.q, onValueChange = { v -> updateParamBand(sel.copy(q = v)) }, valueRange = 0.5f..4.0f, enabled = sel.type == ParametricBandType.PEAK)
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = {
+                    paramBands = ParametricEqDefaults.bandsFromGains(ParametricEqDefaults.gainsFromBands(paramBands))
+                    applyAndSave()
+                }) { Text("Đặt lại tần số / loại / Q về chuẩn") }
+                Spacer(Modifier.height(8.dp))
+                Text("Gain 0 dB = band đó không lọc gì. Đổi tần số/Q xong nghe thử ngay — không cần khởi động lại app.", color = MioTextSecondary, fontSize = 12.sp)
             }
         }
         // --- Preamp ---
@@ -268,7 +378,7 @@ import java.util.Locale
         // effects footnote stays here.
         item {
             Spacer(Modifier.height(16.dp))
-            Text("Effects use Android AudioEffect (Equalizer / BassBoost / Virtualizer / LoudnessEnhancer) on ExoPlayer's audio session. If your phone does not support an effect, it is skipped silently — playback never breaks.", color = MioTextSecondary, fontSize = 12.sp)
+            Text("Graphic mode uses Android AudioEffect (Equalizer / BassBoost / Virtualizer / LoudnessEnhancer) on ExoPlayer's audio session. Parametric mode (v1.1.32) flattens that Equalizer and runs a 10-band biquad filter (RBJ coefficients) in ExoPlayer's audio sink instead — only one EQ runs at a time. If your phone does not support an effect, it is skipped silently — playback never breaks.", color = MioTextSecondary, fontSize = 12.sp)
             Spacer(Modifier.height(24.dp))
         }
     }
