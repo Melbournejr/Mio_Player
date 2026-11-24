@@ -64,8 +64,12 @@ class AudioEffectsManager {
     /** Switch modes, preserving gains as far as possible: graphic ->
      *  parametric keeps the gains (and any customised freq/type/Q the
      *  user already set in parametric); parametric -> graphic takes
-     *  the parametric gains as the graphic gains. */
-    fun setEqMode(mode: String) {
+     *  the parametric gains as the graphic gains.
+     *  (Named switchEqMode, not setEqMode: `var eqMode` already
+     *  generates a JVM setEqMode(String) setter, and a fun with the
+     *  same signature is a platform declaration clash — the v1.1.32
+     *  first push failed CI on exactly that.) */
+    fun switchEqMode(mode: String) {
         val m = if (mode == "parametric") "parametric" else "graphic"
         if (m == "parametric" && eqMode != "parametric") {
             parametricBands = parametricBands.mapIndexed { i, b -> b.copy(gainDb = currentBands.getOrElse(i) { 0f }) }
