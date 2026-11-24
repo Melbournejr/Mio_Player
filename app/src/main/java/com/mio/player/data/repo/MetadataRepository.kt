@@ -143,12 +143,17 @@ class MetadataRepository(
      *  local tag can be WRONG without being "<unknown>", and the old
      *  only-fill-missing rule silently discarded exactly that
      *  correction. Fetched entries (sources "itunes" /
-     *  "musicbrainz" / "none") keep the old rule. */
+     *  "musicbrainz" / "none") keep the old rule.
+     *  v1.1.35 — the same override now covers the TITLE: a manual
+     *  title (stored since the 2→3 migration) overrides the track
+     *  row's title, so the lyrics lookup — which queries by title —
+     *  follows a corrected title instead of the old one. */
     fun applyMetadata(t: Track, m: TrackMetadataEntity?): Track {
         if (m == null) return t
         val cover = m.coverPath?.takeIf { File(it).exists() }
         val manual = m.source == "manual"
         return t.copy(
+            title = if (!m.title.isNullOrBlank() && manual) m.title else t.title,
             artist = if (!m.artist.isNullOrBlank() && (manual || isUnknownArtist(t.artist))) m.artist else t.artist,
             album = if (!m.album.isNullOrBlank() && (manual || isUnknownAlbum(t.album))) m.album else t.album,
             coverPath = cover ?: t.coverPath,
@@ -217,19 +222,22 @@ class MetadataRepository(
      * v1.1.12 — persist the values the user TYPED in the metadata
      * edit dialog as this song's metadata (source "manual"), so
      * applyMetadata() overrides the track's own artist/album with
-     * them even when the local tag is present but wrong. The title
-     * is NOT stored — the track_metadata table has no title column
-     * (schema unchanged) and the title still comes from the track
-     * row; the title field only feeds the "Tìm" search. A blank
+     * them even when the local tag is present but wrong. A blank
      * typed field keeps whatever was stored before instead of
      * wiping it, and an earlier downloaded cover is kept. Never
      * throws; returns false only on a storage failure.
+     * v1.1.35 — the typed TITLE is now stored too (track_metadata
+     * gained a title column in the 2→3 migration). Before, the
+     * title only fed the "Tìm" search and the track row kept the
+     * old title, so the lyrics lookup — which queries by title —
+     * never followed a corrected title.
      */
     suspend fun saveTypedMetadata(track: Track, title: String, artist: String, album: String): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
                 val now = System.currentTimeMillis()
                 val existing = db.metadataDao().get(track.id)
+                val typedTitle = title.trim().takeIf { it.isNotBlank() }
                 val typedArtist = artist.trim().takeIf { it.isNotBlank() }
                 val typedAlbum = album.trim().takeIf { it.isNotBlank() }
                 db.metadataDao().put(
@@ -240,9 +248,10 @@ class MetadataRepository(
                         existing?.coverPath,
                         "manual",
                         now,
+                        title = typedTitle ?: existing?.title,
                     )
                 )
-                MioLog.event(ctx, "Metadata manual save: \"${track.title}\" -> artist=${typedArtist ?: "-"} album=${typedAlbum ?: "-"}")
+                MioLog.event(ctx, "Metadata manual save: \"${track.title}\" -> title=${typedTitle ?: "-"} artist=${typedArtist ?: "-"} album=${typedAlbum ?: "-"}")
                 true
             }.onFailure {
                 MioLog.event(ctx, "Metadata manual save error: ${track.title}: ${it.message}")

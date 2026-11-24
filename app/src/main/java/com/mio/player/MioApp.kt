@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
  *  faster CI builds, and one less failure mode on GitHub Actions. */
 class AppContainer(ctx: Context) {
     val db: AppDatabase = Room.databaseBuilder(ctx, AppDatabase::class.java, "mio.db")
-        .addMigrations(AppDatabase.MIGRATION_1_2).fallbackToDestructiveMigration().build()
+        .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3).fallbackToDestructiveMigration().build()
     val settings = SettingsStore(ctx)
     val scanner = MusicScanner(ctx)
     val lyricsRepo = LyricsRepository(ctx, db)

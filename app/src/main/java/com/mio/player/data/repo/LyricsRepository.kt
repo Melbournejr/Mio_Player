@@ -112,6 +112,50 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         withContext(Dispatchers.IO) { db.lyricsDao().clearAll() }
         MioLog.event(ctx, "Lyrics cache cleared (user)")
     }
+    /** v1.1.35 — MANUAL lyrics search, from the "Tìm lời bài hát"
+     *  dialog on Now Playing. Queries LRCLIB (exact, then search)
+     *  and Netease with the caller-supplied artist/title — no
+     *  sidecar / embedded / filename derivation, the user is
+     *  explicitly telling us what to look for. Does NOT cache:
+     *  the dialog previews the result and only [saveManualLyrics]
+     *  persists it, under the TRACK's own (artist, title), so a
+     *  wrong manual search never poisons the cache. Returns the
+     *  first hit (synced preferred, plain as fallback), or null. */
+    suspend fun searchManual(artist: String, title: String, durationMs: Long): Lyrics? {
+        val qArtist = normalizeArtist(artist).takeIf { it.isNotBlank() } ?: return null
+        val qTitle = title.trim().takeIf { it.isNotBlank() } ?: return null
+        var plainFallback: Lyrics? = null
+        fun consider(r: Lyrics?): Lyrics? {
+            if (r == null) return null
+            if (r.synced.isNotEmpty()) return r
+            if (plainFallback == null && !r.plain.isNullOrBlank()) plainFallback = r
+            return null
+        }
+        for (tv in listOf(qTitle, normalizeTitle(qTitle)).distinct()) {
+            consider(tryGet(qArtist, tv, null, durationMs, artist, title, cache = false))?.let { return it }
+            if (durationMs > 0) consider(tryGet(qArtist, tv, null, 0, artist, title, cache = false))?.let { return it }
+        }
+        for (tv in listOf(qTitle, normalizeTitle(qTitle)).distinct()) {
+            consider(trySearch(qArtist, tv, durationMs, artist, title, cache = false))?.let { return it }
+        }
+        for (tv in listOf(qTitle, normalizeTitle(qTitle)).distinct()) {
+            consider(tryNetease(qArtist, tv, durationMs, artist, title, cache = false))?.let { return it }
+        }
+        return plainFallback
+    }
+    /** v1.1.35 — persist lyrics the user explicitly chose (from a
+     *  manual search) as this track's lyrics, under the TRACK's
+     *  own (artist, title) — not the search terms. Stored with
+     *  source "manual" so the next play serves it from cache
+     *  instead of re-fetching, and so the log shows it was
+     *  user-chosen. */
+    suspend fun saveManualLyrics(artist: String, title: String, lyrics: Lyrics) {
+        val lrcText = lyrics.synced.joinToString("\n") { "[${it.timeMs / 60000}:${(it.timeMs % 60000) / 1000.0}]${it.text}" }
+        withContext(Dispatchers.IO) {
+            db.lyricsDao().put(LyricsEntity(artist, title, null, 0, lrcText.takeIf { it.isNotBlank() }, lyrics.plain, "manual"))
+        }
+        MioLog.event(ctx, "Lyrics manual save: $artist - $title (from ${lyrics.source})")
+    }
     /** "A1.Hello" -> "Hello", "B2.River Lea" -> "River Lea",
      *  "01 - Hello" -> "Hello", "Hello (2015 Remaster)" -> "Hello".
      *  Generic "(...)" is NOT stripped — "Send My Love (To Your New
@@ -492,14 +536,14 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         val r = normKey(normalizeTitle(resultTitle)); val q = normKey(normalizeTitle(queryTitle))
         return r.isNotEmpty() && q.isNotEmpty() && (r == q || r.contains(q) || q.contains(r))
     }
-    private suspend fun tryGet(queryArtist: String, queryTitle: String, queryAlbum: String?, durationMs: Long, cacheArtist: String, cacheTitle: String): Lyrics? {
+    private suspend fun tryGet(queryArtist: String, queryTitle: String, queryAlbum: String?, durationMs: Long, cacheArtist: String, cacheTitle: String, cache: Boolean = true): Lyrics? {
         return try {
             val url = StringBuilder("https://lrclib.net/api/get?artist_name=${enc(queryArtist)}&track_name=${enc(queryTitle)}")
             if (queryAlbum != null) url.append("&album_name=${enc(queryAlbum)}")
             if (durationMs > 0) url.append("&duration=${durationMs / 1000}")
             val body = get(url.toString())
             if (body == null) { MioLog.event(ctx, "Lyrics LRCLIB /get miss (no response): $queryArtist - $queryTitle album=${queryAlbum ?: "-"}"); return null }
-            val res = parseLrclib(body, cacheArtist, cacheTitle, queryAlbum, durationMs)
+            val res = parseLrclib(body, cacheArtist, cacheTitle, queryAlbum, durationMs, cache)
             MioLog.event(ctx, "Lyrics LRCLIB /get ${if (res != null) "HIT" else "miss (empty)"}: $queryArtist - $queryTitle album=${queryAlbum ?: "-"} dur=${durationMs / 1000}s")
             res
         } catch (e: Exception) { MioLog.event(ctx, "Lyrics LRCLIB /get error: $queryArtist - $queryTitle: ${e.message}"); null }
@@ -509,7 +553,7 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
      *  results whose LRCLIB duration is further than this from the
      *  track, so a same-title song by another artist is not served as
      *  "the" lyrics. Both default to the old behaviour. */
-    private suspend fun trySearch(queryArtist: String?, queryTitle: String, durationMs: Long, cacheArtist: String, cacheTitle: String, requireSynced: Boolean = false, maxDiffSec: Long = Long.MAX_VALUE): Lyrics? {
+    private suspend fun trySearch(queryArtist: String?, queryTitle: String, durationMs: Long, cacheArtist: String, cacheTitle: String, requireSynced: Boolean = false, maxDiffSec: Long = Long.MAX_VALUE, cache: Boolean = true): Lyrics? {
         return try {
             val url = StringBuilder("https://lrclib.net/api/search?track_name=${enc(queryTitle)}")
             if (queryArtist != null) url.append("&artist_name=${enc(queryArtist)}")
@@ -543,8 +587,8 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
                 }
                 if (!requireSynced && fallback == null && obj.optString("plainLyrics").isNotBlank()) fallback = json
             }
-            val res = bestSynced?.let { parseLrclib(it, cacheArtist, cacheTitle, null, durationMs) }
-                ?: fallback?.let { parseLrclib(it, cacheArtist, cacheTitle, null, durationMs) }
+            val res = bestSynced?.let { parseLrclib(it, cacheArtist, cacheTitle, null, durationMs, cache) }
+                ?: fallback?.let { parseLrclib(it, cacheArtist, cacheTitle, null, durationMs, cache) }
             MioLog.event(ctx, "Lyrics LRCLIB /search ${if (res != null) "HIT (${if (bestSynced != null) "synced" else "plain"})" else "miss"}: title=$queryTitle artist=${queryArtist ?: "- (none)"} dur=${durationMs / 1000}s results=${arr.length()}")
             res
         } catch (e: Exception) { MioLog.event(ctx, "Lyrics LRCLIB /search error: $queryTitle: ${e.message}"); null }
@@ -552,7 +596,7 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
     /** Netease Cloud Music (music.163.com) — free, no key. Search for the
      *  song, verify artist + title + duration, then fetch its synced LRC.
      *  Needs a browser User-Agent + Referer or the API returns nothing. */
-    private suspend fun tryNetease(queryArtist: String, queryTitle: String, durationMs: Long, cacheArtist: String, cacheTitle: String): Lyrics? {
+    private suspend fun tryNetease(queryArtist: String, queryTitle: String, durationMs: Long, cacheArtist: String, cacheTitle: String, cache: Boolean = true): Lyrics? {
         return try {
             val searchUrl = "https://music.163.com/api/search/get?s=${enc("$queryArtist $queryTitle")}&type=1&offset=0&limit=5"
             val searchBody = getNetease(searchUrl)
@@ -581,7 +625,7 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
             if (lrc == null) { MioLog.event(ctx, "Lyrics Netease miss (no lrc): $queryArtist - $queryTitle"); return null }
             val lines = parseLrc(lrc)
             if (lines.isEmpty()) { MioLog.event(ctx, "Lyrics Netease miss (empty lrc): $queryArtist - $queryTitle"); return null }
-            withContext(Dispatchers.IO) { db.lyricsDao().put(LyricsEntity(cacheArtist, cacheTitle, null, durationMs, lrc, null, "netease")) }
+            if (cache) withContext(Dispatchers.IO) { db.lyricsDao().put(LyricsEntity(cacheArtist, cacheTitle, null, durationMs, lrc, null, "netease")) }
             MioLog.event(ctx, "Lyrics Netease HIT: $queryArtist - $queryTitle")
             Lyrics(0, lines, null, "netease")
         } catch (e: Exception) { MioLog.event(ctx, "Lyrics Netease error: $queryArtist - $queryTitle: ${e.message}"); null }
@@ -611,13 +655,13 @@ class LyricsRepository(private val ctx: Context, private val db: AppDatabase) {
         withContext(Dispatchers.IO) { db.lyricsDao().put(LyricsEntity(a, t, al, d, lrcText, plain, src)) }
         return Lyrics(0, lines, plain, src)
     }
-    private suspend fun parseLrclib(json: String, a: String, t: String, al: String?, d: Long): Lyrics? {
+    private suspend fun parseLrclib(json: String, a: String, t: String, al: String?, d: Long, cache: Boolean = true): Lyrics? {
         val o = JSONObject(json)
         val synced = o.optString("syncedLyrics").takeIf { it.isNotBlank() }
         val plain = o.optString("plainLyrics").takeIf { it.isNotBlank() }
         if (synced == null && plain == null) return null
         val lines = parseLrc(synced ?: "")
-        if (lines.isNotEmpty() || plain != null) {
+        if ((lines.isNotEmpty() || plain != null) && cache) {
             withContext(Dispatchers.IO) { db.lyricsDao().put(LyricsEntity(a, t, al, d, synced, plain, "LRCLIB")) }
         }
         return Lyrics(0, lines, plain, "LRCLIB")

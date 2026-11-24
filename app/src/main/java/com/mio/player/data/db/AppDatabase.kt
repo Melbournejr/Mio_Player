@@ -61,13 +61,19 @@ data class PlaylistTrack(val playlistId: Long, val trackId: Long, val position: 
 }
 @Entity(tableName = "track_metadata")
 data class TrackMetadataEntity(@PrimaryKey val trackId: Long, val artist: String?, val album: String?,
-    val coverPath: String?, val source: String, val attemptedAt: Long = System.currentTimeMillis())
+    val coverPath: String?, val source: String, val attemptedAt: Long = System.currentTimeMillis(),
+    /** v1.1.35 — a manually-typed title (from the metadata edit
+     *  dialog). The title was never stored before, so a corrected
+     *  title only fed the "Tìm" search and the lyrics lookup kept
+     *  using the track row's old title. A manual title overrides
+     *  the track title exactly like a manual artist/album does
+     *  (see applyMetadata); auto-fetched entries leave it null. */ val title: String? = null)
 @Dao interface MetadataDao {
     @Query("SELECT * FROM track_metadata") suspend fun all(): List<TrackMetadataEntity>
     @Query("SELECT * FROM track_metadata WHERE trackId=:id LIMIT 1") suspend fun get(id: Long): TrackMetadataEntity?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun put(e: TrackMetadataEntity)
 }
-@Database(entities = [TrackEntity::class, LyricsEntity::class, PlaylistEntity::class, PlaylistTrack::class, TrackMetadataEntity::class], version = 2, exportSchema = false)
+@Database(entities = [TrackEntity::class, LyricsEntity::class, PlaylistEntity::class, PlaylistTrack::class, TrackMetadataEntity::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao; abstract fun lyricsDao(): LyricsDao; abstract fun playlistDao(): PlaylistDao
     abstract fun metadataDao(): MetadataDao
@@ -79,6 +85,14 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `track_metadata` (`trackId` INTEGER NOT NULL, `artist` TEXT, `album` TEXT, `coverPath` TEXT, `source` TEXT NOT NULL, `attemptedAt` INTEGER NOT NULL, PRIMARY KEY(`trackId`))")
+            }
+        }
+        /** v1.1.35: the metadata table gains a `title` column (see
+         *  TrackMetadataEntity). A plain ADD COLUMN keeps every
+         *  existing row, cover and manual override. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `track_metadata` ADD COLUMN `title` TEXT")
             }
         }
     }

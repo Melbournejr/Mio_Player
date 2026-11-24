@@ -27,6 +27,7 @@ import androidx.navigation.NavHostController
 import com.mio.player.data.audio.DsdSupport
 import com.mio.player.data.model.LyricLine
 import com.mio.player.ui.components.AlbumArt
+import com.mio.player.ui.components.LyricsSearchDialog
 import com.mio.player.ui.components.MetadataEditDialog
 import com.mio.player.ui.visualizer.VisualizerPanel
 import com.mio.player.ui.components.ThinSlider
@@ -129,6 +130,9 @@ import kotlinx.coroutines.delay
     // portrait (NowPlaying.kt). Reset on track change with the
     // lyrics state below.
     var showMetadataDialog by remember { mutableStateOf(false) }
+    // v1.1.35: manual lyrics search (LyricsSearchDialog), opened
+    // from the ⋮ menu next to "Tìm metadata".
+    var showLyricsDialog by remember { mutableStateOf(false) }
     // v1.1.25 — overflow-menu dialogs: sleep timer + track info.
     var showSleepDialog by remember { mutableStateOf(false) }
     var showTrackInfo by remember { mutableStateOf(false) }
@@ -155,11 +159,18 @@ import kotlinx.coroutines.delay
         currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri
         lines = emptyList(); plain = null; source = "Đang tìm lời…"
         showMetadataDialog = false
-        t?.let {
-            val repo = (ctx.applicationContext as com.mio.player.MioApp).container.lyricsRepo
-            val r = repo.getLyrics(it.artist, it.title, it.album, it.durationMs, it.path, vm.pm.player.duration.takeIf { d -> d > 0 } ?: 0)
-            lines = r?.synced ?: emptyList(); plain = r?.plain; source = r?.source ?: "Không tìm thấy lời"
-        }
+        showLyricsDialog = false
+    }
+    // v1.1.35 — the lyrics fetch is its OWN effect, keyed on the
+    // track's METADATA (id + artist + title), not just the id —
+    // same fix as portrait: a manual metadata save swaps the queue
+    // item (same id, new artist/title) and the old key never
+    // re-ran, so the lyrics stayed stuck on the old values.
+    LaunchedEffect(t?.id, t?.artist, t?.title) {
+        val cur = t ?: return@LaunchedEffect
+        val repo = (ctx.applicationContext as com.mio.player.MioApp).container.lyricsRepo
+        val r = repo.getLyrics(cur.artist, cur.title, cur.album, cur.durationMs, cur.path, vm.pm.player.duration.takeIf { d -> d > 0 } ?: 0)
+        lines = r?.synced ?: emptyList(); plain = r?.plain; source = r?.source ?: "Không tìm thấy lời"
     }
     LaunchedEffect(playing, t?.id) { while (playing) { val pd = vm.pm.player.duration; val total = if (pd != C.TIME_UNSET && pd > 0) pd else (t?.durationMs ?: Long.MAX_VALUE); pos = vm.pm.player.currentPosition.coerceIn(0L, total); currentUri = vm.pm.player.currentMediaItem?.localConfiguration?.uri; delay(250) } }
     // Actual per-track playback state — same rule as portrait: the
@@ -234,6 +245,13 @@ import kotlinx.coroutines.delay
                             text = { Text("Tìm metadata") },
                             onClick = { showOverflow = false; showMetadataDialog = true },
                             leadingIcon = { Icon(Icons.Default.Download, null, tint = MioCyan) }
+                        )
+                        // v1.1.35 — manual lyrics search (same as
+                        // portrait).
+                        DropdownMenuItem(
+                            text = { Text("Tìm lời bài hát") },
+                            onClick = { showOverflow = false; showLyricsDialog = true },
+                            leadingIcon = { Icon(Icons.Default.Lyrics, null, tint = MioCyan) }
                         )
                         // v1.1.25 — the overflow menu gains real actions
                         // (research consensus: Go to artist / Go to
@@ -394,6 +412,20 @@ import kotlinx.coroutines.delay
             lyricsRepo = container.lyricsRepo,
             onDismissRequest = { showMetadataDialog = false },
             onTrackUpdated = { vm.pm.updateQueueTrack(it) },
+        )
+    }
+    // v1.1.35: manual lyrics search dialog — same as portrait.
+    if (showLyricsDialog && trackNow != null) {
+        val container = (ctx.applicationContext as com.mio.player.MioApp).container
+        LyricsSearchDialog(
+            track = trackNow,
+            lyricsRepo = container.lyricsRepo,
+            durationMs = totalMs,
+            onDismissRequest = { showLyricsDialog = false },
+            onLyricsSaved = { found ->
+                lines = found.synced; plain = found.plain; source = "manual"
+                showLyricsDialog = false
+            },
         )
     }
     // v1.1.25 — sleep timer + track info, opened from the ⋮ menu.
