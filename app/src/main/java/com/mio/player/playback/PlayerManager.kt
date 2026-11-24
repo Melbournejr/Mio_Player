@@ -393,6 +393,14 @@ class PlayerManager(private val ctx: Context) {
                         }
                     }
                 }
+                // v1.1.27 — re-apply ReplayGain on EVERY track change.
+                // applyReplayGain() was only called from playQueue, so
+                // Next / auto-advance kept the previous track's volume:
+                // a track with a positive ReplayGain tag made the whole
+                // rest of the queue play louder than 1.0 (and clip
+                // harder on top of an EQ boost), a negative one made
+                // everything after it too quiet.
+                applyReplayGain()
             }
             override fun onShuffleModeEnabledChanged(v: Boolean) {
                 _shuffleEnabled.value = v

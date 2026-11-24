@@ -301,14 +301,19 @@ import java.util.Locale
  *  out 200 dp wide (its rotated height) and rotated around its
  *  centre, so its drawn content fills the Box exactly. Touch is
  *  transformed by the same rotation, so dragging vertically on the
- *  fader changes the value. */
+ *  fader changes the value.
+ *  v1.1.27 — requiredWidth, not width: the parent Column is only
+ *  ~1/10 of the screen wide (~75 dp), and plain width() is clamped
+ *  by that constraint, so the fader rendered as a ~75 dp stub with
+ *  the thumb bunched at one end. requiredWidth ignores the parent
+ *  max constraint, giving the full 200 dp of travel. */
 @Composable private fun VerticalBandSlider(value: Float, onValueChange: (Float) -> Unit) {
     Box(Modifier.height(200.dp), contentAlignment = Alignment.Center) {
         Slider(
             value = value,
             onValueChange = onValueChange,
             valueRange = -15f..15f,
-            modifier = Modifier.width(200.dp).graphicsLayer { rotationZ = -90f }
+            modifier = Modifier.requiredWidth(200.dp).graphicsLayer { rotationZ = -90f }
         )
     }
 }
