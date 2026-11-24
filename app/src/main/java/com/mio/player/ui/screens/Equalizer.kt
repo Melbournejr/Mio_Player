@@ -4,6 +4,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -18,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.awaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -284,10 +285,15 @@ import java.util.Locale
  *  track (dark unfilled, teal filled) and a small 16dp round thumb
  *  (white with a teal centre). Drag up to boost, drag down to cut;
  *  tap the track to jump to that value. Min (-15 dB) is at the
- *  bottom, max (+15 dB) at the top. One pointerInput loop handles
- *  press + drag + release, so tap and drag never fight each other,
- *  and the moves are consumed so the EQ screen does not scroll
- *  while a fader is being dragged. */
+ *  bottom, max (+15 dB) at the top. The drag uses
+ *  detectVerticalDragGestures (its onDragStart snapshots the value
+ *  so incremental deltas never lose a step to a stale read), the
+ *  tap uses detectTapGestures, and the drag consumes its moves so
+ *  the EQ screen does not scroll while a fader is being dragged.
+ *  (v1.1.30 first tried a manual awaitPointerEventScope loop, but
+ *  that symbol does not resolve in this project's Compose version
+ *  — CI failed on it — so this uses the standard Foundation
+ *  gesture detectors instead.) */
 @Composable private fun VerticalBandSlider(value: Float, onValueChange: (Float) -> Unit) {
     val currentValue by rememberUpdatedState(value)
     Box(
@@ -295,33 +301,21 @@ import java.util.Locale
             .height(200.dp)
             .fillMaxWidth()
             .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val down = awaitPointerEvent().changes.firstOrNull { it.pressed } ?: continue
-                        var dragValue = currentValue
-                        var lastY = down.position.y
-                        var moved = false
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-                            if (!change.pressed) {
-                                if (!moved) {
-                                    val frac = 1f - (change.position.y / size.height)
-                                    onValueChange((-15f + frac * 30f).coerceIn(-15f, 15f))
-                                }
-                                break
-                            }
-                            val dy = change.position.y - lastY
-                            lastY = change.position.y
-                            if (dy != 0f) moved = true
-                            if (moved) {
-                                dragValue = (dragValue - dy / size.height * 30f).coerceIn(-15f, 15f)
-                                onValueChange(dragValue)
-                            }
-                            change.consume()
-                        }
-                    }
+                detectTapGestures { offset ->
+                    val frac = 1f - (offset.y / size.height)
+                    onValueChange((-15f + frac * 30f).coerceIn(-15f, 15f))
                 }
+            }
+            .pointerInput(Unit) {
+                var dragValue = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { dragValue = currentValue },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragValue = (dragValue - dragAmount / size.height * 30f).coerceIn(-15f, 15f)
+                        onValueChange(dragValue)
+                    }
+                )
             }
     ) {
         Canvas(Modifier.fillMaxSize()) {
