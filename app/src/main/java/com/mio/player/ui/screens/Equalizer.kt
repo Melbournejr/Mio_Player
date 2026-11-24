@@ -1,5 +1,7 @@
 package com.mio.player.ui.screens
+import android.app.Activity
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -60,6 +62,18 @@ import java.util.Locale
     var headphoneModel by remember { mutableStateOf("") }
     var customPresets by remember { mutableStateOf<Map<String, FloatArray>>(emptyMap()) }
     var statusMsg by remember { mutableStateOf("") }
+    // v1.1.27 — the EQ screen is LANDSCAPE-only: the user asked for
+    // the bands to be horizontal for easy viewing/adjusting, and the
+    // screen kept opening in portrait (the phone is held upright when
+    // they tap into it). Forcing landscape here rotates the display
+    // even with system auto-rotate off; leaving the screen restores
+    // the previous behaviour (sensor / system setting).
+    val activity = ctx as? Activity
+    DisposableEffect(Unit) {
+        val previous = activity?.requestedOrientation
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        onDispose { activity?.requestedOrientation = previous ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+    }
     // v1.1.26 — the bands section lays out differently in landscape
     // (vertical faders side by side); read the orientation once here.
     val landscape = isLandscape()

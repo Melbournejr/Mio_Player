@@ -379,6 +379,20 @@ class PlayerManager(private val ctx: Context) {
             override fun onIsPlayingChanged(v: Boolean) { _isPlaying.value = v }
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 _index.value = player.currentMediaItemIndex
+                // v1.1.27 — record the play (playCount + lastPlayedAt)
+                // so "Recently played" / "Popular" actually accumulate.
+                // bumpPlay existed in the DAO but was never called, and
+                // the old REPLACE scan wiped these columns on every app
+                // start anyway. This fires on every track start
+                // (tap, Next/Prev, auto-advance), not just playQueue.
+                currentTrack?.let { track ->
+                    scope.launch {
+                        runCatching {
+                            (ctx.applicationContext as com.mio.player.MioApp).container.db.trackDao()
+                                .bumpPlay(track.id, System.currentTimeMillis())
+                        }
+                    }
+                }
             }
             override fun onShuffleModeEnabledChanged(v: Boolean) {
                 _shuffleEnabled.value = v

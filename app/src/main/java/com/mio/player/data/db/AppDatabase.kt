@@ -21,6 +21,28 @@ data class PlaylistTrack(val playlistId: Long, val trackId: Long, val position: 
     @Query("SELECT * FROM tracks ORDER BY lastPlayedAt DESC LIMIT :n") suspend fun recentlyPlayed(n: Int): List<TrackEntity>
     @Query("SELECT * FROM tracks ORDER BY playCount DESC LIMIT :n") suspend fun mostPlayed(n: Int): List<TrackEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(list: List<TrackEntity>)
+    /** v1.1.27 — upsert that PRESERVES the user's per-track state.
+     *  The bug: scan() runs on every app start (MainActivity) and
+     *  insertAll(REPLACE) overwrote each row with a freshly scanned
+     *  TrackEntity (isFavorite=false, playCount=0, lastPlayedAt=0) —
+     *  so every restart wiped the whole Favorites list, the play
+     *  counts and the last-played dates. The user noticed it after
+     *  the v1.1.26 update because the update forced a restart.
+     *  The scanner only knows file-derived fields; the user's state
+     *  (isFavorite / playCount / lastPlayedAt / dateAdded) is merged
+     *  back from the stored row before the REPLACE. New tracks keep
+     *  the fresh values. (A plain SQL UPSERT would need SQLite 3.24+,
+     *  which minSdk 26 devices do not guarantee — this merge works
+     *  on every API level.) */
+    @Transaction suspend fun upsertAll(list: List<TrackEntity>) {
+        val existing = all().associateBy { it.id }
+        val merged = list.map { fresh ->
+            val old = existing[fresh.id]
+            if (old == null) fresh
+            else fresh.copy(isFavorite = old.isFavorite, playCount = old.playCount, lastPlayedAt = old.lastPlayedAt, dateAdded = old.dateAdded)
+        }
+        insertAll(merged)
+    }
     @Query("UPDATE tracks SET isFavorite=:fav WHERE id=:id") suspend fun setFavorite(id: Long, fav: Boolean)
     @Query("UPDATE tracks SET playCount=playCount+1, lastPlayedAt=:at WHERE id=:id") suspend fun bumpPlay(id: Long, at: Long)
     @Query("DELETE FROM tracks") suspend fun clear()

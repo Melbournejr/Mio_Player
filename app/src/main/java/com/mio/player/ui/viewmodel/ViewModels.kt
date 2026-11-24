@@ -31,7 +31,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun scan() = viewModelScope.launch {
         val ctx = getApplication<Application>()
         val scanned = c.scanner.scanMediaStore()
-        c.db.trackDao().insertAll(scanned)
+        // v1.1.27 — upsertAll, not insertAll: a plain REPLACE here
+        // wiped isFavorite / playCount / lastPlayedAt on every scan
+        // (i.e. every app start), so the Favorites list vanished.
+        c.db.trackDao().upsertAll(scanned)
         // SAF folders, if the user picked any. A failed folder still
         // adds nothing (runCatching below), exactly as before — a scan
         // failure never deletes tracks, it just inserts fewer rows.
@@ -43,7 +46,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             val parsed = android.net.Uri.parse(uri)
             if (persisted.none { it.uri == parsed && it.isReadPermission }) lostPermissions += uri
             safCounts[uri] = runCatching {
-                c.scanner.scanSafFolder(parsed).also { c.db.trackDao().insertAll(it) }.size
+                // v1.1.27 — same upsertAll as the MediaStore scan above.
+                c.scanner.scanSafFolder(parsed).also { c.db.trackDao().upsertAll(it) }.size
             }.getOrDefault(0)
         }
         val total = scanned.size + safCounts.values.sum()
