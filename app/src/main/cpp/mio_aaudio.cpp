@@ -53,8 +53,9 @@ Java_com_mio_player_data_audio_AaudioEngine_nativeOpenStream(
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_EXCLUSIVE);
     AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA);
-    AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC);
+    // NOTE: setUsage / setContentType are API 28+ and this app's minSdk
+    // is 26, so they cannot be called here (the NDK rejects them at
+    // compile time). The defaults are fine for music playback.
 
     AAudioStream* stream = nullptr;
     result = AAudioStreamBuilder_openStream(builder, &stream);
