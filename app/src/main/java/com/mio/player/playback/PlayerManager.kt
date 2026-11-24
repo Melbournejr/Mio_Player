@@ -598,7 +598,16 @@ class PlayerManager(private val ctx: Context) {
                 // getAudioOutput, which can run slightly after this
                 // callback, so the Settings screen also re-reads the
                 // provider directly when it recomposes.
-                refreshHiResState()
+                // v1.1.42 — do NOT refresh from the provider here: its
+                // lastAaudioState still belongs to the PREVIOUS track's
+                // output, so a 44.1 kHz track would briefly show the old
+                // "Hi-Res · 96 kHz" until the new output is created.
+                // Reset the display to Idle instead; the READY refresh
+                // (below) restores the real state once the new output
+                // exists. The provider's own lastAaudioState is reset
+                // in getOutputConfig when the rate changes, so a later
+                // refresh cannot re-read the stale value either.
+                _aaudioStateFlow.value = AaudioOutputProvider.AaudioState.Idle
             }
             override fun onShuffleModeEnabledChanged(v: Boolean) {
                 _shuffleEnabled.value = v

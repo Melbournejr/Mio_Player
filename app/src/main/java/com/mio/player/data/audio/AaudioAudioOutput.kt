@@ -254,6 +254,19 @@ class AaudioOutputProvider(
     @Throws(AudioOutputProvider.ConfigurationException::class)
     override fun getOutputConfig(formatConfig: AudioOutputProvider.FormatConfig): AudioOutputProvider.OutputConfig {
         val config = delegate.getOutputConfig(formatConfig)
+        // v1.1.42 — the sink calls this when the input format changes,
+        // before getAudioOutput creates the new output. If the new
+        // format's rate differs from the last AAudio output's rate, the
+        // sink will recreate the output, so the old Active state is
+        // stale (it would otherwise be shown for the new track until
+        // getAudioOutput runs). Reset to Idle; getAudioOutput sets the
+        // real state when the new output is created. Same rate means
+        // the output is reused, so keep the state.
+        val last = lastAaudioState
+        val newRate = formatConfig.format.sampleRate
+        if (last is AaudioState.Active && newRate > 0 && last.sampleRate != newRate) {
+            lastAaudioState = AaudioState.Idle
+        }
         if (!hiResEnabled) return config
         // Force the sink to recreate the output when Hi-Res toggles:
         // DefaultAudioSink reuses the current AudioOutput whenever the
