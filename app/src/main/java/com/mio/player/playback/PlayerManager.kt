@@ -178,6 +178,22 @@ class PlayerManager(private val ctx: Context) {
      *  whenever Graphic mode is active, so Graphic playback is
      *  byte-identical to v1.1.31. */
     val parametricEqProcessor = ParametricEqAudioProcessor()
+    // v1.1.41 — the AAudio output provider MUST be declared BEFORE
+    // `player` below. Kotlin initializes properties in declaration
+    // order, and ExoPlayer.Builder.build() calls buildAudioSink()
+    // synchronously while `player` is being built. In v1.1.39–v1.1.40
+    // this provider was declared AFTER `player`, so buildAudioSink
+    // read it while its backing field was still null and passed null
+    // to DefaultAudioSink.Builder.setAudioOutputProvider(null) —
+    // which build() then SILENTLY replaced with the default
+    // AudioTrackAudioOutputProvider (see DefaultAudioSink.build():
+    // `if (audioOutputProvider == null) { ... = new
+    // AudioTrackAudioOutputProvider... }`). No crash, no log: the sink
+    // simply never called our getAudioOutput, Hi-Res stayed Idle and
+    // every track went through the 48 kHz mixer, whatever the toggle
+    // said. Declaring the provider here (it only needs a Context)
+    // makes buildAudioSink receive the real instance.
+    val aaudioProvider = AaudioOutputProvider(ctx.applicationContext, false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val player: ExoPlayer = ExoPlayer.Builder(ctx)
         .setRenderersFactory(
@@ -342,8 +358,9 @@ class PlayerManager(private val ctx: Context) {
      *  the UI never claims hi-res it did not get. There is no audio
      *  session in AAudio mode, so the AudioEffect-based effects
      *  (Graphic EQ, Bass, Virtualizer, Loudness) cannot attach — only
-     *  the Parametric EQ (a processor in the sink chain) applies. */
-    val aaudioProvider = AaudioOutputProvider(ctx.applicationContext, false)
+     *  the Parametric EQ (a processor in the sink chain) applies.
+     *  (The provider itself is declared above `player` — see the
+     *  v1.1.41 note there — so buildAudioSink receives it.) */
     private val _aaudioStateFlow = MutableStateFlow<AaudioOutputProvider.AaudioState>(AaudioOutputProvider.AaudioState.Idle)
     /** Live AAudio state for the UI. Refreshed on track change and on
      *  the Hi-Res toggle; the provider sets lastAaudioState inside
