@@ -3,6 +3,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.media.AudioManager.AudioDeviceCallback
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.MediaStore
@@ -403,7 +404,7 @@ class PlayerManager(private val ctx: Context) {
         }
         try {
             val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.registerAudioDeviceCallback(object : AudioManager.AudioDeviceCallback() {
+            am.registerAudioDeviceCallback(object : AudioDeviceCallback() {
                 override fun onAudioDevicesAdded(addedDevices: Array<android.media.AudioDeviceInfo>) {
                     if (addedDevices.any { it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE || it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET }) updateBitPerfect()
                 }
