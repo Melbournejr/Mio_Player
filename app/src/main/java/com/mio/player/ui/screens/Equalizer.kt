@@ -2,6 +2,7 @@ package com.mio.player.ui.screens
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,7 +15,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.awaitPointerEventScope
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -272,26 +277,80 @@ import java.util.Locale
     Text(text, color = MioText, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
 }
 
-/** A vertical fader for one EQ band (v1.1.26, made the only layout
- *  in v1.1.29): a Material3 Slider rotated -90°, so min (-15 dB) is
- *  at the bottom and max (+15 dB) at the top — drag up to boost,
- *  like a hardware graphic EQ. The Box is 200 dp tall; the Slider
- *  inside is laid out 200 dp wide (its rotated height) and rotated
- *  around its centre, so its drawn content fills the Box exactly.
- *  Touch is transformed by the same rotation, so dragging vertically
- *  on the fader changes the value.
- *  v1.1.28 — requiredWidth, not width: the parent Column is only
- *  ~1/10 of the screen wide, and plain width() is clamped by that
- *  constraint, so the fader rendered as a short stub with the thumb
- *  bunched at one end. requiredWidth ignores the parent max
- *  constraint, giving the full 200 dp of travel. */
+/** A thin, refined vertical fader for one EQ band (v1.1.30).
+ *  The Material3 Expressive Slider (v1.1.26–29) rendered a thick
+ *  track + line thumb — the user called it "to quá, thô, xấu"
+ *  (too big, crude, ugly). This is a custom Canvas fader: a 4dp
+ *  track (dark unfilled, teal filled) and a small 16dp round thumb
+ *  (white with a teal centre). Drag up to boost, drag down to cut;
+ *  tap the track to jump to that value. Min (-15 dB) is at the
+ *  bottom, max (+15 dB) at the top. One pointerInput loop handles
+ *  press + drag + release, so tap and drag never fight each other,
+ *  and the moves are consumed so the EQ screen does not scroll
+ *  while a fader is being dragged. */
 @Composable private fun VerticalBandSlider(value: Float, onValueChange: (Float) -> Unit) {
-    Box(Modifier.height(200.dp), contentAlignment = Alignment.Center) {
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = -15f..15f,
-            modifier = Modifier.requiredWidth(200.dp).graphicsLayer { rotationZ = -90f }
-        )
+    val currentValue by rememberUpdatedState(value)
+    Box(
+        Modifier
+            .height(200.dp)
+            .fillMaxWidth()
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val down = awaitPointerEvent().changes.firstOrNull { it.pressed } ?: continue
+                        var dragValue = currentValue
+                        var lastY = down.position.y
+                        var moved = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: break
+                            if (!change.pressed) {
+                                if (!moved) {
+                                    val frac = 1f - (change.position.y / size.height)
+                                    onValueChange((-15f + frac * 30f).coerceIn(-15f, 15f))
+                                }
+                                break
+                            }
+                            val dy = change.position.y - lastY
+                            lastY = change.position.y
+                            if (dy != 0f) moved = true
+                            if (moved) {
+                                dragValue = (dragValue - dy / size.height * 30f).coerceIn(-15f, 15f)
+                                onValueChange(dragValue)
+                            }
+                            change.consume()
+                        }
+                    }
+                }
+            }
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val trackWidth = 4.dp.toPx()
+            val thumbRadius = 8.dp.toPx()
+            val centerX = size.width / 2f
+            val top = thumbRadius
+            val bottom = size.height - thumbRadius
+            val frac = (value + 15f) / 30f
+            val valueY = bottom - frac * (bottom - top)
+            // Unfilled track (full height, dark).
+            drawLine(
+                color = Color(0xFF3A3A44),
+                start = Offset(centerX, top),
+                end = Offset(centerX, bottom),
+                strokeWidth = trackWidth,
+                cap = StrokeCap.Round
+            )
+            // Filled track (teal, from the bottom up to the thumb).
+            drawLine(
+                color = Color(0xFF14B8A6),
+                start = Offset(centerX, bottom),
+                end = Offset(centerX, valueY),
+                strokeWidth = trackWidth,
+                cap = StrokeCap.Round
+            )
+            // Thumb: white disc with a teal centre.
+            drawCircle(color = Color.White, radius = thumbRadius, center = Offset(centerX, valueY))
+            drawCircle(color = Color(0xFF14B8A6), radius = thumbRadius - 3.dp.toPx(), center = Offset(centerX, valueY))
+        }
     }
 }

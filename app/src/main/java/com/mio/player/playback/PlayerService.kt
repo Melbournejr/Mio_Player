@@ -3,6 +3,8 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -68,7 +70,15 @@ class PlayerService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val container = (application as com.mio.player.MioApp).container
-        session = MediaSession.Builder(this, container.playerManager.player).build()
+        // v1.1.30 — the session activity: tapping the lock-screen
+        // media card / Dynamic Island / expanded media controls
+        // opens MainActivity. Without it (and without a content
+        // intent on the notification) those taps did nothing — the
+        // user proved it on video (v1.1.29): the island and the shade
+        // card only expanded the controls, never opened the app.
+        session = MediaSession.Builder(this, container.playerManager.player)
+            .setSessionActivity(launchPendingIntent())
+            .build()
         container.playerManager.player.addListener(playerListener)
         // v1.1.19: log the session creation so the next user log proves
         // the notification path ran.
@@ -124,6 +134,23 @@ class PlayerService : MediaSessionService() {
             "Media notification $what: title='$title' playing=${player.isPlaying} notifGranted=$granted"
         )
     }
+    /** PendingIntent that brings MainActivity to the front (or
+     *  starts it if the app was killed). SINGLE_TOP + CLEAR_TOP so
+     *  tapping the notification never stacks a second MainActivity;
+     *  NEW_TASK because a PendingIntent fires outside an Activity.
+     *  Used both as the notification's content intent and as the
+     *  MediaSession's session activity (v1.1.30). */
+    private fun launchPendingIntent(): PendingIntent {
+        val intent = Intent(this, com.mio.player.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        return PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
     /** The real media notification: track title + artist, cover art
      *  as the large icon, prev / play-pause / next actions in
      *  MediaStyle form. The system's media card (lock screen +
@@ -148,6 +175,9 @@ class PlayerService : MediaSessionService() {
             .setContentTitle(title)
             .setContentText(artist ?: "Đang phát nhạc")
             .setLargeIcon(loadArtwork(metadata?.artworkUri))
+            // v1.1.30 — tapping the notification body opens the app.
+            // This was missing entirely, so the tap did nothing.
+            .setContentIntent(launchPendingIntent())
             .setOngoing(true)
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
