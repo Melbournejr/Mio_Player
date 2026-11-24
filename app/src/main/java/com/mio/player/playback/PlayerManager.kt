@@ -3,7 +3,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
-import android.media.AudioManager.AudioDeviceCallback
+import android.media.AudioDeviceCallback
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.MediaStore
