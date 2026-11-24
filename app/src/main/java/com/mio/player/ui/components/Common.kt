@@ -1,19 +1,28 @@
 package com.mio.player.ui.components
 import android.content.ContentUris
 import android.provider.MediaStore
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -86,6 +95,87 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
             Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(title, color = MioText, maxLines = 1); Text(artist, color = MioTextSecondary, fontSize = 12.sp, maxLines = 1) }
             IconButton(onClick = onToggle) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = MioText) }
             IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, tint = MioText) }
+        }
+    }
+}
+/** A thin, refined horizontal slider (v1.1.33) — the shared
+ *  replacement for every remaining thick Material3 Expressive
+ *  Slider in the app: the Now Playing time bar, the EQ Preamp /
+ *  effects sliders, the Parametric Freq/Gain/Q sliders, and the
+ *  Settings Crossfade / Speed sliders. The user called those
+ *  "to, thô" (big, crude) after the EQ band faders went thin in
+ *  v1.1.31, and asked for the time bar and the other sliders to
+ *  be neat too. Same look as the vertical band fader: a 4dp track
+ *  (dark unfilled, teal filled) and a small 16dp round thumb
+ *  (white with a teal centre). Drag horizontally to change the
+ *  value; tap the track to jump to that value. When [enabled] is
+ *  false (the Parametric Q slider for a Shelf band) it renders
+ *  dimmed and ignores input. The drag snapshots the value in
+ *  onDragStart so incremental deltas never lose a step to a stale
+ *  read, and consumes its moves so a horizontal drag on a slider
+ *  does not scroll the screen behind it. */
+@Composable fun ThinSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    enabled: Boolean = true
+) {
+    val currentValue by rememberUpdatedState(value)
+    Box(
+        modifier
+            .height(32.dp)
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.4f)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { offset ->
+                    val frac = (offset.x / size.width).coerceIn(0f, 1f)
+                    onValueChange(valueRange.start + frac * (valueRange.endInclusive - valueRange.start))
+                }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                var dragValue = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { dragValue = currentValue },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        val span = valueRange.endInclusive - valueRange.start
+                        dragValue = (dragValue + dragAmount / size.width * span)
+                            .coerceIn(valueRange.start, valueRange.endInclusive)
+                        onValueChange(dragValue)
+                    }
+                )
+            }
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val trackWidth = 4.dp.toPx()
+            val thumbRadius = 8.dp.toPx()
+            val centerY = size.height / 2f
+            val left = thumbRadius
+            val right = size.width - thumbRadius
+            val frac = ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+            val valueX = left + frac * (right - left)
+            // Unfilled track (full width, dark).
+            drawLine(
+                color = Color(0xFF3A3A44),
+                start = Offset(left, centerY),
+                end = Offset(right, centerY),
+                strokeWidth = trackWidth,
+                cap = StrokeCap.Round
+            )
+            // Filled track (teal, from the left up to the thumb).
+            drawLine(
+                color = Color(0xFF14B8A6),
+                start = Offset(left, centerY),
+                end = Offset(valueX, centerY),
+                strokeWidth = trackWidth,
+                cap = StrokeCap.Round
+            )
+            // Thumb: white disc with a teal centre.
+            drawCircle(color = Color.White, radius = thumbRadius, center = Offset(valueX, centerY))
+            drawCircle(color = Color(0xFF14B8A6), radius = thumbRadius - 3.dp.toPx(), center = Offset(valueX, centerY))
         }
     }
 }

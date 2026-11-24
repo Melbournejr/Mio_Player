@@ -385,10 +385,10 @@ import kotlinx.coroutines.launch
         Spacer(Modifier.height(8.dp))
         val crossfadeSec = crossfadeMs / 1000f
         Text("Crossfade: ${crossfadeSec.toInt()}s", color = MioText)
-        Slider(value = crossfadeSec, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_CROSSFADE_MS, (it * 1000).toInt()) } }, valueRange = 0f..12f)
+        ThinSlider(value = crossfadeSec, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_CROSSFADE_MS, (it * 1000).toInt()) } }, valueRange = 0f..12f)
         Spacer(Modifier.height(8.dp))
         Text("Playback speed: ${speed}x", color = MioText)
-        Slider(value = speed, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_SPEED, it) } }, valueRange = 0.5f..2f)
+        ThinSlider(value = speed, onValueChange = { scope.launch { settings.set(SettingsStore.KEY_SPEED, it) } }, valueRange = 0.5f..2f)
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Gapless playback", color = MioText, modifier = Modifier.weight(1f))

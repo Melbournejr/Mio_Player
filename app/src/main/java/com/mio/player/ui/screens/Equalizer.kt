@@ -33,6 +33,7 @@ import com.mio.player.data.audio.ParametricBand
 import com.mio.player.data.audio.ParametricBandType
 import com.mio.player.data.audio.ParametricEqDefaults
 import com.mio.player.data.prefs.SettingsStore
+import com.mio.player.ui.components.ThinSlider
 import com.mio.player.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -315,11 +316,11 @@ import kotlin.math.pow
                     Text("High Shelf", color = MioText)
                 }
                 Text("Tần số: ${formatFreq(sel.freqHz)}", color = MioText)
-                Slider(value = freqToSlider(sel.freqHz), onValueChange = { v -> updateParamBand(sel.copy(freqHz = sliderToFreq(v))) })
+                ThinSlider(value = freqToSlider(sel.freqHz), onValueChange = { v -> updateParamBand(sel.copy(freqHz = sliderToFreq(v))) })
                 Text("Gain: ${String.format(Locale.US, "%.1f", sel.gainDb)} dB", color = MioText)
-                Slider(value = sel.gainDb, onValueChange = { v -> updateParamBand(sel.copy(gainDb = v)) }, valueRange = -15f..15f)
+                ThinSlider(value = sel.gainDb, onValueChange = { v -> updateParamBand(sel.copy(gainDb = v)) }, valueRange = -15f..15f)
                 Text(if (sel.type == ParametricBandType.PEAK) "Q: ${String.format(Locale.US, "%.2f", sel.q)}" else "Q: chỉ áp dụng cho Peak — Shelf dùng độ dốc cố định", color = MioText)
-                Slider(value = sel.q, onValueChange = { v -> updateParamBand(sel.copy(q = v)) }, valueRange = 0.5f..4.0f, enabled = sel.type == ParametricBandType.PEAK)
+                ThinSlider(value = sel.q, onValueChange = { v -> updateParamBand(sel.copy(q = v)) }, valueRange = 0.5f..4.0f, enabled = sel.type == ParametricBandType.PEAK)
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(onClick = {
                     paramBands = ParametricEqDefaults.bandsFromGains(ParametricEqDefaults.gainsFromBands(paramBands))
@@ -334,15 +335,15 @@ import kotlin.math.pow
             SectionTitle("Preamp")
             Text("Preamp: ${String.format(Locale.US, "%.1f", preamp)} dB", color = MioText)
             Text("Tăng/giảm đều toàn bộ dải tần. Giảm preamp nếu preset mạnh gây rè.", color = MioTextSecondary, fontSize = 12.sp)
-            Slider(value = preamp, onValueChange = { preamp = it; headphoneModel = ""; applyAndSave() }, valueRange = -12f..6f)
+            ThinSlider(value = preamp, onValueChange = { preamp = it; headphoneModel = ""; applyAndSave() }, valueRange = -12f..6f)
         }
         // --- Hiệu ứng ---
         item {
             SectionTitle("Hiệu ứng")
-            Text("Bass Boost", color = MioText); Slider(value = bass, onValueChange = { bass = it; applyAndSave() })
-            Text("Virtualizer / 3D", color = MioText); Slider(value = virt, onValueChange = { virt = it; applyAndSave() })
-            Text("Loudness", color = MioText); Slider(value = loud, onValueChange = { loud = it; applyAndSave() })
-            Text("Balance (L — R)", color = MioText); Slider(value = balance, onValueChange = { balance = it; applyAndSave() }, valueRange = -1f..1f)
+            Text("Bass Boost", color = MioText); ThinSlider(value = bass, onValueChange = { bass = it; applyAndSave() })
+            Text("Virtualizer / 3D", color = MioText); ThinSlider(value = virt, onValueChange = { virt = it; applyAndSave() })
+            Text("Loudness", color = MioText); ThinSlider(value = loud, onValueChange = { loud = it; applyAndSave() })
+            Text("Balance (L — R)", color = MioText); ThinSlider(value = balance, onValueChange = { balance = it; applyAndSave() }, valueRange = -1f..1f)
         }
         // --- Chỉnh âm tai nghe (separate from genre presets) ---
         item {

@@ -29,6 +29,7 @@ import com.mio.player.data.model.LyricLine
 import com.mio.player.ui.components.AlbumArt
 import com.mio.player.ui.components.MetadataEditDialog
 import com.mio.player.ui.visualizer.VisualizerPanel
+import com.mio.player.ui.components.ThinSlider
 import com.mio.player.ui.components.TrackRow
 import com.mio.player.ui.components.formatDuration
 import com.mio.player.ui.components.isLandscape
@@ -363,7 +364,7 @@ import kotlinx.coroutines.delay
                         Text(plain ?: source, color = MioTextSecondary, fontSize = 14.sp)
                     }
                 }
-                Slider(value = pos.toFloat().coerceIn(0f, totalF), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..totalF, modifier = Modifier.fillMaxWidth())
+                ThinSlider(value = pos.toFloat().coerceIn(0f, totalF), onValueChange = { pos = it.toLong(); vm.pm.seekTo(it.toLong()) }, valueRange = 0f..totalF, modifier = Modifier.fillMaxWidth())
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(formatDuration(pos), color = MioTextSecondary, fontSize = 12.sp)
                     Text(formatDuration(totalMs), color = MioTextSecondary, fontSize = 12.sp)
