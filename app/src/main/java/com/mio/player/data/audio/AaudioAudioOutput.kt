@@ -20,13 +20,26 @@ import java.nio.ByteOrder
  * sharing; otherwise the provider falls back to the standard AudioTrack
  * output, so the sink always gets a working output.
  *
- * Position model (simpler than AudioTrackPositionTracker, sufficient for a
- * music player): the playout position is the presentation timestamp of
- * the first buffer written after open/flush, plus the frames the device
- * has actually consumed ([AaudioEngine.framesRead]) converted to time.
- * Frames-read stops while paused and keeps advancing while the remaining
- * buffered frames play out after [stop], so pause / end-of-stream behave
- * correctly. Gapless works because the base is only reset on [flush].
+ * Position model (v1.1.45 — corrected after reading DefaultAudioSink
+ * 1.9.0, see getPositionUs): the position is RELATIVE to this output's
+ * start — frames the device has actually consumed (framesRead) since
+ * the first write, converted to time. DefaultAudioSink adds the media
+ * offset itself via applyMediaPositionParameters (its checkpoint
+ * mediaTimeUs), so the AudioOutput must NOT add the presentation
+ * timestamp. Adding it (v1.1.39–v1.1.44) inflated the raw position
+ * (e.g. 7.3M frames after a seek to 1:16 while the sink's
+ * writtenFrames is only a few thousand since the flush), so
+ * hasAudioOutputPendingData (writtenFrames > currentPositionFrames)
+ * became false, MediaCodecAudioRenderer reported not-ready, and the
+ * player never left BUFFERING — isPlaying=false, UI 0:00, "48 kHz" —
+ * even though audio played. The v1.1.44 framesWritten fallback made
+ * it worse by closing the written-vs-played gap entirely.
+ * framesRead always lags framesWritten by the stream buffer, so
+ * written > played stays true and the renderer stays ready.
+ * Gapless works because the sink's checkpoints carry the media time
+ * across outputs; pause / end-of-stream behave correctly because
+ * framesRead stops while paused and keeps advancing while the
+ * remaining buffered frames play out after [stop].
  *
  * Honest limitations (AAudio has no AudioTrack session and no speed
  * control):
@@ -51,12 +64,10 @@ class AaudioAudioOutput(
 
     private val listeners = mutableSetOf<AudioOutput.Listener>()
 
-    /** Presentation timestamp (us) of the first frame written after open/flush. */
-    private var basePresentationTimeUs: Long = C.TIME_UNSET
-    /** framesRead() captured when the base was set. */
+    /** True once the first write captured framesReadAtBase. */
+    private var baseCaptured: Boolean = false
+    /** framesRead() captured on the first write after open/flush. */
     private var framesReadAtBase: Long = 0L
-    /** framesWritten() captured when the base was set (v1.1.44 fallback). */
-    private var framesWrittenAtBase: Long = 0L
     /** Write calls so far, for throttled diagnostic logging. */
     private var writeCount: Long = 0L
     /** True once play() has been called and the stream is started. */
@@ -110,10 +121,9 @@ class AaudioAudioOutput(
             com.mio.player.data.log.MioLog.event(context, "AAudio write-start: requestStart ok=$ok rate=$sampleRate")
             listeners.forEach { it.onPositionAdvancing(System.currentTimeMillis()) }
         }
-        if (basePresentationTimeUs == C.TIME_UNSET) {
-            basePresentationTimeUs = presentationTimeUs
+        if (!baseCaptured) {
+            baseCaptured = true
             framesReadAtBase = engine.framesRead()
-            framesWrittenAtBase = engine.framesWritten()
         }
         val remaining = buffer.remaining()
         if (remaining <= 0) return true
@@ -153,24 +163,24 @@ class AaudioAudioOutput(
             // Advance the sink buffer by exactly what was consumed.
             buffer.position(buffer.position() + bytesWritten)
         }
-        // v1.1.44 — throttled write diagnostics: the first 3 writes
+        // v1.1.45 — throttled write diagnostics: the first 3 writes
         // and then every 500th. framesRead is what drives the
         // position; framesWritten is what proves the sink is feeding
-        // the stream. If framesWritten climbs while framesRead stays
-        // 0, the HAL is not consuming (stream not really running)
-        // and getPositionUs() below falls back to framesWritten.
+        // the stream. (The v1.1.44 comment here claimed a
+        // framesWritten fallback in getPositionUs — that fallback
+        // is REMOVED in v1.1.45 because it broke renderer readiness;
+        // see getPositionUs.)
         writeCount++
         if (writeCount <= 3L || writeCount % 500L == 0L) {
-            com.mio.player.data.log.MioLog.event(context, "AAudio write #$writeCount: bytes=$bytesWritten/$remaining read=${engine.framesRead()} written=${engine.framesWritten()} rate=$sampleRate")
+            com.mio.player.data.log.MioLog.event(context, "AAudio write #$writeCount: bytes=$bytesWritten/$remaining read=${engine.framesRead()} written=${engine.framesWritten()} bufFrames=${engine.bufferSizeInFrames} rate=$sampleRate")
         }
         return bytesWritten == remaining
     }
 
     override fun flush() {
         engine.flush()
-        basePresentationTimeUs = C.TIME_UNSET
+        baseCaptured = false
         framesReadAtBase = 0L
-        framesWrittenAtBase = 0L
         writeCount = 0L
         stopped = false
         // v1.1.43 — requestFlush leaves the stream FLUSHED; it needs
@@ -217,21 +227,40 @@ class AaudioAudioOutput(
     override fun getBufferSizeInFrames(): Long = engine.bufferSizeInFrames.toLong()
 
     override fun getPositionUs(): Long {
-        if (basePresentationTimeUs == C.TIME_UNSET) return 0L
-        val framesPlayedByRead = (engine.framesRead() - framesReadAtBase).coerceAtLeast(0L)
-        // v1.1.44 — framesRead() (what the HAL consumed) is the
-        // authoritative position, but on this device it can stay 0
-        // while framesWritten() climbs (stream started, data flowing
-        // into the buffer, HAL not reporting consumption) — and a
-        // position that never advances keeps the player in BUFFERING
-        // (isPlaying=false, UI stuck at 0:00) even though audio flows.
-        // Fall back to framesWritten minus one stream buffer, so the
-        // position tracks what was actually fed to the stream and
-        // never runs ahead of the audible output by more than the
-        // buffer latency. Whichever is larger wins.
-        val framesPlayedByWrite = (engine.framesWritten() - framesWrittenAtBase - engine.bufferSizeInFrames).coerceAtLeast(0L)
-        val framesPlayed = maxOf(framesPlayedByRead, framesPlayedByWrite)
-        return basePresentationTimeUs + framesPlayed * 1_000_000L / sampleRate
+        // v1.1.45 — THE ROOT CAUSE (found by reading Media3 1.9.0
+        // DefaultAudioSink + the v1.1.44 log, not by guessing).
+        // DefaultAudioSink.hasAudioOutputPendingData:
+        //   currentPositionFrames = durationUsToSampleCount(
+        //       audioOutput.getPositionUs(), sampleRate)
+        //   return writtenFrames > currentPositionFrames
+        // MediaCodecAudioRenderer.isReady() returns
+        // audioSink.hasPendingData(), so the player only becomes
+        // READY (isPlaying=true) while writtenFrames >
+        // currentPositionFrames — i.e. while there is unplayed data
+        // buffered in the output. And getCurrentPositionUs applies
+        // applyMediaPositionParameters, which ADDS the media offset
+        // (checkpoint mediaTimeUs = presentation time / seek target)
+        // to this raw position. So this method must return the
+        // position RELATIVE to this output's start — frames the HAL
+        // has consumed since the first write — and must NOT add
+        // basePresentationTimeUs.
+        // v1.1.39–v1.1.44 added the base: after a seek to 1:16 the
+        // raw position became ~7.3M frames while writtenFrames
+        // (reset to 0 on flush) was only a few thousand, so
+        // written > played became false, the renderer reported
+        // not-ready, and the player never left BUFFERING —
+        // isPlaying=false, UI 0:00, "48 kHz" — even though audio
+        // played (v1.1.44 log: read=401280 written=419328 at write
+        // #500, sound confirmed). The v1.1.44 framesWritten
+        // fallback made it worse: it made the position track
+        // written frames, closing the gap entirely (position ==
+        // written → written > played false even at 0:00).
+        // framesRead always lags framesWritten by the stream
+        // buffer, so with framesRead only, written > played stays
+        // true and the renderer stays ready.
+        if (!baseCaptured) return 0L
+        val framesPlayed = (engine.framesRead() - framesReadAtBase).coerceAtLeast(0L)
+        return framesPlayed * 1_000_000L / sampleRate
     }
 
     override fun getPlaybackParameters(): PlaybackParameters = playbackParameters
@@ -357,7 +386,7 @@ class AaudioOutputProvider(
                 // v1.1.40 — log the real outcome to mio-log.txt so the
                 // next user log proves whether exclusive engaged and at
                 // what rate, instead of the UI guessing.
-                com.mio.player.data.log.MioLog.event(context, "AAudio ACTIVE: ${engine.sampleRate} Hz exclusive=${engine.isExclusive} lowLatency=${engine.isLowLatency}")
+                com.mio.player.data.log.MioLog.event(context, "AAudio ACTIVE: ${engine.sampleRate} Hz exclusive=${engine.isExclusive} lowLatency=${engine.isLowLatency} bufFrames=${engine.bufferSizeInFrames}")
                 return AaudioAudioOutput(context, engine, config.sampleRate)
             }
             lastAaudioState = AaudioState.Fallback(
