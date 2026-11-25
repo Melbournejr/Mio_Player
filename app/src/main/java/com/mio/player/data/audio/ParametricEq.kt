@@ -247,7 +247,11 @@ class ParametricEqAudioProcessor : AudioProcessor {
         ensureOutputCapacity(outBytes)
         val out = outputScratch
         out.clear()
-        val preampGain = 10.0.pow((cfg.preampDb / 20.0).toDouble()).toFloat()
+        // v1.1.48 — automatic headroom: subtract the largest
+        // positive band gain from the preamp so boosted bands keep
+        // their shape without driving peaks into the hard clamp.
+        val headroomDb = cfg.bands.maxOfOrNull { it.gainDb }?.coerceAtLeast(0f) ?: 0f
+        val preampGain = 10.0.pow(((cfg.preampDb - headroomDb) / 20.0).toDouble()).toFloat()
         // Read via a duplicate so the input buffer's position (which the
         // sink relies on) is never disturbed; write to scratch.
         val src = inputBuffer.duplicate().order(ByteOrder.nativeOrder())

@@ -122,19 +122,20 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
     enabled: Boolean = true
 ) {
     val currentValue by rememberUpdatedState(value)
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
     Box(
         modifier
             .height(32.dp)
             .fillMaxWidth()
             .alpha(if (enabled) 1f else 0.4f)
-            .pointerInput(enabled) {
+            .pointerInput(enabled, valueRange) {
                 if (!enabled) return@pointerInput
                 detectTapGestures { offset ->
                     val frac = (offset.x / size.width).coerceIn(0f, 1f)
-                    onValueChange(valueRange.start + frac * (valueRange.endInclusive - valueRange.start))
+                    currentOnValueChange(valueRange.start + frac * (valueRange.endInclusive - valueRange.start))
                 }
             }
-            .pointerInput(enabled) {
+            .pointerInput(enabled, valueRange) {
                 if (!enabled) return@pointerInput
                 var dragValue = 0f
                 detectHorizontalDragGestures(
@@ -144,7 +145,7 @@ fun formatDuration(ms: Long): String { val s = (ms/1000).toInt(); return "%d:%02
                         val span = valueRange.endInclusive - valueRange.start
                         dragValue = (dragValue + dragAmount / size.width * span)
                             .coerceIn(valueRange.start, valueRange.endInclusive)
-                        onValueChange(dragValue)
+                        currentOnValueChange(dragValue)
                     }
                 )
             }

@@ -188,12 +188,16 @@ import kotlinx.coroutines.delay
         converting -> "Đang chuyển đổi DSD sang WAV…"
         isFallback -> "Đang phát bản đổi (WAV 176.4 kHz)"
         isDsd && isNativeProven -> "${t?.dsdRate ?: "DSD"} · Native decode" + if (bpState.active) " · Bit-perfect" else "" +
-            if (hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active) " · Hi-Res" else ""
+            if (hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active && (hiResState as com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active).sampleRate > 48000) " · Hi-Res" else ""
         isDsd -> "DSD · Đang tải…"
         // v1.1.37 — bit-perfect: output rate is the file's own rate.
         bpState.active -> "Bit-perfect"
         // v1.1.39 — Hi-Res AAudio: output rate is the file's own rate.
-        hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active -> "Hi-Res · ${(hiResState as com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active).sampleRate / 1000} kHz"
+        // v1.1.48 — Hi-Res only above 48 kHz (see NowPlaying.kt).
+        hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active -> {
+            val rate = (hiResState as com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active).sampleRate
+            if (rate > 48000) "Hi-Res · ${rate / 1000} kHz" else "AAudio · ${rate / 1000} kHz"
+        }
         // v1.1.21 — concise, same as portrait: just the rate
         // ("48 kHz"), not the sentence ("Thiết bị phát tối đa
         // 48 kHz") — the user wants the track-info tail short.

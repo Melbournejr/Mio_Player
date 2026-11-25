@@ -748,7 +748,13 @@ class PlayerManager(private val ctx: Context) {
                 // WaveformTap (it cannot initialise on this phone,
                 // error -3) — the live levels now come from the in-process
                 // FFT AudioProcessor in the sink chain (waveform.fftProcessor).
-                attachEffects()
+                // v1.1.48 — attach with the callback's session id
+                // directly (player.audioSessionId can still read the
+                // old output during the callback) and log the effect
+                // readback so a dead Graphic EQ is provable from the
+                // user log instead of guessed.
+                fx.attach(audioSessionId)
+                MioLog.event(ctx, "AudioEffects attach: ${fx.readbackSummary()}")
             }
         })
     }

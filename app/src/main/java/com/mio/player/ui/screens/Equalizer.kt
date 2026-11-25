@@ -407,6 +407,7 @@ import kotlin.math.pow
  *  gesture detectors instead.) */
 @Composable private fun VerticalBandSlider(value: Float, onValueChange: (Float) -> Unit) {
     val currentValue by rememberUpdatedState(value)
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
     Box(
         Modifier
             .height(200.dp)
@@ -414,7 +415,7 @@ import kotlin.math.pow
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
                     val frac = 1f - (offset.y / size.height)
-                    onValueChange((-15f + frac * 30f).coerceIn(-15f, 15f))
+                    currentOnValueChange((-15f + frac * 30f).coerceIn(-15f, 15f))
                 }
             }
             .pointerInput(Unit) {
@@ -424,7 +425,7 @@ import kotlin.math.pow
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
                         dragValue = (dragValue - dragAmount / size.height * 30f).coerceIn(-15f, 15f)
-                        onValueChange(dragValue)
+                        currentOnValueChange(dragValue)
                     }
                 )
             }

@@ -9,6 +9,7 @@ class AudioEffectsManager {
     companion object { val BAND_FREQS_HZ = intArrayOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000) }
     private var eq: Equalizer? = null; private var bass: BassBoost? = null
     private var virt: Virtualizer? = null; private var loud: LoudnessEnhancer? = null
+    private var lastSessionId: Int = 0
     var preampDb: Float = 0f; var balance: Float = 0f // -1 left .. +1 right
     /** v1.1.32 — Parametric EQ mode. "graphic" (default) is the old
      *  Android Equalizer path, untouched. "parametric" flattens the
@@ -44,7 +45,13 @@ class AudioEffectsManager {
             try {
                 if (e != null) {
                     val n = minOf(currentBands.size, e.numberOfBands.toInt())
-                    for (i in 0 until n) e.setBandLevel(i.toShort(), ((currentBands[i] + preampDb).coerceIn(-15f, 15f) * 100).toInt().toShort())
+                    // v1.1.48 — automatic headroom: subtract the largest
+                    // positive band boost from every written level so a
+                    // boosted preset keeps its shape without pushing
+                    // peaks into clipping. The user's preamp still
+                    // applies on top of this safety offset.
+                    val headroomDb = currentBands.maxOrNull()?.coerceAtLeast(0f) ?: 0f
+                    for (i in 0 until n) e.setBandLevel(i.toShort(), ((currentBands[i] + preampDb - headroomDb).coerceIn(-15f, 15f) * 100).toInt().toShort())
                 }
             } catch (ex: Exception) { Log.w("MioFx", "applyBands failed", ex) }
         }
@@ -102,6 +109,7 @@ class AudioEffectsManager {
     val presets: Map<String, FloatArray> = EqPresets.BUILT_IN
     fun attach(audioSessionId: Int) {
         release()
+        lastSessionId = audioSessionId
         // v1.1.39 — AAudio mode has no audio session (UNSET = -1), so
         // there is nothing to attach the Android effects to. Return
         // early instead of throwing (and logging) for every effect.
@@ -162,6 +170,17 @@ class AudioEffectsManager {
             preampDb = preampDb,
             enabled = false
         )
+    }
+    /** v1.1.48 — one-line readback for the app log: proves whether
+     *  the Graphic Equalizer actually attached to a live session and
+     *  what band levels the effect reports back. */
+    fun readbackSummary(): String {
+        val e = eq ?: return "session=$lastSessionId eq=null mode=$eqMode"
+        return runCatching {
+            val n = e.numberOfBands.toInt()
+            val levels = (0 until n).joinToString(",") { i -> (e.getBandLevel(i.toShort()) / 100).toString() }
+            "session=$lastSessionId eqEnabled=${e.enabled} bands=$n levels=[$levels] mode=$eqMode preamp=$preampDb"
+        }.getOrElse { "session=$lastSessionId eqReadbackFailed=${it::class.java.simpleName} mode=$eqMode" }
     }
     fun release() { listOf(eq, bass, virt, loud).forEach { try { it?.release() } catch (_: Exception) {} }; eq=null; bass=null; virt=null; loud=null }
 }
