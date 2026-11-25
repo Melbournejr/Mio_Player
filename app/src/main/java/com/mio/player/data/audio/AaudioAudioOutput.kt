@@ -43,6 +43,7 @@ import java.nio.ByteOrder
  */
 @UnstableApi
 class AaudioAudioOutput(
+    private val context: Context,
     private val engine: AaudioEngine,
     /** The requested (== actual, enforced by the engine) sample rate. */
     private val sampleRate: Int
@@ -54,6 +55,10 @@ class AaudioAudioOutput(
     private var basePresentationTimeUs: Long = C.TIME_UNSET
     /** framesRead() captured when the base was set. */
     private var framesReadAtBase: Long = 0L
+    /** framesWritten() captured when the base was set (v1.1.44 fallback). */
+    private var framesWrittenAtBase: Long = 0L
+    /** Write calls so far, for throttled diagnostic logging. */
+    private var writeCount: Long = 0L
     /** True once play() has been called and the stream is started. */
     private var started = false
     /** True after stop() (end of stream) until the next flush. */
@@ -69,7 +74,12 @@ class AaudioAudioOutput(
         if (!started) {
             started = true
             stopped = false
-            engine.start()
+            // v1.1.44 — log whether requestStart actually succeeded.
+            // A failed start leaves the stream unstarted: writes fail
+            // with INVALID_STATE and getPositionUs() never advances,
+            // which is exactly the v1.1.43 symptom (0:00, button ▶).
+            val ok = engine.start()
+            com.mio.player.data.log.MioLog.event(context, "AAudio play: requestStart ok=$ok rate=$sampleRate")
             listeners.forEach { it.onPositionAdvancing(System.currentTimeMillis()) }
         }
     }
@@ -94,12 +104,16 @@ class AaudioAudioOutput(
         if (!started) {
             started = true
             stopped = false
-            engine.start()
+            // v1.1.44 — log the safety-net start too; if this is the
+            // path that runs (play() was missed), the log proves it.
+            val ok = engine.start()
+            com.mio.player.data.log.MioLog.event(context, "AAudio write-start: requestStart ok=$ok rate=$sampleRate")
             listeners.forEach { it.onPositionAdvancing(System.currentTimeMillis()) }
         }
         if (basePresentationTimeUs == C.TIME_UNSET) {
             basePresentationTimeUs = presentationTimeUs
             framesReadAtBase = engine.framesRead()
+            framesWrittenAtBase = engine.framesWritten()
         }
         val remaining = buffer.remaining()
         if (remaining <= 0) return true
@@ -129,11 +143,25 @@ class AaudioAudioOutput(
         }
         if (bytesWritten < 0) {
             // Negative = native error. The output cannot be reused.
+            // v1.1.44 — log it: a stream of WriteExceptions is the
+            // difference between "writes fail" and "writes return 0",
+            // and the next user log must show which one it is.
+            com.mio.player.data.log.MioLog.event(context, "AAudio write ERROR: code=$bytesWritten rate=$sampleRate")
             throw AudioOutput.WriteException(bytesWritten, false)
         }
         if (bytesWritten > 0) {
             // Advance the sink buffer by exactly what was consumed.
             buffer.position(buffer.position() + bytesWritten)
+        }
+        // v1.1.44 — throttled write diagnostics: the first 3 writes
+        // and then every 500th. framesRead is what drives the
+        // position; framesWritten is what proves the sink is feeding
+        // the stream. If framesWritten climbs while framesRead stays
+        // 0, the HAL is not consuming (stream not really running)
+        // and getPositionUs() below falls back to framesWritten.
+        writeCount++
+        if (writeCount <= 3L || writeCount % 500L == 0L) {
+            com.mio.player.data.log.MioLog.event(context, "AAudio write #$writeCount: bytes=$bytesWritten/$remaining read=${engine.framesRead()} written=${engine.framesWritten()} rate=$sampleRate")
         }
         return bytesWritten == remaining
     }
@@ -142,6 +170,8 @@ class AaudioAudioOutput(
         engine.flush()
         basePresentationTimeUs = C.TIME_UNSET
         framesReadAtBase = 0L
+        framesWrittenAtBase = 0L
+        writeCount = 0L
         stopped = false
         // v1.1.43 — requestFlush leaves the stream FLUSHED; it needs
         // requestStart again before writing. Reset `started` so the
@@ -188,7 +218,19 @@ class AaudioAudioOutput(
 
     override fun getPositionUs(): Long {
         if (basePresentationTimeUs == C.TIME_UNSET) return 0L
-        val framesPlayed = (engine.framesRead() - framesReadAtBase).coerceAtLeast(0L)
+        val framesPlayedByRead = (engine.framesRead() - framesReadAtBase).coerceAtLeast(0L)
+        // v1.1.44 — framesRead() (what the HAL consumed) is the
+        // authoritative position, but on this device it can stay 0
+        // while framesWritten() climbs (stream started, data flowing
+        // into the buffer, HAL not reporting consumption) — and a
+        // position that never advances keeps the player in BUFFERING
+        // (isPlaying=false, UI stuck at 0:00) even though audio flows.
+        // Fall back to framesWritten minus one stream buffer, so the
+        // position tracks what was actually fed to the stream and
+        // never runs ahead of the audible output by more than the
+        // buffer latency. Whichever is larger wins.
+        val framesPlayedByWrite = (engine.framesWritten() - framesWrittenAtBase - engine.bufferSizeInFrames).coerceAtLeast(0L)
+        val framesPlayed = maxOf(framesPlayedByRead, framesPlayedByWrite)
         return basePresentationTimeUs + framesPlayed * 1_000_000L / sampleRate
     }
 
@@ -316,7 +358,7 @@ class AaudioOutputProvider(
                 // next user log proves whether exclusive engaged and at
                 // what rate, instead of the UI guessing.
                 com.mio.player.data.log.MioLog.event(context, "AAudio ACTIVE: ${engine.sampleRate} Hz exclusive=${engine.isExclusive} lowLatency=${engine.isLowLatency}")
-                return AaudioAudioOutput(engine, config.sampleRate)
+                return AaudioAudioOutput(context, engine, config.sampleRate)
             }
             lastAaudioState = AaudioState.Fallback(
                 "AAudio không mở được ${config.sampleRate} Hz exclusive trên máy này — đã về mixer"
