@@ -74,6 +74,9 @@ class AaudioAudioOutput(
     private var started = false
     /** True after stop() (end of stream) until the next flush. */
     private var stopped = false
+    /** True between pause() and the next play()/flush(). While paused,
+     *  write() must NOT restart the stream (see write). */
+    private var paused = false
     /** Current volume (ReplayGain). 1.0 = fast path, no copy. */
     private var volume: Float = 1.0f
     /** Current playback parameters (speed is stored, not applied). */
@@ -82,6 +85,7 @@ class AaudioAudioOutput(
     private var scratch: ByteBuffer? = null
 
     override fun play() {
+        paused = false
         if (!started) {
             started = true
             stopped = false
@@ -96,23 +100,33 @@ class AaudioAudioOutput(
     }
 
     override fun pause() {
+        paused = true
         if (started) {
             started = false
-            engine.pause()
+            val ok = engine.pause()
+            com.mio.player.data.log.MioLog.event(context, "AAudio pause: requestPause ok=$ok rate=$sampleRate")
         }
     }
 
     @Throws(AudioOutput.WriteException::class)
     override fun write(buffer: ByteBuffer, encodedAccessUnitCount: Int, presentationTimeUs: Long): Boolean {
         if (!engine.isOpen) throw AudioOutput.WriteException(-1, false)
+        // v1.1.47 — while paused, NEVER restart the stream. The sink
+        // can still call write() after pause() (its playback loop
+        // wakes periodically); the v1.1.43 safety net below used to
+        // requestStart the paused stream again, so the user heard
+        // ~200 ms slices of music about once a second while the UI
+        // showed paused (2026-11-25 video: bursts at 10.8/11.8/
+        // 12.8... s, each one AAudio buffer long). Returning false
+        // keeps the buffer unconsumed in the sink; play() restarts
+        // the stream and the sink retries from the same buffer.
+        if (paused) return false
         // v1.1.43 — safety net: make sure the stream is started before
         // writing. play() can be missed (e.g. the sink creates the
-        // output after its own play() already ran, or stop()/flush()
-        // left the stream STOPPED/FLUSHED), and a write to a
-        // non-started stream fails with INVALID_STATE, stalling the
-        // sink at 0:00. requestStart on an already-started stream is
-        // a harmless no-op, so this is safe to call unconditionally.
-        if (!started) {
+        // output after its own play() already ran, or flush() left
+        // the stream FLUSHED), and a write to a non-started stream
+        // fails with INVALID_STATE, stalling the sink at 0:00.
+        if (!started && !stopped) {
             started = true
             stopped = false
             // v1.1.44 — log the safety-net start too; if this is the
@@ -183,6 +197,7 @@ class AaudioAudioOutput(
         framesReadAtBase = 0L
         writeCount = 0L
         stopped = false
+        paused = false
         // v1.1.43 — requestFlush leaves the stream FLUSHED; it needs
         // requestStart again before writing. Reset `started` so the
         // next play() actually restarts it (play() is a no-op while
@@ -193,6 +208,7 @@ class AaudioAudioOutput(
     override fun stop() {
         if (stopped) return
         stopped = true
+        paused = true
         // v1.1.43 — DO NOT call engine.stop() here (AAudioStream_
         // requestStop). The comment above already said so, but the code
         // did it anyway: requestStop puts the stream in STOPPED state,
