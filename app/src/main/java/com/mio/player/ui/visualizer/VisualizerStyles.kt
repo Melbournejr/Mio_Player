@@ -398,12 +398,19 @@ fun MioVisualizer(
     modifier: Modifier = Modifier,
     heightDp: Float? = null
 ) {
+    // v1.1.46 — pause must freeze the visualizer immediately. The
+    // styles derive "live" from the FFT levels alone, and a late FFT
+    // frame can republish live levels right after pause() clears
+    // them, leaving the rays flickering while playback is paused.
+    // Gate the data by the real playing state here so every style
+    // drops to its static idle shape the moment playback pauses.
+    val effectiveLevels = if (playing) levels else FloatArray(levels.size)
     when (style) {
-        VisualizerStyle.BARS -> VisualizerBars(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
-        VisualizerStyle.WAVE -> VisualizerWave(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
-        VisualizerStyle.CIRCULAR -> VisualizerCircular(levels, playing, albumId, coverPath, modifier, heightDp ?: VIS_ROW_TALL_DP)
-        VisualizerStyle.MIRROR -> VisualizerMirror(levels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
-        VisualizerStyle.FERROFLUID -> VisualizerFerrofluid(levels, playing, ferrofluidFreq, modifier, heightDp ?: VIS_ROW_TALL_DP)
+        VisualizerStyle.BARS -> VisualizerBars(effectiveLevels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
+        VisualizerStyle.WAVE -> VisualizerWave(effectiveLevels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
+        VisualizerStyle.CIRCULAR -> VisualizerCircular(effectiveLevels, playing, albumId, coverPath, modifier, heightDp ?: VIS_ROW_TALL_DP)
+        VisualizerStyle.MIRROR -> VisualizerMirror(effectiveLevels, playing, modifier, heightDp ?: VIS_ROW_HEIGHT_DP)
+        VisualizerStyle.FERROFLUID -> VisualizerFerrofluid(effectiveLevels, playing, ferrofluidFreq, modifier, heightDp ?: VIS_ROW_TALL_DP)
     }
 }
 

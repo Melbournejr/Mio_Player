@@ -563,7 +563,16 @@ class PlayerManager(private val ctx: Context) {
             runCatching { DsdDecoder.pruneCacheNow(ctx.applicationContext) }
         }
         player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(v: Boolean) { _isPlaying.value = v }
+            override fun onIsPlayingChanged(v: Boolean) {
+                _isPlaying.value = v
+                // v1.1.46 — clear FFT levels when playback actually
+                // stops, not only in pause(): pause can also arrive
+                // via notification / media session / audio focus, and
+                // a late FFT frame published after pause() would
+                // otherwise leave the visualizer flickering on stale
+                // live levels while paused.
+                if (!v) waveform.clearLevels()
+            }
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 _index.value = player.currentMediaItemIndex
                 // v1.1.27 — record the play (playCount + lastPlayedAt)
