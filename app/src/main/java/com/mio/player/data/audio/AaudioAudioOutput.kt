@@ -84,6 +84,19 @@ class AaudioAudioOutput(
     @Throws(AudioOutput.WriteException::class)
     override fun write(buffer: ByteBuffer, encodedAccessUnitCount: Int, presentationTimeUs: Long): Boolean {
         if (!engine.isOpen) throw AudioOutput.WriteException(-1, false)
+        // v1.1.43 — safety net: make sure the stream is started before
+        // writing. play() can be missed (e.g. the sink creates the
+        // output after its own play() already ran, or stop()/flush()
+        // left the stream STOPPED/FLUSHED), and a write to a
+        // non-started stream fails with INVALID_STATE, stalling the
+        // sink at 0:00. requestStart on an already-started stream is
+        // a harmless no-op, so this is safe to call unconditionally.
+        if (!started) {
+            started = true
+            stopped = false
+            engine.start()
+            listeners.forEach { it.onPositionAdvancing(System.currentTimeMillis()) }
+        }
         if (basePresentationTimeUs == C.TIME_UNSET) {
             basePresentationTimeUs = presentationTimeUs
             framesReadAtBase = engine.framesRead()
@@ -130,16 +143,29 @@ class AaudioAudioOutput(
         basePresentationTimeUs = C.TIME_UNSET
         framesReadAtBase = 0L
         stopped = false
+        // v1.1.43 — requestFlush leaves the stream FLUSHED; it needs
+        // requestStart again before writing. Reset `started` so the
+        // next play() actually restarts it (play() is a no-op while
+        // `started` is true).
+        started = false
     }
 
     override fun stop() {
         if (stopped) return
         stopped = true
-        // Do NOT stop the stream here: the remaining buffered frames must
-        // play out, and framesRead keeps advancing until they do, so
-        // getPositionUs() naturally reaches the end. The stream is
-        // stopped/closed on release() or the next flush().
-        engine.stop()
+        // v1.1.43 — DO NOT call engine.stop() here (AAudioStream_
+        // requestStop). The comment above already said so, but the code
+        // did it anyway: requestStop puts the stream in STOPPED state,
+        // and a write to a STOPPED stream returns INVALID_STATE, so
+        // the sink's output buffer never drains, hasPendingData stays
+        // true and handleBuffer returns false forever — every track
+        // stuck at 0:00, no sound (v1.1.42 video). The remaining
+        // buffered frames play out on their own and the stream is
+        // closed on release(), which is what this method's contract
+        // actually needs. `started` is intentionally left alone: the
+        // stream is still started, so a later play()/write() must not
+        // skip the start call — and the write() safety net restarts
+        // it anyway if it ever finds itself not started.
     }
 
     override fun release() {
