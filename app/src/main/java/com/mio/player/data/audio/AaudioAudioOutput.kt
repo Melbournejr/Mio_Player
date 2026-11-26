@@ -380,7 +380,13 @@ class AaudioOutputProvider(
         if (last is AaudioState.Active && newRate > 0 && last.sampleRate != newRate) {
             lastAaudioState = AaudioState.Idle
         }
-        if (!hiResEnabled) return config
+        if (!hiResEnabled) {
+            // v1.1.49 — Hi-Res off means no AAudio output can be
+            // active; clear any stale Active state from before the
+            // toggle so Settings/Now Playing stop claiming AAudio.
+            lastAaudioState = AaudioState.Idle
+            return config
+        }
         // Force the sink to recreate the output when Hi-Res toggles:
         // DefaultAudioSink reuses the current AudioOutput whenever the
         // new OutputConfig equals the old one, so without a differing
@@ -412,6 +418,8 @@ class AaudioOutputProvider(
         } else if (hiResEnabled) {
             lastAaudioState = AaudioState.Fallback("Định dạng không phải PCM 16-bit stereo — đã về mixer")
             com.mio.player.data.log.MioLog.event(context, "AAudio FALLBACK: format not PCM16 stereo (encoding=${config.encoding}) — using mixer")
+        } else {
+            lastAaudioState = AaudioState.Idle
         }
         return delegate.getAudioOutput(config)
     }

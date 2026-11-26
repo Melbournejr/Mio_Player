@@ -345,12 +345,14 @@ import kotlinx.coroutines.launch
                 onCheckedChange = { v -> scope.launch { pm.applyHiResAaudioEnabled(v) } }
             )
         }
-        val hiResStatus = when (val s = hiResState) {
+        val hiResStatus = if (!hiResOn) {
+            "Tắt — đang phát qua bộ trộn thường (48 kHz)."
+        } else when (val s = hiResState) {
             is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active ->
                 "Đang chạy AAudio exclusive: ${s.sampleRate / 1000} kHz${if (s.lowLatency) " · low-latency" else ""}"
             is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Fallback -> s.reason
             is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Idle ->
-                if (hiResOn) "Đã bật — phát một bài để mở luồng AAudio." else "Tắt — đang phát qua bộ trộn thường (48 kHz)."
+                "Đã bật — phát một bài để mở luồng AAudio."
         }
         Text(hiResStatus, color = MioTextSecondary, fontSize = 13.sp)
         Spacer(Modifier.height(16.dp))

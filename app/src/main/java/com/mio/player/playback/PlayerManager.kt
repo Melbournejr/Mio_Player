@@ -446,6 +446,14 @@ class PlayerManager(private val ctx: Context) {
     fun applyHiResAaudioEnabled(enabled: Boolean) {
         hiResAaudioEnabled = enabled
         aaudioProvider.hiResEnabled = enabled
+        if (!enabled) {
+            // v1.1.49 — clear the AAudio state immediately; the
+            // provider's last Active state otherwise survives the
+            // toggle (same-rate outputs are reused) and Settings
+            // kept claiming "AAudio exclusive" while off.
+            aaudioProvider.lastAaudioState = AaudioOutputProvider.AaudioState.Idle
+            _aaudioStateFlow.value = AaudioOutputProvider.AaudioState.Idle
+        }
         scope.launch { runCatching { settings.set(SettingsStore.KEY_HIRES_AAUDIO, enabled) } }
         val track = currentTrack
         if (track != null && player.playbackState != Player.STATE_IDLE) {
