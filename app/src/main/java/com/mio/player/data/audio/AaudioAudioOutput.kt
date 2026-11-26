@@ -354,6 +354,9 @@ class AaudioOutputProvider(
     @Volatile var lastAaudioState: AaudioState = AaudioState.Idle
         private set
 
+    /** v1.1.49 — clear the reported AAudio state (Hi-Res toggled off). */
+    fun clearAaudioState() { lastAaudioState = AaudioState.Idle }
+
     sealed interface AaudioState {
         data object Idle : AaudioState
         data class Active(val sampleRate: Int, val exclusive: Boolean, val lowLatency: Boolean) : AaudioState

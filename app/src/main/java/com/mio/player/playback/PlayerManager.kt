@@ -451,7 +451,7 @@ class PlayerManager(private val ctx: Context) {
             // provider's last Active state otherwise survives the
             // toggle (same-rate outputs are reused) and Settings
             // kept claiming "AAudio exclusive" while off.
-            aaudioProvider.lastAaudioState = AaudioOutputProvider.AaudioState.Idle
+            aaudioProvider.clearAaudioState()
             _aaudioStateFlow.value = AaudioOutputProvider.AaudioState.Idle
         }
         scope.launch { runCatching { settings.set(SettingsStore.KEY_HIRES_AAUDIO, enabled) } }
