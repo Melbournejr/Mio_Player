@@ -55,32 +55,60 @@ object OtaUpdateChecker {
         return 0
     }
 
-    suspend fun checkForUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
-        runCatching {
-            val conn = (URL(LATEST_URL).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("User-Agent", "MioPlayer-OTA")
-                connectTimeout = 15_000
-                readTimeout = 15_000
+    /** v1.1.51 — a check can end three ways. The old code folded
+     *  every failure (GitHub API rate limit on a shared mobile IP,
+     *  no network, non-200) into "up to date", so the app told the
+     *  user "You are on the latest version" while a newer release
+     *  existed. Failures are now reported as failures. */
+    sealed interface CheckResult {
+        data class Available(val info: UpdateInfo) : CheckResult
+        data object UpToDate : CheckResult
+        data class Failed(val reason: String) : CheckResult
+    }
+
+    suspend fun checkForUpdate(): UpdateInfo? =
+        (checkForUpdateDetailed() as? CheckResult.Available)?.info
+
+    suspend fun checkForUpdateDetailed(): CheckResult = withContext(Dispatchers.IO) {
+        val api = runCatching { checkViaApi() }
+        api.getOrNull()?.let { return@withContext it }
+        // API failed (rate limit / network / non-200): fall back to
+        // the github.com "latest" redirect, which is not API
+        // rate-limited. The release workflow always names the
+        // asset Mio_Player-<tag>.apk, so the download URL can be
+        // built from the tag in the redirect Location.
+        val web = runCatching { checkViaWebRedirect() }
+        web.getOrNull()?.let { return@withContext it }
+        val why = api.exceptionOrNull()?.message ?: web.exceptionOrNull()?.message ?: "không rõ"
+        CheckResult.Failed(why)
+    }
+
+    private fun checkViaApi(): CheckResult {
+        val conn = (URL(LATEST_URL).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "MioPlayer-OTA")
+            connectTimeout = 15_000
+            readTimeout = 15_000
+        }
+        if (conn.responseCode != 200) throw IllegalStateException("GitHub API HTTP ${conn.responseCode}")
+        val json = JSONObject(conn.inputStream.bufferedReader().readText())
+        val tag = json.optString("tag_name", "")
+        if (tag.isBlank()) throw IllegalStateException("GitHub API: thiếu tag_name")
+        val versionName = tag.trimStart('v', 'V')
+        if (compareVersions(versionName, BuildConfig.VERSION_NAME) <= 0) return CheckResult.UpToDate
+        val assets = json.optJSONArray("assets") ?: throw IllegalStateException("GitHub API: thiếu assets")
+        var apkUrl: String? = null
+        for (i in 0 until assets.length()) {
+            val a = assets.getJSONObject(i)
+            val name = a.optString("name", "")
+            if (name.endsWith(".apk", ignoreCase = true)) {
+                apkUrl = a.optString("browser_download_url", "")
+                break
             }
-            if (conn.responseCode != 200) return@withContext null
-            val json = JSONObject(conn.inputStream.bufferedReader().readText())
-            val tag = json.optString("tag_name", "")
-            if (tag.isBlank()) return@withContext null
-            val versionName = tag.trimStart('v', 'V')
-            if (compareVersions(versionName, BuildConfig.VERSION_NAME) <= 0) return@withContext null
-            val assets = json.optJSONArray("assets") ?: return@withContext null
-            var apkUrl: String? = null
-            for (i in 0 until assets.length()) {
-                val a = assets.getJSONObject(i)
-                val name = a.optString("name", "")
-                if (name.endsWith(".apk", ignoreCase = true)) {
-                    apkUrl = a.optString("browser_download_url", "")
-                    break
-                }
-            }
-            if (apkUrl.isNullOrBlank()) return@withContext null
+        }
+        if (apkUrl.isNullOrBlank()) throw IllegalStateException("GitHub API: release không có APK")
+        return CheckResult.Available(
             UpdateInfo(
                 tag = tag,
                 versionName = versionName,
@@ -88,7 +116,31 @@ object OtaUpdateChecker {
                 apkUrl = apkUrl,
                 htmlUrl = json.optString("html_url", ""),
             )
-        }.getOrNull()
+        )
+    }
+
+    private fun checkViaWebRedirect(): CheckResult {
+        val conn = (URL("https://github.com/$REPO/releases/latest").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("User-Agent", "MioPlayer-OTA")
+            connectTimeout = 15_000
+            readTimeout = 15_000
+            instanceFollowRedirects = false
+        }
+        val location = conn.getHeaderField("Location") ?: throw IllegalStateException("github.com không trả redirect")
+        val tag = location.substringAfterLast("/tag/").substringBefore("/").trim()
+        if (tag.isBlank() || !tag.startsWith("v")) throw IllegalStateException("github.com redirect lạ: $location")
+        val versionName = tag.trimStart('v', 'V')
+        if (compareVersions(versionName, BuildConfig.VERSION_NAME) <= 0) return CheckResult.UpToDate
+        return CheckResult.Available(
+            UpdateInfo(
+                tag = tag,
+                versionName = versionName,
+                changelog = "",
+                apkUrl = "https://github.com/$REPO/releases/download/$tag/Mio_Player-$tag.apk",
+                htmlUrl = "https://github.com/$REPO/releases/tag/$tag",
+            )
+        )
     }
 
     /**

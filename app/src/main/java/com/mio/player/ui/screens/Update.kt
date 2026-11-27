@@ -86,11 +86,18 @@ fun rememberUpdateState(): UpdateUiState {
         if (state.checking) return
         state.checking = true
         scope.launch {
-            val info = OtaUpdateChecker.checkForUpdate()
+            // v1.1.51 — only a real UpToDate may say "latest"; a
+            // failed check (rate limit / network) says so instead.
+            val result = OtaUpdateChecker.checkForUpdateDetailed()
             state.checking = false
             state.lastChecked = System.currentTimeMillis()
-            if (info != null) state.available = info
-            else if (showToastIfNone) Toast.makeText(ctx, "You are on the latest version.", Toast.LENGTH_SHORT).show()
+            when (result) {
+                is OtaUpdateChecker.CheckResult.Available -> state.available = result.info
+                is OtaUpdateChecker.CheckResult.UpToDate ->
+                    if (showToastIfNone) Toast.makeText(ctx, "You are on the latest version.", Toast.LENGTH_SHORT).show()
+                is OtaUpdateChecker.CheckResult.Failed ->
+                    if (showToastIfNone) Toast.makeText(ctx, "Không kiểm tra được cập nhật (${result.reason}). Thử lại sau.", Toast.LENGTH_LONG).show()
+            }
         }
     }
     state.check = ::check
