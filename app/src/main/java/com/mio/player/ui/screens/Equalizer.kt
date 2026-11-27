@@ -77,6 +77,19 @@ import kotlin.math.pow
     var eqMode by remember { mutableStateOf("graphic") }
     var paramBands by remember { mutableStateOf(ParametricEqDefaults.bands()) }
     var selectedBand by remember { mutableStateOf(0) }
+    // v1.1.50 — which EQ paths can actually sound right now.
+    // Graphic/Bass/Virtualizer/Loudness are Android AudioEffects on
+    // the AudioTrack session: dead while AAudio exclusive runs (no
+    // session). Parametric is a sink processor: alive in both
+    // modes. Bit-perfect USB bypasses every EQ. The screen locks
+    // the dead controls instead of letting the user drag faders
+    // that cannot change the sound.
+    val hiResState by pm.hiResState.collectAsState()
+    val bitPerfectState by pm.bitPerfectState.collectAsState()
+    val aaudioActive = hiResState is com.mio.player.data.audio.AaudioOutputProvider.AaudioState.Active
+    val bitPerfectActive = bitPerfectState.active
+    val graphicEnabled = !aaudioActive && !bitPerfectActive
+    val parametricEnabled = !bitPerfectActive
     fun formatFreq(hz: Float): String = if (hz >= 1000f) String.format(Locale.US, "%.1f kHz", hz / 1000f) else "${hz.toInt()} Hz"
     /** Log-scale frequency slider: 0..1 maps to 20 Hz..20 kHz. */
     fun freqToSlider(hz: Float): Float = ((log10(hz.coerceIn(20f, 20000f).toDouble()) - log10(20.0)) / (log10(20000.0) - log10(20.0))).toFloat()
@@ -238,7 +251,7 @@ import kotlin.math.pow
                     // v1.1.32 — a preset in Parametric mode resets each
                     // band to its standard frequency, Peak, Q 1.41
                     // (bandsFromGains), so the preset sounds as defined.
-                    FilterChip(selected = preset == p, onClick = { preset = p; bands = (pm.fx.presets[p] ?: bands).copyOf(); paramBands = ParametricEqDefaults.bandsFromGains(bands); headphoneModel = ""; applyAndSave() }, label = { Text(p) })
+                    FilterChip(selected = preset == p, enabled = parametricEnabled && (eqMode == "parametric" || graphicEnabled), onClick = { preset = p; bands = (pm.fx.presets[p] ?: bands).copyOf(); paramBands = ParametricEqDefaults.bandsFromGains(bands); headphoneModel = ""; applyAndSave() }, label = { Text(p) })
                 }
             }
             if (customPresets.isNotEmpty()) {
@@ -247,7 +260,7 @@ import kotlin.math.pow
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(customPresets.keys.toList()) { name ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            FilterChip(selected = preset == name, onClick = { preset = name; bands = (customPresets[name] ?: bands).copyOf(); paramBands = ParametricEqDefaults.bandsFromGains(bands); headphoneModel = ""; applyAndSave() }, label = { Text(name) })
+                            FilterChip(selected = preset == name, enabled = parametricEnabled && (eqMode == "parametric" || graphicEnabled), onClick = { preset = name; bands = (customPresets[name] ?: bands).copyOf(); paramBands = ParametricEqDefaults.bandsFromGains(bands); headphoneModel = ""; applyAndSave() }, label = { Text(name) })
                             IconButton(onClick = { deleteCustom(name) }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "Xóa preset $name", tint = MioTextSecondary, modifier = Modifier.size(16.dp)) }
                         }
                     }
@@ -260,10 +273,17 @@ import kotlin.math.pow
             Text("Graphic: 10 dải cố định như trước, qua Android Equalizer. Parametric: chỉnh tần số, loại dải và Q cho từng band, qua bộ lọc biquad trong ExoPlayer — chỉ 1 chế độ chạy tại 1 thời điểm.", color = MioTextSecondary, fontSize = 12.sp)
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = eqMode == "graphic", onClick = { if (eqMode != "graphic") switchMode("graphic") })
+                RadioButton(selected = eqMode == "graphic", enabled = graphicEnabled || eqMode == "graphic", onClick = { if (eqMode != "graphic") switchMode("graphic") })
                 Text("Graphic", color = MioText, modifier = Modifier.padding(end = 24.dp))
-                RadioButton(selected = eqMode == "parametric", onClick = { if (eqMode != "parametric") switchMode("parametric") })
+                RadioButton(selected = eqMode == "parametric", enabled = parametricEnabled, onClick = { if (eqMode != "parametric") switchMode("parametric") })
                 Text("Parametric", color = MioText)
+            }
+            if (bitPerfectActive) {
+                Spacer(Modifier.height(8.dp))
+                Text("Bit-perfect USB đang chạy — toàn bộ EQ tạm khóa vì tín hiệu phải nguyên bản. Tắt Bit-perfect hoặc rút USB DAC để chỉnh EQ.", color = MioTextSecondary, fontSize = 12.sp)
+            } else if (aaudioActive) {
+                Spacer(Modifier.height(8.dp))
+                Text("AAudio (Hi-Res) đang chạy — Graphic, Bass, Virtualizer và Loudness không áp dụng ở chế độ này nên đã khóa. Parametric vẫn chỉnh được; tắt Hi-Res để dùng Graphic.", color = MioTextSecondary, fontSize = 12.sp)
             }
         }
         // --- Dải tần ---
@@ -281,9 +301,13 @@ import kotlin.math.pow
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     AudioEffectsManager.BAND_FREQS_HZ.forEachIndexed { i, freq ->
                         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("${if (bands[i] > 0) "+" else ""}${bands[i].toInt()} dB", color = MioText, fontSize = 11.sp)
-                            VerticalBandSlider(value = bands[i], onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() })
-                            Text(if (freq >= 1000) "${freq / 1000}k" else "$freq", color = MioTextSecondary, fontSize = 11.sp)
+                            // v1.1.50 — one line, never wrapped: "+14 dB"
+                            // used to break into "+14" / "dB" in the
+                            // narrow column, pushing that fader (and
+                            // its freq label) out of line with the rest.
+                            Text("${if (bands[i] > 0) "+" else ""}${bands[i].toInt()} dB", color = MioText, fontSize = 10.sp, maxLines = 1, softWrap = false)
+                            VerticalBandSlider(value = bands[i], enabled = graphicEnabled, onValueChange = { v -> bands = bands.copyOf().also { it[i] = v }; headphoneModel = ""; applyAndSave() })
+                            Text(if (freq >= 1000) "${freq / 1000}k" else "$freq", color = MioTextSecondary, fontSize = 11.sp, maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -298,6 +322,7 @@ import kotlin.math.pow
                         val b = paramBands[i]
                         FilterChip(
                             selected = selectedBand == i,
+                            enabled = parametricEnabled,
                             onClick = { selectedBand = i },
                             label = { Text("${i + 1}: ${formatFreq(b.freqHz)}") }
                         )
@@ -308,21 +333,21 @@ import kotlin.math.pow
                 Spacer(Modifier.height(8.dp))
                 Text("Loại dải", color = MioText)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = sel.type == ParametricBandType.PEAK, onClick = { updateParamBand(sel.copy(type = ParametricBandType.PEAK)) })
+                    RadioButton(selected = sel.type == ParametricBandType.PEAK, enabled = parametricEnabled, onClick = { updateParamBand(sel.copy(type = ParametricBandType.PEAK)) })
                     Text("Peak", color = MioText, modifier = Modifier.padding(end = 16.dp))
-                    RadioButton(selected = sel.type == ParametricBandType.LOW_SHELF, onClick = { updateParamBand(sel.copy(type = ParametricBandType.LOW_SHELF)) })
+                    RadioButton(selected = sel.type == ParametricBandType.LOW_SHELF, enabled = parametricEnabled, onClick = { updateParamBand(sel.copy(type = ParametricBandType.LOW_SHELF)) })
                     Text("Low Shelf", color = MioText, modifier = Modifier.padding(end = 16.dp))
-                    RadioButton(selected = sel.type == ParametricBandType.HIGH_SHELF, onClick = { updateParamBand(sel.copy(type = ParametricBandType.HIGH_SHELF)) })
+                    RadioButton(selected = sel.type == ParametricBandType.HIGH_SHELF, enabled = parametricEnabled, onClick = { updateParamBand(sel.copy(type = ParametricBandType.HIGH_SHELF)) })
                     Text("High Shelf", color = MioText)
                 }
                 Text("Tần số: ${formatFreq(sel.freqHz)}", color = MioText)
-                ThinSlider(value = freqToSlider(sel.freqHz), onValueChange = { v -> updateParamBand(sel.copy(freqHz = sliderToFreq(v))) })
+                ThinSlider(value = freqToSlider(sel.freqHz), enabled = parametricEnabled, onValueChange = { v -> updateParamBand(sel.copy(freqHz = sliderToFreq(v))) })
                 Text("Gain: ${String.format(Locale.US, "%.1f", sel.gainDb)} dB", color = MioText)
-                ThinSlider(value = sel.gainDb, onValueChange = { v -> updateParamBand(sel.copy(gainDb = v)) }, valueRange = -15f..15f)
+                ThinSlider(value = sel.gainDb, enabled = parametricEnabled, onValueChange = { v -> updateParamBand(sel.copy(gainDb = v)) }, valueRange = -15f..15f)
                 Text(if (sel.type == ParametricBandType.PEAK) "Q: ${String.format(Locale.US, "%.2f", sel.q)}" else "Q: chỉ áp dụng cho Peak — Shelf dùng độ dốc cố định", color = MioText)
-                ThinSlider(value = sel.q, onValueChange = { v -> updateParamBand(sel.copy(q = v)) }, valueRange = 0.5f..4.0f, enabled = sel.type == ParametricBandType.PEAK)
+                ThinSlider(value = sel.q, onValueChange = { v -> updateParamBand(sel.copy(q = v)) }, valueRange = 0.5f..4.0f, enabled = parametricEnabled && sel.type == ParametricBandType.PEAK)
                 Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = {
+                OutlinedButton(enabled = parametricEnabled, onClick = {
                     paramBands = ParametricEqDefaults.bandsFromGains(ParametricEqDefaults.gainsFromBands(paramBands))
                     applyAndSave()
                 }) { Text("Đặt lại tần số / loại / Q về chuẩn") }
@@ -335,14 +360,14 @@ import kotlin.math.pow
             SectionTitle("Preamp")
             Text("Preamp: ${String.format(Locale.US, "%.1f", preamp)} dB", color = MioText)
             Text("Tăng/giảm đều toàn bộ dải tần. Giảm preamp nếu preset mạnh gây rè.", color = MioTextSecondary, fontSize = 12.sp)
-            ThinSlider(value = preamp, onValueChange = { preamp = it; headphoneModel = ""; applyAndSave() }, valueRange = -12f..6f)
+            ThinSlider(value = preamp, enabled = if (eqMode == "parametric") parametricEnabled else graphicEnabled, onValueChange = { preamp = it; headphoneModel = ""; applyAndSave() }, valueRange = -12f..6f)
         }
         // --- Hiệu ứng ---
         item {
             SectionTitle("Hiệu ứng")
-            Text("Bass Boost", color = MioText); ThinSlider(value = bass, onValueChange = { bass = it; applyAndSave() })
-            Text("Virtualizer / 3D", color = MioText); ThinSlider(value = virt, onValueChange = { virt = it; applyAndSave() })
-            Text("Loudness", color = MioText); ThinSlider(value = loud, onValueChange = { loud = it; applyAndSave() })
+            Text("Bass Boost", color = MioText); ThinSlider(value = bass, enabled = graphicEnabled, onValueChange = { bass = it; applyAndSave() })
+            Text("Virtualizer / 3D", color = MioText); ThinSlider(value = virt, enabled = graphicEnabled, onValueChange = { virt = it; applyAndSave() })
+            Text("Loudness", color = MioText); ThinSlider(value = loud, enabled = graphicEnabled, onValueChange = { loud = it; applyAndSave() })
             Text("Balance (L — R)", color = MioText); ThinSlider(value = balance, onValueChange = { balance = it; applyAndSave() }, valueRange = -1f..1f)
         }
         // --- Chỉnh âm tai nghe (separate from genre presets) ---
@@ -354,7 +379,7 @@ import kotlin.math.pow
             Spacer(Modifier.height(8.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(EqPresets.HEADPHONE_PROFILES.keys.toList()) { model ->
-                    FilterChip(selected = headphoneModel == model, onClick = { applyHeadphone(model) }, label = { Text(model) })
+                    FilterChip(selected = headphoneModel == model, enabled = parametricEnabled && (eqMode == "parametric" || graphicEnabled), onClick = { applyHeadphone(model) }, label = { Text(model) })
                 }
             }
             if (headphoneModel.isNotBlank()) {
@@ -405,20 +430,23 @@ import kotlin.math.pow
  *  that symbol does not resolve in this project's Compose version
  *  — CI failed on it — so this uses the standard Foundation
  *  gesture detectors instead.) */
-@Composable private fun VerticalBandSlider(value: Float, onValueChange: (Float) -> Unit) {
+@Composable private fun VerticalBandSlider(value: Float, enabled: Boolean = true, onValueChange: (Float) -> Unit) {
     val currentValue by rememberUpdatedState(value)
     val currentOnValueChange by rememberUpdatedState(onValueChange)
+    val currentEnabled by rememberUpdatedState(enabled)
     Box(
         Modifier
             .height(200.dp)
             .fillMaxWidth()
-            .pointerInput(Unit) {
+            .pointerInput(enabled) {
+                if (!currentEnabled) return@pointerInput
                 detectTapGestures { offset ->
                     val frac = 1f - (offset.y / size.height)
                     currentOnValueChange((-15f + frac * 30f).coerceIn(-15f, 15f))
                 }
             }
-            .pointerInput(Unit) {
+            .pointerInput(enabled) {
+                if (!currentEnabled) return@pointerInput
                 var dragValue = 0f
                 detectVerticalDragGestures(
                     onDragStart = { dragValue = currentValue },
@@ -447,16 +475,18 @@ import kotlin.math.pow
                 cap = StrokeCap.Round
             )
             // Filled track (teal, from the bottom up to the thumb).
+            // v1.1.50 — dimmed while disabled (AAudio / bit-perfect).
+            val fill = if (enabled) Color(0xFF14B8A6) else Color(0xFF3A3A44)
             drawLine(
-                color = Color(0xFF14B8A6),
+                color = fill,
                 start = Offset(centerX, bottom),
                 end = Offset(centerX, valueY),
                 strokeWidth = trackWidth,
                 cap = StrokeCap.Round
             )
             // Thumb: white disc with a teal centre.
-            drawCircle(color = Color.White, radius = thumbRadius, center = Offset(centerX, valueY))
-            drawCircle(color = Color(0xFF14B8A6), radius = thumbRadius - 3.dp.toPx(), center = Offset(centerX, valueY))
+            drawCircle(color = if (enabled) Color.White else Color(0xFF8A8A94), radius = thumbRadius, center = Offset(centerX, valueY))
+            drawCircle(color = fill, radius = thumbRadius - 3.dp.toPx(), center = Offset(centerX, valueY))
         }
     }
 }

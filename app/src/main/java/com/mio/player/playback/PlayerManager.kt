@@ -596,6 +596,22 @@ class PlayerManager(private val ctx: Context) {
                                 .bumpPlay(track.id, System.currentTimeMillis())
                         }
                     }
+                    // v1.1.50 — auto metadata on EVERY track start,
+                    // not only the first playQueue tap: Next /
+                    // auto-advance previously never fetched, so a
+                    // track reached by skipping kept its missing
+                    // artist/album/cover until the next scan pass.
+                    // fetchFor gates itself (toggle, needs, 7-day
+                    // block); the manual dialog remains the path
+                    // for wrong-but-present tags.
+                    scope.launch {
+                        runCatching {
+                            val c = (ctx.applicationContext as com.mio.player.MioApp).container
+                            if (c.metadataRepo.fetchFor(track)) {
+                                updateQueueTrack(c.metadataRepo.mergedTrack(track))
+                            }
+                        }
+                    }
                 }
                 // v1.1.27 — re-apply ReplayGain on EVERY track change.
                 // applyReplayGain() was only called from playQueue, so

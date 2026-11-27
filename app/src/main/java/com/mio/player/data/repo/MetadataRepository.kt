@@ -373,16 +373,32 @@ class MetadataRepository(
     suspend fun fetchMissing(tracks: List<Track>): List<Long> {
         if (!autoFetchEnabled()) return emptyList()
         val updated = mutableListOf<Long>()
+        // v1.1.50 — the old pass counted EVERY needsMetadata track
+        // against the per-scan cap, in list order, including tracks
+        // already inside the 7-day retry block and tracks whose
+        // only gap is a cover no source had. The same first 50
+        // tracks ate the whole cap on every scan, so the rest of
+        // the library was never attempted — auto-fetch looked dead.
+        // Now: skip recently-attempted tracks without counting
+        // them, and try the longest-waiting tracks first.
+        val meta = allMetadata()
+        val now = System.currentTimeMillis()
+        val candidates = tracks
+            .filter { needsMetadata(it) }
+            .filter { t ->
+                val m = meta[t.id]
+                m == null || now - m.attemptedAt >= RETRY_AFTER_MS
+            }
+            .sortedBy { meta[it.id]?.attemptedAt ?: 0L }
         var attempted = 0
-        for (t in tracks) {
-            if (!needsMetadata(t)) continue
+        for (t in candidates) {
             if (attempted >= MAX_PER_SCAN) break
             attempted++
             if (fetchFor(t)) updated += t.id
             delay(ITUNES_DELAY_MS)
         }
         if (attempted > 0) {
-            MioLog.event(ctx, "Metadata auto-fetch: attempted=$attempted updated=${updated.size}")
+            MioLog.event(ctx, "Metadata auto-fetch: attempted=$attempted updated=${updated.size} candidates=${candidates.size}")
         }
         return updated
     }
@@ -470,6 +486,17 @@ class MetadataRepository(
             variants += spacedTitle to spacedArtist
         }
         if ((isAcronymArtist(artist) || isAcronymArtist(spacedArtist)) && durationMs > 0) {
+            val t = spacedTitle
+            if (variants.none { it.first == t && it.second == null }) variants += t to null
+        }
+        // v1.1.50 — final title-only fallback for every track with a
+        // known duration: a wrong-but-present artist tag ("MTLR",
+        // a site name, a misspelling) otherwise poisons every
+        // artist query and the auto pass misses a song the sources
+        // have. Title match + the 10 s duration check still guard
+        // against a same-name wrong song. Manual search behaviour
+        // is unchanged (the typed artist still runs first).
+        if (durationMs > 0 && artist != null) {
             val t = spacedTitle
             if (variants.none { it.first == t && it.second == null }) variants += t to null
         }
